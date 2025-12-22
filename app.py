@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 st.title("📱 2025 全明星量化戰情室")
-st.caption("策略核心: KO(RSI), BA(SuperTrend), USD(KD), NVDA(Fusion)")
+st.caption("完整版: 14 組策略全監控 | Auto-refresh")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
@@ -27,12 +27,10 @@ if st.button('🔄 立即更新行情'):
 # ==========================================
 def get_real_live_price(symbol):
     try:
-        # 改進：增加 timeout 防止卡死
         if "-USD" in symbol:
             df_rt = yf.download(symbol, period="1d", interval="1m", progress=False, timeout=5)
         else:
             df_rt = yf.download(symbol, period="5d", interval="1m", prepost=True, progress=False, timeout=5)
-        
         if df_rt.empty: return None
         if isinstance(df_rt.columns, pd.MultiIndex): df_rt.columns = df_rt.columns.get_level_values(0)
         return float(df_rt['Close'].iloc[-1])
@@ -40,7 +38,7 @@ def get_real_live_price(symbol):
 
 def get_safe_data(ticker):
     try:
-        df = yf.download(ticker, period="1y", interval="1d", progress=False, timeout=10) # 增加 timeout
+        df = yf.download(ticker, period="1y", interval="1d", progress=False, timeout=10)
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         return df
@@ -54,7 +52,7 @@ def find_price_for_rsi(df, target_rsi, length=2):
     last_close = df['Close'].iloc[-1]
     low, high = last_close * 0.4, last_close * 1.6
     temp_df = df.copy()
-    for _ in range(10): # 減少迭代次數加快速度
+    for _ in range(10): 
         mid = (low + high) / 2
         new_row = pd.DataFrame({'Close': [mid]}, index=[df.index[-1] + pd.Timedelta(days=1)])
         sim_series = pd.concat([temp_df['Close'], new_row['Close']])
@@ -73,7 +71,6 @@ def analyze_ticker(config):
         live_price = get_real_live_price(symbol)
         if live_price is None or np.isnan(live_price): live_price = prev_close
         
-        # 建立計算用 DataFrame
         calc_df = df_daily.copy()
         new_row = pd.DataFrame({'Close': [live_price], 'High': [max(live_price, df_daily['High'].iloc[-1])], 'Low': [min(live_price, df_daily['Low'].iloc[-1])], 'Open': [live_price], 'Volume': [0]}, index=[pd.Timestamp.now()])
         calc_df = pd.concat([calc_df, new_row])
@@ -176,7 +173,7 @@ def analyze_ticker(config):
         return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR"}
 
 # ==========================================
-# 3. 執行區 (即時顯示版)
+# 3. 執行區
 # ==========================================
 
 # A. 台股雷達
@@ -210,41 +207,52 @@ with st.sidebar:
     except:
         st.error("台股數據異常")
 
-# B. 策略掃描
+# B. 策略掃描 (已補齊 14 支)
 strategies = {
+    # === 💵 匯率 ===
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
+    
+    # === 🥤 個股 ===
     "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
     "BA": { "symbol": "BA", "name": "BA (波音)", "mode": "SUPERTREND", "period": 15, "multiplier": 1.0 },
     "NVDA": { "symbol": "NVDA", "name": "NVDA (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
     "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    
+    # === 🚀 指數/槓桿 ===
+    "QQQ": { "symbol": "QQQ", "name": "QQQ (穩健)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+    "QLD": { "symbol": "QLD", "name": "QLD (2倍)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
     "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (3倍)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
+    
+    # === 🚑 救援 ===
     "EDZ": { "symbol": "EDZ", "name": "EDZ (救援)", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
-    "SOXL_S": { "symbol": "SOXL", "name": "SOXL (狙擊)", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
-    "BTC": { "symbol": "BTC-USD", "name": "BTC (閃電)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
+    
+    # === ⚡ 半導體 ===
+    "SOXL_SNIPE": { "symbol": "SOXL", "name": "SOXL (狙擊)", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
+    "SOXL_FLASH": { "symbol": "SOXL", "name": "SOXL (快攻)", "mode": "KD", "entry_k": 10, "exit_k": 75 },
+    
+    # === ₿ 虛擬貨幣 ===
+    "BTC_WAVE": { "symbol": "BTC-USD", "name": "BTC (波段)", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
+    "BTC_FLASH": { "symbol": "BTC-USD", "name": "BTC (閃電)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
+    
+    # === 🇹🇼 相關 ===
     "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
 }
 
 st.info("📡 正在掃描市場... (計算完成的會立即顯示)")
 
-# ★ 修正重點：邊算邊顯示，不要等全部跑完
 col1, col2 = st.columns(2)
 placeholder_list = []
 
-# 先建立空位
 for i in range(len(strategies)):
     with (col1 if i % 2 == 0 else col2):
         placeholder_list.append(st.empty())
 
-# 開始逐一計算並填入
 for i, (key, config) in enumerate(strategies.items()):
-    # 顯示「正在計算中...」
     with placeholder_list[i].container():
         st.text(f"⏳ 分析 {config['name']}...")
     
-    # 實際執行計算
     row = analyze_ticker(config)
     
-    # 計算完成，清空並填入正式卡片
     placeholder_list[i].empty()
     with placeholder_list[i].container(border=True):
         st.subheader(f"{row['Name']}")
