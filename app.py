@@ -45,17 +45,29 @@ def get_safe_data(ticker):
     except: return None
 
 # ==========================================
-# ★ 新增模組 1: 財報基本面 (含 P/E)
+# ★ 新增模組 1: 財報基本面 (含 ETF 過濾 & 虧損判斷)
 # ==========================================
 @st.cache_data(ttl=86400) # 財報一天抓一次就好
 def get_fundamentals(symbol):
     try:
+        # 1. 排除明顯非個股
         if "=" in symbol or "^" in symbol or "-USD" in symbol: return None 
+        
         stock = yf.Ticker(symbol)
         info = stock.info
+        
+        # 2. ★ 關鍵修改：嚴格檢查 quoteType
+        # 如果不是 'EQUITY' (個股)，就直接回傳 None (ETF/基金/期貨不顯示財報)
+        quote_type = info.get('quoteType', '').upper()
+        if quote_type != 'EQUITY':
+            return None
+        
+        # 3. 抓取數據 (含 EPS)
         rev_growth = info.get('revenueGrowth', 0)
-        pe_ratio = info.get('trailingPE', None) # 抓本益比
-        return {"growth": rev_growth, "pe": pe_ratio}
+        pe_ratio = info.get('trailingPE', None) # 本益比
+        eps = info.get('trailingEps', None)     # 每股盈餘 (判斷虧損用)
+        
+        return {"growth": rev_growth, "pe": pe_ratio, "eps": eps}
     except:
         return None
 
@@ -203,11 +215,13 @@ def analyze_ticker(config):
         is_growth = False
         is_cheap = False
         
+        # 只有當 get_fundamentals 回傳非 None 時 (即個股)，才處理財報字串
         if fund_data:
             g = fund_data['growth'] if fund_data['growth'] else 0
             pe = fund_data['pe']
+            eps = fund_data['eps'] # 取得 EPS
             
-            # 成長判斷
+            # 1. 成長判斷
             growth_str = ""
             if g > 0.2: 
                 growth_str = f"💎高成長"
@@ -215,29 +229,33 @@ def analyze_ticker(config):
             elif g > 0: growth_str = f"🟢穩健"
             else: growth_str = f"⚠️衰退"
 
-            # P/E 判斷
+            # 2. P/E 判斷 (含虧損邏輯)
             pe_str = ""
             if pe is not None:
-                if pe < 0: pe_str = "虧損無PE"
-                elif pe < 15: 
+                if pe < 15: 
                     pe_str = f"🟢低估(PE {pe:.1f})"
                     is_cheap = True
                 elif pe < 30: pe_str = f"⚪適中(PE {pe:.1f})"
                 elif pe >= 30:
-                    if is_growth: pe_str = f"🟠偏高(PE {pe:.1f})" # 高成長容許高PE
+                    if is_growth: pe_str = f"🟠偏高(PE {pe:.1f})"
                     else: pe_str = f"🔴太貴(PE {pe:.1f})"
             else:
-                pe_str = "無PE"
+                # 如果沒有 PE，檢查是否因為賠錢 (EPS < 0)
+                if eps is not None and eps < 0:
+                     pe_str = f"💀虧損(EPS {eps:.2f})"
+                else:
+                     pe_str = "無PE"
             
             fund_msg = f"{growth_str} | {pe_str}"
 
+        # 情緒分析
         score, news_title = analyze_sentiment_basic(symbol)
         sent_msg = ""
         if score > 0: sent_msg = f"🔥 樂觀 (+{score})"
         elif score < 0: sent_msg = f"❄️ 悲觀 ({score})"
         else: sent_msg = "⚪ 中立"
 
-        # 訊號升級
+        # 訊號升級邏輯
         final_signal = signal
         if "BUY" in signal and is_growth:
             final_signal = "💎 STRONG BUY"
@@ -311,6 +329,9 @@ with st.sidebar:
         
         🟠 **> 30 (偏高/昂貴)**
         除非是 NVDA 這種高成長股，否則需小心追高。
+        
+        💀 **虧損 (負值)**
+        公司正在賠錢 (如 BA)，風險較高。
         """)
 
 # B. 策略掃描 (完整 14 支)
@@ -362,9 +383,11 @@ for i, (key, config) in enumerate(strategies.items()):
         
         st.caption(f"建議: {row['Action']}")
         
+        # 只有在有財報 或 有情緒數據時才顯示
         if row.get('Fund') or row.get('Sent'):
             c1, c2 = st.columns(2)
             with c1: 
+                # 如果是 ETF，Fund 會是空的，就不會顯示
                 if row.get('Fund'): st.markdown(f"**財報:** {row['Fund']}")
             with c2: 
                 if row.get('Sent'): st.markdown(f"**情緒:** {row['Sent']}")
