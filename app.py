@@ -324,74 +324,90 @@ def analyze_ticker(config):
 # 3. 執行區
 # ==========================================
 
-# A. 側邊欄 (修正版：即時漲跌幅計算)
+# A. 側邊欄 (修正版：使用 fast_info 確保數據準確)
 with st.sidebar:
     st.header("🇹🇼 台股雷達")
-    try:
-        with st.spinner('連線台股中...'):
-            # 1. 先抓個股與指數的日線 (為了算昨收)
-            df_2330 = get_safe_data("2330.TW")
-            df_twii = get_safe_data("^TWII")
-            df_usdtwd = get_safe_data("TWD=X")
-            df_tsm = get_safe_data("TSM")
-            
-            # 2. ★ 強制抓取「即時」價格 (解決盤中延遲問題)
-            twii_live = get_real_live_price("^TWII")
-            
-        if df_2330 is not None and df_twii is not None and twii_live is not None:
-            # --- 修正漲跌幅邏輯 ---
-            # 找出「昨日收盤價」
-            last_date = df_twii.index[-1].date()
-            today_date = pd.Timestamp.now().date()
-            
-            # 如果日線資料的最後一天是今天，代表資料已更新，昨收要取倒數第二筆 (-2)
-            # 如果日線資料最後一天還停在昨天，代表資料未更新，昨收就是最後一筆 (-1)
-            if last_date == today_date:
-                prev_close = df_twii['Close'].iloc[-2]
-            else:
-                prev_close = df_twii['Close'].iloc[-1]
-            
-            # 計算即時漲跌
-            idx_change = (twii_live - prev_close) / prev_close * 100
-            
-            # 顯示
-            st.metric("台股加權", f"{twii_live:.0f}", f"{idx_change:+.2f}%")
-            
-            # --- TSM 溢價計算 (維持原樣) ---
-            tw_price = df_2330['Close'].iloc[-1] # 台積電台股
-            usd = df_usdtwd['Close'].iloc[-1] if df_usdtwd is not None else 32.5
-            us_tsm = df_tsm['Close'].iloc[-1] if df_tsm is not None else 0
-            
-            if us_tsm > 0:
-                fair_adr = (tw_price * 5) / usd
-                premium = ((us_tsm - fair_adr) / fair_adr * 100)
-                
-                st.metric("TSM 溢價率", f"{premium:.2f}%", delta_color="inverse")
-                if premium > 2: st.warning("⚠️ 美股太貴")
-                elif premium < -2: st.success("🚀 美股便宜")
-                else: st.info("✅ 價格合理")
-        else:
-            st.error("台股連線逾時")
-    except Exception as e:
-        st.error(f"台股數據異常: {e}")
     
+    # 定義一個安全抓取即時資訊的函數
+    def get_fast_info(ticker_symbol):
+        try:
+            t = yf.Ticker(ticker_symbol)
+            # fast_info 是 yfinance 較新的功能，抓報價極快且準
+            curr = t.fast_info['last_price']
+            prev = t.fast_info['previous_close']
+            return curr, prev
+        except:
+            return None, None
+
+    try:
+        with st.spinner('更新台股數據中...'):
+            # 1. 抓大盤 (加權指數)
+            twii_now, twii_prev = get_fast_info("^TWII")
+            
+            # 2. 抓台積電 (台股 & 美股)
+            tsm_tw_now, _ = get_fast_info("2330.TW")
+            tsm_us_now, _ = get_fast_info("TSM")
+            
+            # 3. 抓匯率
+            usd_now, _ = get_fast_info("TWD=X")
+
+        # --- 顯示邏輯 ---
+        if twii_now and twii_prev:
+            change_pct = (twii_now - twii_prev) / twii_prev * 100
+            
+            # 根據漲跌變色
+            color = "normal"
+            if change_pct > 0: color = "off" # Streamlit metric 綠色是 normal/off
+            
+            st.metric(
+                label="台股加權指數",
+                value=f"{twii_now:,.0f}",
+                delta=f"{change_pct:+.2f}%"
+            )
+        else:
+            st.error("無法取得大盤數據")
+
+        # --- TSM 溢價計算 ---
+        if tsm_tw_now and tsm_us_now and usd_now:
+            # 公式: (台股 * 5) / 匯率 = ADR合理價
+            fair_adr = (tsm_tw_now * 5) / usd_now
+            premium = ((tsm_us_now - fair_adr) / fair_adr * 100)
+            
+            st.metric(
+                label="TSM ADR 溢價率",
+                value=f"{premium:+.2f}%",
+                delta="美股 vs 台股",
+                delta_color="inverse" # 溢價太高顯示紅色(警告)
+            )
+            
+            # 判讀燈號
+            if premium > 5: st.warning("⚠️ 溢價過高 (美股太貴)")
+            elif premium < -2: st.success("🚀 折價 (美股便宜)")
+            else: st.info("✅ 價格合理 (正常區間)")
+            
+            # 顯示詳細數字 (除錯用，讓您安心)
+            with st.expander("查看換算細節"):
+                st.write(f"台股價格: {tsm_tw_now:.0f} TWD")
+                st.write(f"美金匯率: {usd_now:.2f}")
+                st.write(f"ADR合理價: {fair_adr:.2f} USD")
+                st.write(f"ADR現價: {tsm_us_now:.2f} USD")
+                
+        else:
+            st.warning("台積電/匯率數據連線中...")
+
+    except Exception as e:
+        st.error(f"側邊欄數據異常: {e}")
+
     st.divider()
+    # (下方的 P/E 指南保持不變，不用動)
     with st.expander("📚 P/E (本益比) 判讀指南", expanded=True):
         st.markdown("""
         **P/E = 股價 / 每股盈餘**
-        *(越低越便宜，但也可能代表公司爛)*
         
-        🟢 **< 15 (低估/便宜)**
-        適合價值投資，撿便宜。
-        
-        ⚪ **15 ~ 30 (適中/合理)**
-        市場平均，KO、QQQ多在此區間。
-        
-        🟠 **> 30 (偏高/昂貴)**
-        除非是 NVDA 這種高成長股，否則需小心追高。
-        
-        💀 **虧損 (負值)**
-        公司正在賠錢 (如 BA)，風險較高。
+        🟢 **< 15 (低估)**: 價值投資區。
+        ⚪ **15-30 (合理)**: 市場平均。
+        🟠 **> 30 (偏貴)**: 需有高成長支撐。
+        💀 **虧損**: 公司賠錢中 (如 BA)。
         """)
 
 # B. 策略掃描
@@ -458,4 +474,5 @@ for i, (key, config) in enumerate(strategies.items()):
         st.text(f"掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
 
 st.caption("✅ 掃描完成 | Auto-generated by Gemini AI")
+
 
