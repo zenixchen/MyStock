@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 st.title("📱 2025 全明星量化戰情室 (Pro)")
-st.caption("含: 技術指標 + 財報成長率 + NLP新聞情緒分析")
+st.caption("含: 技術指標 + 財報估值(P/E) + NLP情緒分析")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
@@ -45,16 +45,17 @@ def get_safe_data(ticker):
     except: return None
 
 # ==========================================
-# ★ 新增模組 1: 財報基本面
+# ★ 新增模組 1: 財報基本面 (含 P/E)
 # ==========================================
 @st.cache_data(ttl=86400) # 財報一天抓一次就好
 def get_fundamentals(symbol):
     try:
-        if "=" in symbol or "^" in symbol or "-USD" in symbol: return None # 匯率/指數/幣 沒有財報
+        if "=" in symbol or "^" in symbol or "-USD" in symbol: return None 
         stock = yf.Ticker(symbol)
         info = stock.info
         rev_growth = info.get('revenueGrowth', 0)
-        return {"growth": rev_growth}
+        pe_ratio = info.get('trailingPE', None) # 抓本益比
+        return {"growth": rev_growth, "pe": pe_ratio}
     except:
         return None
 
@@ -69,17 +70,14 @@ def analyze_sentiment_basic(symbol):
         
         score = 0
         headlines = []
-        
-        # 簡易關鍵字字典
         pos_words = ["soar", "jump", "surge", "beat", "buy", "gain", "high", "growth", "strong", "up", "record"]
         neg_words = ["drop", "fall", "miss", "cut", "sell", "loss", "weak", "down", "crash", "plunge", "concern"]
         
         if not news_list: return 0, "無新聞"
 
-        for item in news_list[:3]: # 只分析最新的 3 則以節省資源
+        for item in news_list[:3]:
             title = item['title'].lower()
             headlines.append(item['title'])
-            
             for w in pos_words:
                 if w in title: score += 1
             for w in neg_words:
@@ -117,20 +115,16 @@ def analyze_ticker(config):
         live_price = get_real_live_price(symbol)
         if live_price is None or np.isnan(live_price): live_price = prev_close
         
-        # 技術面計算
         calc_df = df_daily.copy()
         new_row = pd.DataFrame({'Close': [live_price], 'High': [max(live_price, df_daily['High'].iloc[-1])], 'Low': [min(live_price, df_daily['Low'].iloc[-1])], 'Open': [live_price], 'Volume': [0]}, index=[pd.Timestamp.now()])
         calc_df = pd.concat([calc_df, new_row])
-        
-        close = calc_df['Close']
-        high = calc_df['High']
-        low = calc_df['Low']
+        close, high, low = calc_df['Close'], calc_df['High'], calc_df['Low']
         curr_price = live_price
 
         signal, action_msg, signal_type = "💤 WAIT", "觀望", "WAIT"
         buy_at, sell_at = "---", "---"
 
-        # --- 策略判斷 (保留原本邏輯) ---
+        # --- 策略判斷 ---
         if config['mode'] == "SUPERTREND":
             st_data = ta.supertrend(high, low, close, length=config['period'], multiplier=config['multiplier'])
             if st_data is not None:
@@ -202,32 +196,55 @@ def analyze_ticker(config):
              else: signal, action_msg, signal_type = "☁️ EMPTY", "空頭排列", "EMPTY"
 
         # ==========================
-        # ★ 整合：財報 + 情緒 + 技術
+        # ★ 整合：財報(成長+PE) + 情緒
         # ==========================
-        # 1. 抓財報
         fund_data = get_fundamentals(symbol)
         fund_msg = ""
         is_growth = False
-        if fund_data and fund_data['growth']:
-            g = fund_data['growth']
+        is_cheap = False
+        
+        if fund_data:
+            g = fund_data['growth'] if fund_data['growth'] else 0
+            pe = fund_data['pe']
+            
+            # 成長判斷
+            growth_str = ""
             if g > 0.2: 
-                fund_msg = f"💎 高成長 {g*100:.0f}%"
+                growth_str = f"💎高成長"
                 is_growth = True
-            elif g > 0: fund_msg = f"🟢 成長 {g*100:.0f}%"
-            else: fund_msg = f"⚠️ 衰退 {g*100:.0f}%"
+            elif g > 0: growth_str = f"🟢穩健"
+            else: growth_str = f"⚠️衰退"
 
-        # 2. 抓情緒
+            # P/E 判斷
+            pe_str = ""
+            if pe is not None:
+                if pe < 0: pe_str = "虧損無PE"
+                elif pe < 15: 
+                    pe_str = f"🟢低估(PE {pe:.1f})"
+                    is_cheap = True
+                elif pe < 30: pe_str = f"⚪適中(PE {pe:.1f})"
+                elif pe >= 30:
+                    if is_growth: pe_str = f"🟠偏高(PE {pe:.1f})" # 高成長容許高PE
+                    else: pe_str = f"🔴太貴(PE {pe:.1f})"
+            else:
+                pe_str = "無PE"
+            
+            fund_msg = f"{growth_str} | {pe_str}"
+
         score, news_title = analyze_sentiment_basic(symbol)
         sent_msg = ""
         if score > 0: sent_msg = f"🔥 樂觀 (+{score})"
         elif score < 0: sent_msg = f"❄️ 悲觀 ({score})"
         else: sent_msg = "⚪ 中立"
 
-        # 3. 升級訊號
+        # 訊號升級
         final_signal = signal
         if "BUY" in signal and is_growth:
             final_signal = "💎 STRONG BUY"
             action_msg += " + 財報優"
+        elif "BUY" in signal and is_cheap:
+            final_signal = "💰 VALUE BUY"
+            action_msg += " + 估值低"
 
         return {
             "Symbol": symbol,
@@ -246,10 +263,10 @@ def analyze_ticker(config):
         return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR"}
 
 # ==========================================
-# 3. 執行區 (UI渲染)
+# 3. 執行區
 # ==========================================
 
-# A. 台股雷達
+# A. 側邊欄 (含 P/E 指南)
 with st.sidebar:
     st.header("🇹🇼 台股雷達")
     try:
@@ -278,6 +295,23 @@ with st.sidebar:
             st.error("台股連線逾時")
     except:
         st.error("台股數據異常")
+    
+    st.divider()
+    # ★ 新增：P/E 判讀指南
+    with st.expander("📚 P/E (本益比) 判讀指南", expanded=True):
+        st.markdown("""
+        **P/E = 股價 / 每股盈餘**
+        *(越低越便宜，但也可能代表公司爛)*
+        
+        🟢 **< 15 (低估/便宜)**
+        適合價值投資，撿便宜。
+        
+        ⚪ **15 ~ 30 (適中/合理)**
+        市場平均，KO、QQQ多在此區間。
+        
+        🟠 **> 30 (偏高/昂貴)**
+        除非是 NVDA 這種高成長股，否則需小心追高。
+        """)
 
 # B. 策略掃描 (完整 14 支)
 strategies = {
@@ -297,17 +331,15 @@ strategies = {
     "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
 }
 
-st.info("📡 市場掃描中... (含基本面與情緒分析)")
+st.info("📡 市場掃描中... (含基本面 P/E 分析)")
 
 col1, col2 = st.columns(2)
 placeholder_list = []
 
-# 建立佔位符
 for i in range(len(strategies)):
     with (col1 if i % 2 == 0 else col2):
         placeholder_list.append(st.empty())
 
-# 逐一計算並顯示
 for i, (key, config) in enumerate(strategies.items()):
     with placeholder_list[i].container():
         st.text(f"⏳ 分析 {config['name']}...")
@@ -330,7 +362,6 @@ for i, (key, config) in enumerate(strategies.items()):
         
         st.caption(f"建議: {row['Action']}")
         
-        # 顯示財報與情緒 (如果有)
         if row.get('Fund') or row.get('Sent'):
             c1, c2 = st.columns(2)
             with c1: 
