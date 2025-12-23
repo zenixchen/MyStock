@@ -11,14 +11,14 @@ from transformers import pipeline
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2025 量化戰情室 (FinBERT版)",
+    page_title="2025 量化戰情室 (AI 增強版)",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📱 2025 全明星量化戰情室 (AI 旗艦版)")
-st.caption("特色: FinBERT金融情緒分析(含思考過程) + 財報估值 + ATR波動預測")
+st.title("📱 2025 全明星量化戰情室 (AI 增強版)")
+st.caption("特色: FinBERT 情緒分析 (標題+摘要) + 財報估值 + ATR 波動預測")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
@@ -68,7 +68,7 @@ def get_fundamentals(symbol):
         return None
 
 # ==========================================
-# ★ 模組 2: Level 3 FinBERT 情緒分析 (防呆修正版)
+# ★ 模組 2: Level 3.5 FinBERT 情緒分析 (標題+摘要)
 # ==========================================
 
 @st.cache_resource
@@ -86,33 +86,41 @@ def analyze_sentiment_finbert(symbol):
         # 載入模型
         classifier = load_finbert_model()
         
-        headlines = []
-        # ★ 修正點：更安全地抓取標題
-        for item in news_list[:5]:
-            # 嘗試方法 A: 直接抓 title
+        texts_to_analyze = []  # 準備給 AI 讀的文字 (標題+摘要)
+        display_titles = []    # 準備顯示給人類看的 (只顯示標題)
+        
+        # 分析最新的 5 則，增加準確度
+        for item in news_list[:5]: 
+            # 1. 嘗試抓標題
             title = item.get('title')
-            
-            # 嘗試方法 B: 如果沒有，去 content 裡面抓 (yfinance 新格式)
             if not title and 'content' in item:
                 title = item['content'].get('title')
             
-            # 如果抓到了，且不是空字串，才加進去
-            if title:
-                headlines.append(title)
+            # 2. 嘗試抓摘要 (Summary)
+            summary = item.get('summary', '') 
             
-        if not headlines: return 0, "無新聞 (格式不符)", []
+            if title:
+                # ★ 關鍵修改：組合成「標題 + 摘要」給 AI 讀
+                # 這樣 AI 就能讀到 "Revenue hits record. The company reported..."
+                full_text = f"{title}. {summary}"
+                
+                # 截斷過長文字以免超過 AI 腦容量 (FinBERT 限制約 512 token)
+                texts_to_analyze.append(full_text[:512])
+                display_titles.append(title)
+            
+        if not texts_to_analyze: return 0, "無新聞 (格式不符)", []
 
-        # AI 開始閱讀
-        results = classifier(headlines)
+        # AI 開始閱讀 (這次讀的是長文)
+        results = classifier(texts_to_analyze)
         
         total_score = 0
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
-        debug_logs = []
+        debug_logs = [] 
         
         for i, res in enumerate(results):
             sentiment = res['label']
             confidence = res['score']
-            title = headlines[i]
+            title = display_titles[i]
             
             # 計算分數
             total_score += score_map[sentiment] * confidence
@@ -122,16 +130,16 @@ def analyze_sentiment_finbert(symbol):
             if sentiment == "positive": icon = "🔥"
             elif sentiment == "negative": icon = "❄️"
             
+            # Log 顯示標題就好，不然版面會太亂
             log_entry = f"{icon} {sentiment.upper()} ({confidence:.2f}): {title}"
             debug_logs.append(log_entry)
             
-        avg_score = total_score / len(headlines)
-        latest_news = headlines[0]
+        avg_score = total_score / len(texts_to_analyze)
+        latest_news = display_titles[0]
         
         return avg_score, latest_news, debug_logs
         
     except Exception as e:
-        # 這裡會顯示具體的錯誤原因，幫助除錯
         return 0, f"AI 分析失敗: {str(e)[:50]}...", []
 
 # ==========================================
@@ -326,7 +334,7 @@ def analyze_ticker(config):
         elif score > 0.1: sent_msg = f"🙂 偏樂觀 (+{score:.2f})"
         elif score < -0.5: sent_msg = f"❄️ 極度悲觀 ({score:.2f})"
         elif score < -0.1: sent_msg = f"😨 偏悲觀 ({score:.2f})"
-        else: sent_msg = f"⚪ 中立事實 ({score:.2f})"
+        else: sent_msg = f"⚪ 中立/無感 ({score:.2f})"
 
         # ATR 預測
         p_high, p_low = predict_volatility(df_daily)
@@ -471,7 +479,7 @@ for i, (key, config) in enumerate(strategies.items()):
                 st.markdown(f"**🔮 明日預測:** {row['Pred']}")
             
             if row.get('News') and row['News'] != "無新聞":
-                # ★ 新功能：點擊展開 AI 的思考過程
+                # ★ 這裡會展開顯示 AI 的思考過程
                 with st.expander("🧐 AI 思考過程 (點擊展開)"):
                     if row.get('Logs'):
                         for log in row['Logs']:
