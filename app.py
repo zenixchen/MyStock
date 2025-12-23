@@ -68,7 +68,7 @@ def get_fundamentals(symbol):
         return None
 
 # ==========================================
-# ★ 模組 2: Level 3 FinBERT 情緒分析 (顯示思考過程版)
+# ★ 模組 2: Level 3 FinBERT 情緒分析 (防呆修正版)
 # ==========================================
 
 @st.cache_resource
@@ -87,18 +87,27 @@ def analyze_sentiment_finbert(symbol):
         classifier = load_finbert_model()
         
         headlines = []
-        # 分析最新的 5 則，增加準確度
-        for item in news_list[:5]: 
-            headlines.append(item['title'])
+        # ★ 修正點：更安全地抓取標題
+        for item in news_list[:5]:
+            # 嘗試方法 A: 直接抓 title
+            title = item.get('title')
             
-        if not headlines: return 0, "無新聞", []
+            # 嘗試方法 B: 如果沒有，去 content 裡面抓 (yfinance 新格式)
+            if not title and 'content' in item:
+                title = item['content'].get('title')
+            
+            # 如果抓到了，且不是空字串，才加進去
+            if title:
+                headlines.append(title)
+            
+        if not headlines: return 0, "無新聞 (格式不符)", []
 
         # AI 開始閱讀
         results = classifier(headlines)
         
         total_score = 0
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
-        debug_logs = [] # 用來存 AI 的思考細節
+        debug_logs = []
         
         for i, res in enumerate(results):
             sentiment = res['label']
@@ -113,7 +122,6 @@ def analyze_sentiment_finbert(symbol):
             if sentiment == "positive": icon = "🔥"
             elif sentiment == "negative": icon = "❄️"
             
-            # 格式: [圖示] 情緒 (信心度): 新聞標題
             log_entry = f"{icon} {sentiment.upper()} ({confidence:.2f}): {title}"
             debug_logs.append(log_entry)
             
@@ -123,7 +131,8 @@ def analyze_sentiment_finbert(symbol):
         return avg_score, latest_news, debug_logs
         
     except Exception as e:
-        return 0, f"AI 分析失敗: {str(e)[:20]}...", []
+        # 這裡會顯示具體的錯誤原因，幫助除錯
+        return 0, f"AI 分析失敗: {str(e)[:50]}...", []
 
 # ==========================================
 # ★ 模組 3: ATR 波動預測
