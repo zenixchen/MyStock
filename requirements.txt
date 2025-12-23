@@ -1,3 +1,7 @@
 streamlit
-yfinance
+pandas
 pandas_ta
+yfinance
+numpy
+transformers
+torch
