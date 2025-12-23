@@ -4,7 +4,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime
-# ★ 新增：深度學習 NLP 套件
+# ★ 深度學習 NLP 套件
 from transformers import pipeline
 
 # ==========================================
@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 st.title("📱 2025 全明星量化戰情室 (AI 旗艦版)")
-st.caption("特色: FinBERT金融情緒分析 + 財報估值 + ATR波動預測")
+st.caption("特色: FinBERT金融情緒分析(含思考過程) + 財報估值 + ATR波動預測")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
@@ -68,56 +68,62 @@ def get_fundamentals(symbol):
         return None
 
 # ==========================================
-# ★ 模組 2: Level 3 FinBERT 情緒分析 (核心升級)
+# ★ 模組 2: Level 3 FinBERT 情緒分析 (顯示思考過程版)
 # ==========================================
 
-# 使用 cache_resource 確保模型只載入一次 (省時間/省記憶體)
 @st.cache_resource
 def load_finbert_model():
-    # 下載並快取 ProsusAI/finbert 模型
     return pipeline("sentiment-analysis", model="ProsusAI/finbert")
 
 def analyze_sentiment_finbert(symbol):
     try:
-        if "=" in symbol or "^" in symbol: return 0, "無新聞"
+        if "=" in symbol or "^" in symbol: return 0, "無新聞", []
         stock = yf.Ticker(symbol)
         news_list = stock.news
         
-        if not news_list: return 0, "無新聞"
+        if not news_list: return 0, "無新聞", []
         
-        # 載入模型 (第一次會很久)
+        # 載入模型
         classifier = load_finbert_model()
         
         headlines = []
-        for item in news_list[:3]: # 分析最新的 3 則
+        # 分析最新的 5 則，增加準確度
+        for item in news_list[:5]: 
             headlines.append(item['title'])
             
-        if not headlines: return 0, "無新聞"
+        if not headlines: return 0, "無新聞", []
 
-        # AI 開始閱讀新聞
+        # AI 開始閱讀
         results = classifier(headlines)
         
-        # 計算分數 (Positive=1, Negative=-1, Neutral=0)
         total_score = 0
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
+        debug_logs = [] # 用來存 AI 的思考細節
         
-        for res in results:
-            # res 格式: {'label': 'positive', 'score': 0.95}
+        for i, res in enumerate(results):
             sentiment = res['label']
             confidence = res['score']
+            title = headlines[i]
             
-            # 分數 = 方向 * 信心度 (例如非常確定的利多 = 1 * 0.99)
+            # 計算分數
             total_score += score_map[sentiment] * confidence
             
-        # 平均分數
+            # 記錄細節
+            icon = "⚪"
+            if sentiment == "positive": icon = "🔥"
+            elif sentiment == "negative": icon = "❄️"
+            
+            # 格式: [圖示] 情緒 (信心度): 新聞標題
+            log_entry = f"{icon} {sentiment.upper()} ({confidence:.2f}): {title}"
+            debug_logs.append(log_entry)
+            
         avg_score = total_score / len(headlines)
         latest_news = headlines[0]
         
-        return avg_score, latest_news
+        return avg_score, latest_news, debug_logs
         
     except Exception as e:
-        # 如果出錯 (例如網路連不到 HuggingFace)，回傳錯誤
-        return 0, f"AI 分析失敗: {str(e)[:20]}..."
+        return 0, f"AI 分析失敗: {str(e)[:20]}...", []
 
 # ==========================================
 # ★ 模組 3: ATR 波動預測
@@ -303,15 +309,15 @@ def analyze_ticker(config):
                      pe_str = "無PE"
             fund_msg = f"{growth_str} | {pe_str}"
 
-        # ★ FinBERT 情緒分析
-        # 分數範圍在 -1 到 1 之間
-        score, news_title = analyze_sentiment_finbert(symbol)
+        # ★ FinBERT 情緒分析 (接收詳細 Logs)
+        score, news_title, debug_logs = analyze_sentiment_finbert(symbol)
+        
         sent_msg = ""
         if score > 0.5: sent_msg = f"🔥 極度樂觀 (+{score:.2f})"
         elif score > 0.1: sent_msg = f"🙂 偏樂觀 (+{score:.2f})"
         elif score < -0.5: sent_msg = f"❄️ 極度悲觀 ({score:.2f})"
         elif score < -0.1: sent_msg = f"😨 偏悲觀 ({score:.2f})"
-        else: sent_msg = f"⚪ 中立/無感 ({score:.2f})"
+        else: sent_msg = f"⚪ 中立事實 ({score:.2f})"
 
         # ATR 預測
         p_high, p_low = predict_volatility(df_daily)
@@ -327,7 +333,7 @@ def analyze_ticker(config):
         elif "BUY" in signal and is_cheap:
             final_signal = "💰 VALUE BUY"
             action_msg += " (估值便宜)"
-        # 增加一個情緒濾網：如果技術面買進，但AI讀新聞覺得很不妙
+        # 增加一個情緒濾網
         if "BUY" in signal and score < -0.5:
              action_msg += " ⚠️ 但新聞極度悲觀"
 
@@ -343,10 +349,11 @@ def analyze_ticker(config):
             "Fund": fund_msg,
             "Sent": sent_msg,
             "News": news_title,
-            "Pred": pred_msg
+            "Pred": pred_msg,
+            "Logs": debug_logs # ★ 多傳這個出去
         }
     except Exception as e:
-        return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR"}
+        return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR", "Logs": []}
 
 # ==========================================
 # 3. 執行區
@@ -390,6 +397,7 @@ with st.sidebar:
         **FinBERT 情緒 AI**
         🔥 > 0.5: 強烈利多新聞
         ❄️ < -0.5: 強烈利空新聞
+        ⚪ 中立: 多為事實陳述
         
         **ATR 波動預測**
         預測明日股價的安全活動範圍。
@@ -448,14 +456,20 @@ for i, (key, config) in enumerate(strategies.items()):
             with c1: 
                 if row.get('Fund'): st.markdown(f"**財報:** {row['Fund']}")
             with c2: 
-                if row.get('Sent'): st.markdown(f"**情緒:** {row['Sent']}") # 這裡現在顯示的是 AI 判斷結果
+                if row.get('Sent'): st.markdown(f"**情緒:** {row['Sent']}")
             
             if row.get('Pred'):
                 st.markdown(f"**🔮 明日預測:** {row['Pred']}")
             
             if row.get('News') and row['News'] != "無新聞":
-                with st.expander("AI 閱讀頭條"):
-                    st.caption(row['News'])
+                # ★ 新功能：點擊展開 AI 的思考過程
+                with st.expander("🧐 AI 思考過程 (點擊展開)"):
+                    if row.get('Logs'):
+                        for log in row['Logs']:
+                            st.text(log)
+                    else:
+                        st.text(f"最新頭條: {row['News']}")
+                        st.caption("(AI 認為皆為中立/無情緒波動)")
         
         st.divider()
         st.text(f"掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
