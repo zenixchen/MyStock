@@ -98,7 +98,7 @@ def analyze_sentiment_basic(symbol):
         return 0, "分析失敗"
 
 # ==========================================
-# ★ 模組 3: ATR 波動預測 (新增功能)
+# ★ 模組 3: ATR 波動預測
 # ==========================================
 def predict_volatility(df):
     try:
@@ -279,4 +279,238 @@ def analyze_ticker(config):
         # ==========================
         fund_data = get_fundamentals(symbol)
         fund_msg = ""
-        is_growth =
+        is_growth = False
+        is_cheap = False
+        
+        # 財報判斷
+        if fund_data:
+            g = fund_data['growth'] if fund_data['growth'] else 0
+            pe = fund_data['pe']
+            eps = fund_data['eps']
+            
+            # 成長判斷
+            growth_str = ""
+            if g > 0.2: 
+                growth_str = f"💎高成長"
+                is_growth = True
+            elif g > 0: growth_str = f"🟢穩健"
+            else: growth_str = f"⚠️衰退"
+
+            # P/E 判斷
+            pe_str = ""
+            if pe is not None:
+                if pe < 0: pe_str = "虧損無PE"
+                elif pe < 15: 
+                    pe_str = f"🟢低估(PE {pe:.1f})"
+                    is_cheap = True
+                elif pe < 30: pe_str = f"⚪適中(PE {pe:.1f})"
+                elif pe >= 30:
+                    if is_growth: pe_str = f"🟠偏高(PE {pe:.1f})"
+                    else: pe_str = f"🔴太貴(PE {pe:.1f})"
+            else:
+                if eps is not None and eps < 0:
+                     pe_str = f"💀虧損(EPS {eps:.2f})"
+                else:
+                     pe_str = "無PE"
+            
+            fund_msg = f"{growth_str} | {pe_str}"
+
+        # 情緒分析
+        score, news_title = analyze_sentiment_basic(symbol)
+        sent_msg = ""
+        if score > 0: sent_msg = f"🔥 樂觀 (+{score})"
+        elif score < 0: sent_msg = f"❄️ 悲觀 ({score})"
+        else: sent_msg = "⚪ 中立"
+
+        # ★ 新增：ATR 波動預測
+        p_high, p_low = predict_volatility(df_daily)
+        pred_msg = ""
+        if p_high and p_low:
+             # 算出波動百分比
+             vol_pct = (p_high - p_low) / live_price * 100
+             pred_msg = f"區間: ${p_low:.2f} ~ ${p_high:.2f} (波動 {vol_pct:.1f}%)"
+
+        # 訊號升級邏輯
+        final_signal = signal
+        if "BUY" in signal and is_growth:
+            final_signal = "💎 STRONG BUY"
+            action_msg += " (財報護體)"
+        elif "BUY" in signal and is_cheap:
+            final_signal = "💰 VALUE BUY"
+            action_msg += " (估值便宜)"
+
+        return {
+            "Symbol": symbol,
+            "Name": config['name'],
+            "Price": live_price,
+            "Signal": final_signal,
+            "Action": action_msg,
+            "Buy_At": buy_at,
+            "Sell_At": sell_at,
+            "Type": signal_type,
+            "Fund": fund_msg,
+            "Sent": sent_msg,
+            "News": news_title,
+            "Pred": pred_msg # 回傳 ATR 預測
+        }
+    except Exception as e:
+        return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR"}
+
+# ==========================================
+# 3. 執行區
+# ==========================================
+
+# A. 側邊欄 (修正版：使用 fast_info 確保數據準確)
+with st.sidebar:
+    st.header("🇹🇼 台股雷達")
+    
+    # 定義一個安全抓取即時資訊的函數
+    def get_fast_info(ticker_symbol):
+        try:
+            t = yf.Ticker(ticker_symbol)
+            # fast_info 是 yfinance 較新的功能，抓報價極快且準
+            curr = t.fast_info['last_price']
+            prev = t.fast_info['previous_close']
+            return curr, prev
+        except:
+            return None, None
+
+    try:
+        with st.spinner('更新台股數據中...'):
+            # 1. 抓大盤 (加權指數)
+            twii_now, twii_prev = get_fast_info("^TWII")
+            
+            # 2. 抓台積電 (台股 & 美股)
+            tsm_tw_now, _ = get_fast_info("2330.TW")
+            tsm_us_now, _ = get_fast_info("TSM")
+            
+            # 3. 抓匯率
+            usd_now, _ = get_fast_info("TWD=X")
+
+        # --- 顯示邏輯 ---
+        if twii_now and twii_prev:
+            change_pct = (twii_now - twii_prev) / twii_prev * 100
+            
+            # 根據漲跌變色
+            color = "normal"
+            if change_pct > 0: color = "off" # Streamlit metric 綠色是 normal/off
+            
+            st.metric(
+                label="台股加權指數",
+                value=f"{twii_now:,.0f}",
+                delta=f"{change_pct:+.2f}%"
+            )
+        else:
+            st.error("無法取得大盤數據")
+
+        # --- TSM 溢價計算 ---
+        if tsm_tw_now and tsm_us_now and usd_now:
+            # 公式: (台股 * 5) / 匯率 = ADR合理價
+            fair_adr = (tsm_tw_now * 5) / usd_now
+            premium = ((tsm_us_now - fair_adr) / fair_adr * 100)
+            
+            st.metric(
+                label="TSM ADR 溢價率",
+                value=f"{premium:+.2f}%",
+                delta="美股 vs 台股",
+                delta_color="inverse" # 溢價太高顯示紅色(警告)
+            )
+            
+            # 判讀燈號
+            if premium > 5: st.warning("⚠️ 溢價過高 (美股太貴)")
+            elif premium < -2: st.success("🚀 折價 (美股便宜)")
+            else: st.info("✅ 價格合理 (正常區間)")
+            
+            # 顯示詳細數字 (除錯用，讓您安心)
+            with st.expander("查看換算細節"):
+                st.write(f"台股價格: {tsm_tw_now:.0f} TWD")
+                st.write(f"美金匯率: {usd_now:.2f}")
+                st.write(f"ADR合理價: {fair_adr:.2f} USD")
+                st.write(f"ADR現價: {tsm_us_now:.2f} USD")
+                
+        else:
+            st.warning("台積電/匯率數據連線中...")
+
+    except Exception as e:
+        st.error(f"側邊欄數據異常: {e}")
+
+    st.divider()
+    # (下方的 P/E 指南保持不變，不用動)
+    with st.expander("📚 P/E (本益比) 判讀指南", expanded=True):
+        st.markdown("""
+        **P/E = 股價 / 每股盈餘**
+        
+        🟢 **< 15 (低估)**: 價值投資區。
+        ⚪ **15-30 (合理)**: 市場平均。
+        🟠 **> 30 (偏貴)**: 需有高成長支撐。
+        💀 **虧損**: 公司賠錢中 (如 BA)。
+        """)
+
+# B. 策略掃描
+strategies = {
+    "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
+    "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
+    "BA": { "symbol": "BA", "name": "BA (波音)", "mode": "SUPERTREND", "period": 15, "multiplier": 1.0 },
+    "NVDA": { "symbol": "NVDA", "name": "NVDA (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    "QQQ": { "symbol": "QQQ", "name": "QQQ (穩健)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+    "QLD": { "symbol": "QLD", "name": "QLD (2倍)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+    "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (3倍)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
+    "EDZ": { "symbol": "EDZ", "name": "EDZ (救援)", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
+    "SOXL_S": { "symbol": "SOXL", "name": "SOXL (狙擊)", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
+    "SOXL_F": { "symbol": "SOXL", "name": "SOXL (快攻)", "mode": "KD", "entry_k": 10, "exit_k": 75 },
+    "BTC_W": { "symbol": "BTC-USD", "name": "BTC (波段)", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
+    "BTC_F": { "symbol": "BTC-USD", "name": "BTC (閃電)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
+    "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
+}
+
+st.info("📡 市場掃描中... (含基本面 P/E 分析)")
+
+col1, col2 = st.columns(2)
+placeholder_list = []
+
+for i in range(len(strategies)):
+    with (col1 if i % 2 == 0 else col2):
+        placeholder_list.append(st.empty())
+
+for i, (key, config) in enumerate(strategies.items()):
+    with placeholder_list[i].container():
+        st.text(f"⏳ 分析 {config['name']}...")
+    
+    row = analyze_ticker(config)
+    
+    placeholder_list[i].empty()
+    with placeholder_list[i].container(border=True):
+        st.subheader(f"{row['Name']}")
+        
+        if row['Price'] > 0: st.write(f"**${row['Price']:,.2f}**")
+        else: st.write("**Data Error**")
+
+        if "STRONG BUY" in row['Signal']: st.success(f"💎 {row['Signal']}")
+        elif "BUY" in row['Signal']: st.success(f"{row['Signal']}")
+        elif "SELL" in row['Signal']: st.error(f"{row['Signal']}")
+        elif "HOLD" in row['Signal']: st.info(f"{row['Signal']}")
+        elif "ERR" in row['Type']: st.error(f"錯誤: {row['Action']}")
+        else: st.write(f"⚪ {row['Signal']}")
+        
+        st.caption(f"建議: {row['Action']}")
+        
+        # 顯示財報、情緒、ATR預測
+        if row.get('Fund') or row.get('Sent') or row.get('Pred'):
+            c1, c2 = st.columns(2)
+            with c1: 
+                if row.get('Fund'): st.markdown(f"**財報:** {row['Fund']}")
+            with c2: 
+                if row.get('Sent'): st.markdown(f"**情緒:** {row['Sent']}")
+            
+            if row.get('Pred'):
+                st.markdown(f"**🔮 明日預測:** {row['Pred']}")
+            
+            if row.get('News') and row['News'] != "無新聞":
+                with st.expander("最新頭條"):
+                    st.caption(row['News'])
+        
+        st.divider()
+        st.text(f"掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
+
+st.caption("✅ 掃描完成 | Auto-generated by Gemini AI")
