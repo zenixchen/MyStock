@@ -11,14 +11,14 @@ from transformers import pipeline
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2025 量化戰情室 (AI 增強版)",
-    page_icon="🧠",
+    page_title="2025 量化戰情室 (旗艦版)",
+    page_icon="🔥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📱 2025 全明星量化戰情室 (AI 增強版)")
-st.caption("特色: FinBERT 情緒分析 (標題+摘要) + 財報估值 + ATR 波動預測")
+st.title("📱 2025 全明星量化戰情室 (旗艦版)")
+st.caption("五維分析: 技術 + 財報 + FinBERT情緒 + ATR波動 + 籌碼(OBV/空單)")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
@@ -40,14 +40,14 @@ def get_real_live_price(symbol):
 
 def get_safe_data(ticker):
     try:
-        df = yf.download(ticker, period="1y", interval="1d", progress=False, timeout=10)
+        df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         return df
     except: return None
 
 # ==========================================
-# ★ 模組 1: 財報基本面
+# ★ 模組 1: 財報基本面 (含空單數據)
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_fundamentals(symbol):
@@ -63,14 +63,23 @@ def get_fundamentals(symbol):
         pe_ratio = info.get('trailingPE', None)
         eps = info.get('trailingEps', None)
         
-        return {"growth": rev_growth, "pe": pe_ratio, "eps": eps}
+        # ★ 籌碼數據
+        inst_hold = info.get('heldPercentInstitutions', 0) # 機構持股
+        short_float = info.get('shortPercentOfFloat', 0)   # 空單比例 (美股專用)
+        
+        return {
+            "growth": rev_growth, 
+            "pe": pe_ratio, 
+            "eps": eps, 
+            "inst": inst_hold,
+            "short": short_float
+        }
     except:
         return None
 
 # ==========================================
-# ★ 模組 2: Level 3.5 FinBERT 情緒分析 (標題+摘要)
+# ★ 模組 2: FinBERT 情緒分析 (標題+摘要)
 # ==========================================
-
 @st.cache_resource
 def load_finbert_model():
     return pipeline("sentiment-analysis", model="ProsusAI/finbert")
@@ -83,54 +92,41 @@ def analyze_sentiment_finbert(symbol):
         
         if not news_list: return 0, "無新聞", []
         
-        # 載入模型
         classifier = load_finbert_model()
         
-        texts_to_analyze = []  # 準備給 AI 讀的文字 (標題+摘要)
-        display_titles = []    # 準備顯示給人類看的 (只顯示標題)
+        texts_to_analyze = []
+        display_titles = []
         
-        # 分析最新的 5 則，增加準確度
-        for item in news_list[:5]: 
-            # 1. 嘗試抓標題
+        for item in news_list[:5]:
             title = item.get('title')
             if not title and 'content' in item:
                 title = item['content'].get('title')
-            
-            # 2. 嘗試抓摘要 (Summary)
-            summary = item.get('summary', '') 
+            summary = item.get('summary', '')
             
             if title:
-                # ★ 關鍵修改：組合成「標題 + 摘要」給 AI 讀
-                # 這樣 AI 就能讀到 "Revenue hits record. The company reported..."
                 full_text = f"{title}. {summary}"
-                
-                # 截斷過長文字以免超過 AI 腦容量 (FinBERT 限制約 512 token)
                 texts_to_analyze.append(full_text[:512])
                 display_titles.append(title)
             
         if not texts_to_analyze: return 0, "無新聞 (格式不符)", []
 
-        # AI 開始閱讀 (這次讀的是長文)
         results = classifier(texts_to_analyze)
         
         total_score = 0
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
-        debug_logs = [] 
+        debug_logs = []
         
         for i, res in enumerate(results):
             sentiment = res['label']
             confidence = res['score']
             title = display_titles[i]
             
-            # 計算分數
             total_score += score_map[sentiment] * confidence
             
-            # 記錄細節
             icon = "⚪"
             if sentiment == "positive": icon = "🔥"
             elif sentiment == "negative": icon = "❄️"
             
-            # Log 顯示標題就好，不然版面會太亂
             log_entry = f"{icon} {sentiment.upper()} ({confidence:.2f}): {title}"
             debug_logs.append(log_entry)
             
@@ -140,7 +136,7 @@ def analyze_sentiment_finbert(symbol):
         return avg_score, latest_news, debug_logs
         
     except Exception as e:
-        return 0, f"AI 分析失敗: {str(e)[:50]}...", []
+        return 0, f"AI 分析失敗: {str(e)[:20]}...", []
 
 # ==========================================
 # ★ 模組 3: ATR 波動預測
@@ -156,6 +152,47 @@ def predict_volatility(df):
         return last_close + current_atr, last_close - current_atr
     except:
         return None, None
+
+# ==========================================
+# ★ 模組 4: 籌碼量能分析 (OBV + 機構 + 軋空)
+# ==========================================
+def analyze_chips_volume(df, inst_percent, short_percent):
+    try:
+        if df is None or df.empty: return "資料不足"
+        
+        # 1. OBV (能量潮)
+        close = df['Close']
+        volume = df['Volume']
+        obv = ta.obv(close, volume)
+        
+        if obv is None or len(obv) < 20: return "量能計算失敗"
+        
+        curr_obv = obv.iloc[-1]
+        obv_ma = ta.sma(obv, length=20).iloc[-1]
+        
+        chip_msg = ""
+        
+        # 判斷 OBV
+        if curr_obv > obv_ma:
+            chip_msg = "🔴 籌碼流入 (OBV上升)"
+        else:
+            chip_msg = "🟢 籌碼渙散 (OBV下降)"
+            
+        # 2. 機構持股
+        if inst_percent and inst_percent > 0:
+            chip_msg += f" | 機構: {inst_percent*100:.0f}%"
+            
+        # 3. ★ 空單比例 (軋空判斷)
+        if short_percent and short_percent > 0:
+            sp = short_percent * 100
+            if sp > 20:
+                chip_msg += f" | ⚠️ 軋空警戒 ({sp:.1f}%)"
+            elif sp > 10:
+                chip_msg += f" | 空單偏高 ({sp:.1f}%)"
+            
+        return chip_msg
+    except Exception as e:
+        return f"籌碼錯誤: {str(e)}"
 
 # ==========================================
 # 2. 技術指標與決策邏輯
@@ -290,17 +327,21 @@ def analyze_ticker(config):
                  signal, action_msg, signal_type = "☁️ EMPTY", "均線空頭排列，空手觀望", "EMPTY"
 
         # ==========================
-        # 3. 整合：財報 + FinBERT情緒 + ATR
+        # 3. 整合：財報 + 情緒 + ATR + 籌碼
         # ==========================
         fund_data = get_fundamentals(symbol)
         fund_msg = ""
         is_growth = False
         is_cheap = False
+        inst_pct = 0 
+        short_pct = 0 # 空單
         
         if fund_data:
             g = fund_data['growth'] if fund_data['growth'] else 0
             pe = fund_data['pe']
             eps = fund_data['eps']
+            inst_pct = fund_data['inst'] 
+            short_pct = fund_data['short'] # 抓取空單比例
             
             growth_str = ""
             if g > 0.2: 
@@ -326,7 +367,7 @@ def analyze_ticker(config):
                      pe_str = "無PE"
             fund_msg = f"{growth_str} | {pe_str}"
 
-        # ★ FinBERT 情緒分析 (接收詳細 Logs)
+        # FinBERT 情緒
         score, news_title, debug_logs = analyze_sentiment_finbert(symbol)
         
         sent_msg = ""
@@ -334,7 +375,7 @@ def analyze_ticker(config):
         elif score > 0.1: sent_msg = f"🙂 偏樂觀 (+{score:.2f})"
         elif score < -0.5: sent_msg = f"❄️ 極度悲觀 ({score:.2f})"
         elif score < -0.1: sent_msg = f"😨 偏悲觀 ({score:.2f})"
-        else: sent_msg = f"⚪ 中立/無感 ({score:.2f})"
+        else: sent_msg = f"⚪ 中立事實 ({score:.2f})"
 
         # ATR 預測
         p_high, p_low = predict_volatility(df_daily)
@@ -343,6 +384,10 @@ def analyze_ticker(config):
              vol_pct = (p_high - p_low) / live_price * 100
              pred_msg = f"區間: ${p_low:.2f} ~ ${p_high:.2f} (波動 {vol_pct:.1f}%)"
 
+        # ★ 籌碼量能分析 (傳入空單比例)
+        chip_msg = analyze_chips_volume(df_daily, inst_pct, short_pct)
+
+        # 訊號整合
         final_signal = signal
         if "BUY" in signal and is_growth:
             final_signal = "💎 STRONG BUY"
@@ -350,7 +395,7 @@ def analyze_ticker(config):
         elif "BUY" in signal and is_cheap:
             final_signal = "💰 VALUE BUY"
             action_msg += " (估值便宜)"
-        # 增加一個情緒濾網
+        
         if "BUY" in signal and score < -0.5:
              action_msg += " ⚠️ 但新聞極度悲觀"
 
@@ -367,7 +412,8 @@ def analyze_ticker(config):
             "Sent": sent_msg,
             "News": news_title,
             "Pred": pred_msg,
-            "Logs": debug_logs # ★ 多傳這個出去
+            "Chip": chip_msg,
+            "Logs": debug_logs
         }
     except Exception as e:
         return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR", "Logs": []}
@@ -414,10 +460,13 @@ with st.sidebar:
         **FinBERT 情緒 AI**
         🔥 > 0.5: 強烈利多新聞
         ❄️ < -0.5: 強烈利空新聞
-        ⚪ 中立: 多為事實陳述
         
         **ATR 波動預測**
         預測明日股價的安全活動範圍。
+        
+        **籌碼分析 (Chip)**
+        🔴 OBV上升: 籌碼流入 (健康)
+        ⚠️ 軋空警戒: 空單比例 > 20%
         """)
 
 strategies = {
@@ -468,10 +517,12 @@ for i, (key, config) in enumerate(strategies.items()):
         
         st.caption(f"建議: {row['Action']}")
         
-        if row.get('Fund') or row.get('Sent') or row.get('Pred'):
+        if row.get('Fund') or row.get('Sent') or row.get('Pred') or row.get('Chip'):
             c1, c2 = st.columns(2)
             with c1: 
                 if row.get('Fund'): st.markdown(f"**財報:** {row['Fund']}")
+                # ★ 顯示籌碼面 (含軋空)
+                if row.get('Chip'): st.markdown(f"**籌碼:** {row['Chip']}")
             with c2: 
                 if row.get('Sent'): st.markdown(f"**情緒:** {row['Sent']}")
             
@@ -479,7 +530,6 @@ for i, (key, config) in enumerate(strategies.items()):
                 st.markdown(f"**🔮 明日預測:** {row['Pred']}")
             
             if row.get('News') and row['News'] != "無新聞":
-                # ★ 這裡會展開顯示 AI 的思考過程
                 with st.expander("🧐 AI 思考過程 (點擊展開)"):
                     if row.get('Logs'):
                         for log in row['Logs']:
