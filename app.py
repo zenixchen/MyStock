@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 st.title("📱 2025 全明星量化戰情室 (Pro)")
-st.caption("含: 技術指標 + 財報估值(P/E) + NLP情緒分析")
+st.caption("特色: 白話文操作建議 + 財報估值 + NLP情緒分析")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
@@ -45,34 +45,31 @@ def get_safe_data(ticker):
     except: return None
 
 # ==========================================
-# ★ 新增模組 1: 財報基本面 (含 ETF 過濾 & 虧損判斷)
+# ★ 模組 1: 財報基本面 (含 ETF 過濾 & 虧損判斷)
 # ==========================================
-@st.cache_data(ttl=86400) # 財報一天抓一次就好
+@st.cache_data(ttl=86400)
 def get_fundamentals(symbol):
     try:
-        # 1. 排除明顯非個股
         if "=" in symbol or "^" in symbol or "-USD" in symbol: return None 
         
         stock = yf.Ticker(symbol)
         info = stock.info
         
-        # 2. ★ 關鍵修改：嚴格檢查 quoteType
-        # 如果不是 'EQUITY' (個股)，就直接回傳 None (ETF/基金/期貨不顯示財報)
+        # 嚴格檢查 quoteType
         quote_type = info.get('quoteType', '').upper()
         if quote_type != 'EQUITY':
             return None
         
-        # 3. 抓取數據 (含 EPS)
         rev_growth = info.get('revenueGrowth', 0)
-        pe_ratio = info.get('trailingPE', None) # 本益比
-        eps = info.get('trailingEps', None)     # 每股盈餘 (判斷虧損用)
+        pe_ratio = info.get('trailingPE', None)
+        eps = info.get('trailingEps', None)
         
         return {"growth": rev_growth, "pe": pe_ratio, "eps": eps}
     except:
         return None
 
 # ==========================================
-# ★ 新增模組 2: NLP 情緒分析
+# ★ 模組 2: NLP 情緒分析
 # ==========================================
 def analyze_sentiment_basic(symbol):
     try:
@@ -101,7 +98,7 @@ def analyze_sentiment_basic(symbol):
         return 0, "分析失敗"
 
 # ==========================================
-# 2. 技術指標計算邏輯
+# 2. 技術指標與「白話文」決策邏輯
 # ==========================================
 def find_price_for_rsi(df, target_rsi, length=2):
     if df is None or df.empty: return 0
@@ -133,95 +130,138 @@ def analyze_ticker(config):
         close, high, low = calc_df['Close'], calc_df['High'], calc_df['Low']
         curr_price = live_price
 
-        signal, action_msg, signal_type = "💤 WAIT", "觀望", "WAIT"
+        signal, action_msg, signal_type = "💤 WAIT", "觀望中", "WAIT"
         buy_at, sell_at = "---", "---"
 
-        # --- 策略判斷 ---
+        # --- 策略判斷 (Action 改寫為白話文) ---
+        
         if config['mode'] == "SUPERTREND":
+            # 波音策略
             st_data = ta.supertrend(high, low, close, length=config['period'], multiplier=config['multiplier'])
             if st_data is not None:
                 curr_dir, prev_dir, st_value = st_data.iloc[-1, 1], st_data.iloc[-2, 1], st_data.iloc[-1, 0]
-                if prev_dir == -1 and curr_dir == 1: signal, action_msg, signal_type = "🚀 BUY", "趨勢翻多", "BUY"
-                elif prev_dir == 1 and curr_dir == -1: signal, action_msg, signal_type = "📉 SELL", "趨勢翻空", "SELL"
-                elif curr_dir == 1: signal, action_msg, signal_type = "✊ HOLD", f"停利: {st_value:.2f}", "HOLD"
-                else: signal, action_msg, signal_type = "☁️ EMPTY", f"突破 {st_value:.2f} 買", "EMPTY"
+                
                 sell_at = f"${st_value:.2f}"
+                
+                if prev_dir == -1 and curr_dir == 1: 
+                    signal, action_msg, signal_type = "🚀 BUY", "突破壓力線，趨勢翻多", "BUY"
+                elif prev_dir == 1 and curr_dir == -1: 
+                    signal, action_msg, signal_type = "📉 SELL", "跌破支撐線，趨勢翻空", "SELL"
+                elif curr_dir == 1: 
+                    signal, action_msg, signal_type = "✊ HOLD", f"多頭趨勢中 (停損價 {st_value:.2f})", "HOLD"
+                else: 
+                    signal, action_msg, signal_type = "☁️ EMPTY", f"空頭排列，等待突破 {st_value:.2f}", "EMPTY"
 
         elif config['mode'] == "FUSION":
+            # NVDA/GOOGL 策略
             curr_rsi = ta.rsi(close, length=config['rsi_len']).iloc[-1]
             trend_ma = ta.ema(close, length=config['ma_trend']).iloc[-1]
+            
             b_price = find_price_for_rsi(df_daily, config['entry_rsi'], length=config['rsi_len'])
             s_price = find_price_for_rsi(df_daily, config['exit_rsi'], length=config['rsi_len'])
             buy_at, sell_at = f"${b_price:.2f}", f"${s_price:.2f}"
+            
             is_buy = (curr_price > trend_ma) and (curr_rsi < config['entry_rsi'])
-            if is_buy: signal, action_msg, signal_type = "🔥 BUY", "RSI低+趨勢安", "BUY"
-            elif curr_rsi > config['exit_rsi']: signal, action_msg, signal_type = "💰 SELL", "RSI過熱", "SELL"
-            else: action_msg = f"RSI: {curr_rsi:.1f}"
+            
+            if is_buy: 
+                signal, action_msg, signal_type = "🔥 BUY", "趨勢向上且短線超跌，強力買進", "BUY"
+            elif curr_rsi > config['exit_rsi']: 
+                signal, action_msg, signal_type = "💰 SELL", "RSI過熱 (超買)，建議獲利了結", "SELL"
+            else: 
+                action_msg = f"趨勢多頭，等待回檔 (RSI: {curr_rsi:.1f})"
 
         elif config['mode'] in ["RSI_RSI", "RSI_MA"]:
+            # KO, QQQ, QLD 策略
             rsi_len = config.get('rsi_len', 14)
             curr_rsi = ta.rsi(close, length=rsi_len).iloc[-1]
             use_trend = config.get('ma_trend', 0) > 0
             is_trend_ok = (curr_price > ta.ema(close, length=config['ma_trend']).iloc[-1]) if use_trend else True
+            
             b_price = find_price_for_rsi(df_daily, config['entry_rsi'], length=rsi_len)
             buy_at = f"${b_price:.2f}"
+            
             s_val = 0
-            if config['mode'] == "RSI_RSI":
+            if config['mode'] == "RSI_RSI": # 純 RSI 策略 (KO, TQQQ)
                 s_val = find_price_for_rsi(df_daily, config['exit_rsi'], length=rsi_len)
                 sell_at = f"${s_val:.2f}"
-            else:
+                
+                if is_trend_ok and curr_rsi < config['entry_rsi']: 
+                    signal, action_msg, signal_type = "🔥 BUY", f"RSI低檔 ({curr_rsi:.1f})，甜蜜點浮現", "BUY"
+                elif curr_rsi > config['exit_rsi']: 
+                    signal, action_msg, signal_type = "💰 SELL", f"RSI高檔 ({curr_rsi:.1f})，建議賣出", "SELL"
+                else: 
+                    action_msg = f"區間震盪，等待兩端 (RSI: {curr_rsi:.1f})"
+
+            else: # RSI + MA 策略 (QQQ, QLD)
                 s_val = ta.sma(close, length=config['exit_ma']).iloc[-1]
                 sell_at = f"${s_val:.2f} (MA)"
-            if is_trend_ok and curr_rsi < config['entry_rsi']: signal, action_msg, signal_type = "🔥 BUY", f"RSI<{config['entry_rsi']}", "BUY"
-            elif config['mode']=="RSI_RSI" and curr_rsi > config['exit_rsi']: signal, action_msg, signal_type = "💰 SELL", f"RSI>{config['exit_rsi']}", "SELL"
-            elif config['mode']=="RSI_MA" and curr_price > s_val: signal, action_msg, signal_type = "💰 SELL", "站上均線", "SELL"
-            else: action_msg = f"RSI: {curr_rsi:.1f}"
+                
+                if is_trend_ok and curr_rsi < config['entry_rsi']: 
+                    signal, action_msg, signal_type = "🔥 BUY", f"短線超賣 (RSI<{config['entry_rsi']})，進場布局", "BUY"
+                elif curr_price > s_val: 
+                    # 這裡就是您原本看不懂的地方，改為白話文
+                    signal, action_msg, signal_type = "💰 SELL", f"反彈至均線壓力 ({config['exit_ma']}MA)，獲利了結", "SELL"
+                else: 
+                    action_msg = f"等待機會 (RSI: {curr_rsi:.1f})"
 
         elif config['mode'] == "KD":
+            # 匯率 / SOXL_F 策略
             stoch = ta.stoch(high, low, close, k=9, d=3, smooth_k=3)
             curr_k = stoch.iloc[:, 0].iloc[-1]
             buy_at, sell_at = f"K<{config['entry_k']}", f"K>{config['exit_k']}"
-            if curr_k < config['entry_k']: signal, action_msg, signal_type = "🚀 BUY", f"K值{curr_k:.1f}低", "BUY"
-            elif curr_k > config['exit_k']: signal, action_msg, signal_type = "💀 SELL", f"K值{curr_k:.1f}高", "SELL"
-            else: action_msg = f"K值: {curr_k:.1f}"
+            
+            if curr_k < config['entry_k']: 
+                if "TWD" in symbol:
+                    signal, action_msg, signal_type = "💵 BUY", "美元超跌 (便宜)，分批換匯", "BUY"
+                else:
+                    signal, action_msg, signal_type = "🚀 BUY", f"KD低檔黃金交叉區，進場", "BUY"
+            elif curr_k > config['exit_k']: 
+                if "TWD" in symbol:
+                    signal, action_msg, signal_type = "📉 SELL", "美元過熱 (太貴)，暫停買進", "SELL"
+                else:
+                    signal, action_msg, signal_type = "💀 SELL", f"KD高檔鈍化，建議賣出", "SELL"
+            else: 
+                action_msg = f"盤整中 (K值: {curr_k:.1f})"
 
         elif config['mode'] == "BOLL_RSI":
+            # EDZ 策略
             rsi_len = config.get('rsi_len', 14)
             rsi_val = ta.rsi(close, length=rsi_len).iloc[-1]
             bb = ta.bbands(close, length=20, std=2)
             lower, mid, upper = bb.iloc[:, 0].iloc[-1], bb.iloc[:, 1].iloc[-1], bb.iloc[:, 2].iloc[-1]
             buy_at, sell_at = f"${lower:.2f}", f"${mid:.2f}"
-            if "TWD" in symbol: 
-                if curr_price < lower and rsi_val < config['entry_rsi']: signal, action_msg, signal_type = "💵 BUY", "超跌+破下軌", "BUY"
-                elif curr_price >= upper: signal, action_msg, signal_type = "📉 SELL", "太貴(上軌)", "SELL"
-                else: action_msg = f"RSI: {rsi_val:.1f}"
-            else:
-                if curr_price < lower and rsi_val < config['entry_rsi']: signal, action_msg, signal_type = "🚑 BUY", "救援機會", "BUY"
-                elif curr_price >= upper or rsi_val > 90: signal, action_msg, signal_type = "💀 SELL", "過熱出場", "SELL"
-                elif curr_price >= mid: signal, action_msg, signal_type = "⚠️ HOLD", "減碼觀望", "HOLD"
-                else: action_msg = f"RSI: {rsi_val:.1f}"
+            
+            if curr_price < lower and rsi_val < config['entry_rsi']: 
+                signal, action_msg, signal_type = "🚑 BUY", "嚴重超跌 (破下軌)，搶反彈", "BUY"
+            elif curr_price >= upper or rsi_val > 90: 
+                signal, action_msg, signal_type = "💀 SELL", "嚴重超買 (觸上軌)，快逃", "SELL"
+            elif curr_price >= mid: 
+                signal, action_msg, signal_type = "⚠️ HOLD", "反彈至中軸，減碼觀望", "HOLD"
+            else: 
+                action_msg = f"布林通道震盪中 (RSI: {rsi_val:.1f})"
 
         elif config['mode'] == "MA_CROSS":
              fast = ta.sma(close, length=config['fast_ma']).iloc[-1]
              slow = ta.sma(close, length=config['slow_ma']).iloc[-1]
-             if fast > slow: signal, action_msg, signal_type = "✊ HOLD", "多頭排列", "HOLD"
-             else: signal, action_msg, signal_type = "☁️ EMPTY", "空頭排列", "EMPTY"
+             if fast > slow: 
+                 signal, action_msg, signal_type = "✊ HOLD", "均線多頭排列，續抱", "HOLD"
+             else: 
+                 signal, action_msg, signal_type = "☁️ EMPTY", "均線空頭排列，空手觀望", "EMPTY"
 
         # ==========================
-        # ★ 整合：財報(成長+PE) + 情緒
+        # 3. 整合：財報(成長+PE) + 情緒
         # ==========================
         fund_data = get_fundamentals(symbol)
         fund_msg = ""
         is_growth = False
         is_cheap = False
         
-        # 只有當 get_fundamentals 回傳非 None 時 (即個股)，才處理財報字串
         if fund_data:
             g = fund_data['growth'] if fund_data['growth'] else 0
             pe = fund_data['pe']
-            eps = fund_data['eps'] # 取得 EPS
+            eps = fund_data['eps']
             
-            # 1. 成長判斷
+            # 成長判斷
             growth_str = ""
             if g > 0.2: 
                 growth_str = f"💎高成長"
@@ -229,10 +269,11 @@ def analyze_ticker(config):
             elif g > 0: growth_str = f"🟢穩健"
             else: growth_str = f"⚠️衰退"
 
-            # 2. P/E 判斷 (含虧損邏輯)
+            # P/E 判斷
             pe_str = ""
             if pe is not None:
-                if pe < 15: 
+                if pe < 0: pe_str = "虧損無PE"
+                elif pe < 15: 
                     pe_str = f"🟢低估(PE {pe:.1f})"
                     is_cheap = True
                 elif pe < 30: pe_str = f"⚪適中(PE {pe:.1f})"
@@ -240,7 +281,6 @@ def analyze_ticker(config):
                     if is_growth: pe_str = f"🟠偏高(PE {pe:.1f})"
                     else: pe_str = f"🔴太貴(PE {pe:.1f})"
             else:
-                # 如果沒有 PE，檢查是否因為賠錢 (EPS < 0)
                 if eps is not None and eps < 0:
                      pe_str = f"💀虧損(EPS {eps:.2f})"
                 else:
@@ -259,10 +299,10 @@ def analyze_ticker(config):
         final_signal = signal
         if "BUY" in signal and is_growth:
             final_signal = "💎 STRONG BUY"
-            action_msg += " + 財報優"
+            action_msg += " (財報護體)"
         elif "BUY" in signal and is_cheap:
             final_signal = "💰 VALUE BUY"
-            action_msg += " + 估值低"
+            action_msg += " (估值便宜)"
 
         return {
             "Symbol": symbol,
@@ -284,7 +324,7 @@ def analyze_ticker(config):
 # 3. 執行區
 # ==========================================
 
-# A. 側邊欄 (含 P/E 指南)
+# A. 側邊欄
 with st.sidebar:
     st.header("🇹🇼 台股雷達")
     try:
@@ -315,7 +355,6 @@ with st.sidebar:
         st.error("台股數據異常")
     
     st.divider()
-    # ★ 新增：P/E 判讀指南
     with st.expander("📚 P/E (本益比) 判讀指南", expanded=True):
         st.markdown("""
         **P/E = 股價 / 每股盈餘**
@@ -334,7 +373,7 @@ with st.sidebar:
         公司正在賠錢 (如 BA)，風險較高。
         """)
 
-# B. 策略掃描 (完整 14 支)
+# B. 策略掃描
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
     "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
@@ -383,11 +422,9 @@ for i, (key, config) in enumerate(strategies.items()):
         
         st.caption(f"建議: {row['Action']}")
         
-        # 只有在有財報 或 有情緒數據時才顯示
         if row.get('Fund') or row.get('Sent'):
             c1, c2 = st.columns(2)
             with c1: 
-                # 如果是 ETF，Fund 會是空的，就不會顯示
                 if row.get('Fund'): st.markdown(f"**財報:** {row['Fund']}")
             with c2: 
                 if row.get('Sent'): st.markdown(f"**情緒:** {row['Sent']}")
