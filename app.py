@@ -217,10 +217,8 @@ def analyze_ticker(config):
         df_daily = get_safe_data(symbol)
         if df_daily is None: raise Exception("數據下載失敗")
         
-        # ★ 關鍵修改：獲取昨收價
         prev_close = df_daily['Close'].iloc[-1]
         
-        # 嘗試從 live price 更新最新價
         live_price = get_real_live_price(symbol)
         if live_price is None or np.isnan(live_price): live_price = prev_close
         
@@ -321,13 +319,27 @@ def analyze_ticker(config):
             else: 
                 action_msg = f"布林通道震盪中 (RSI: {rsi_val:.1f})"
 
+        # ★ 修正重點：MA_CROSS 邏輯升級 (同步 App1)
         elif config['mode'] == "MA_CROSS":
-             fast = ta.sma(close, length=config['fast_ma']).iloc[-1]
-             slow = ta.sma(close, length=config['slow_ma']).iloc[-1]
-             if fast > slow: 
+             fast_series = ta.sma(close, length=config['fast_ma'])
+             slow_series = ta.sma(close, length=config['slow_ma'])
+             
+             # 抓今天和昨天
+             curr_fast, prev_fast = fast_series.iloc[-1], fast_series.iloc[-2]
+             curr_slow, prev_slow = slow_series.iloc[-1], slow_series.iloc[-2]
+             
+             # 1. 黃金交叉 (昨天在下，今天在上)
+             if prev_fast <= prev_slow and curr_fast > curr_slow:
+                 signal, action_msg, signal_type = "🔥 BUY", "黃金交叉 (突破均線)！", "BUY"
+             # 2. 死亡交叉 (昨天在上，今天在下)
+             elif prev_fast >= prev_slow and curr_fast < curr_slow:
+                 signal, action_msg, signal_type = "📉 SELL", "死亡交叉 (跌破均線)！", "SELL"
+             # 3. 多頭排列
+             elif curr_fast > curr_slow:
                  signal, action_msg, signal_type = "✊ HOLD", "均線多頭排列，續抱", "HOLD"
-             else: 
-                 signal, action_msg, signal_type = "☁️ EMPTY", "均線空頭排列，空手觀望", "EMPTY"
+             # 4. 空頭排列
+             else:
+                 signal, action_msg, signal_type = "☁️ EMPTY", "均線空頭排列，觀望", "EMPTY"
 
         # ==========================
         # 3. 整合：財報 + 情緒 + ATR + 籌碼
@@ -337,14 +349,14 @@ def analyze_ticker(config):
         is_growth = False
         is_cheap = False
         inst_pct = 0 
-        short_pct = 0 # 空單
+        short_pct = 0 
         
         if fund_data:
             g = fund_data['growth'] if fund_data['growth'] else 0
             pe = fund_data['pe']
             eps = fund_data['eps']
             inst_pct = fund_data['inst'] 
-            short_pct = fund_data['short'] # 抓取空單比例
+            short_pct = fund_data['short']
             
             growth_str = ""
             if g > 0.2: 
@@ -370,7 +382,7 @@ def analyze_ticker(config):
                      pe_str = "無PE"
             fund_msg = f"{growth_str} | {pe_str}"
 
-        # FinBERT 情緒
+        # FinBERT
         score, news_title, debug_logs = analyze_sentiment_finbert(symbol)
         
         sent_msg = ""
@@ -380,14 +392,14 @@ def analyze_ticker(config):
         elif score < -0.1: sent_msg = f"😨 偏悲觀 ({score:.2f})"
         else: sent_msg = f"⚪ 中立事實 ({score:.2f})"
 
-        # ATR 預測
+        # ATR
         p_high, p_low = predict_volatility(df_daily)
         pred_msg = ""
         if p_high and p_low:
              vol_pct = (p_high - p_low) / live_price * 100
              pred_msg = f"區間: ${p_low:.2f} ~ ${p_high:.2f} (波動 {vol_pct:.1f}%)"
 
-        # ★ 籌碼量能分析 (傳入空單比例)
+        # 籌碼
         chip_msg = analyze_chips_volume(df_daily, inst_pct, short_pct)
 
         # 訊號整合
@@ -406,7 +418,7 @@ def analyze_ticker(config):
             "Symbol": symbol,
             "Name": config['name'],
             "Price": live_price,
-            "Prev_Close": prev_close, # ★ 回傳昨日收盤價
+            "Prev_Close": prev_close, 
             "Signal": final_signal,
             "Action": action_msg,
             "Buy_At": buy_at,
@@ -510,7 +522,6 @@ for i, (key, config) in enumerate(strategies.items()):
     with placeholder_list[i].container(border=True):
         st.subheader(f"{row['Name']}")
         
-        # ★ 修改這裡：將「價格」分開成兩欄顯示
         if row['Price'] > 0: 
             kp1, kp2 = st.columns(2)
             with kp1:
@@ -518,7 +529,6 @@ for i, (key, config) in enumerate(strategies.items()):
                 st.write(f"**${row['Prev_Close']:,.2f}**")
             with kp2:
                 st.caption("目前價格")
-                # 算出漲跌，給不同顏色
                 chg = row['Price'] - row['Prev_Close']
                 color_str = "green" if chg >= 0 else "red"
                 st.markdown(f":{color_str}[**${row['Price']:,.2f}**]")
@@ -538,7 +548,6 @@ for i, (key, config) in enumerate(strategies.items()):
             c1, c2 = st.columns(2)
             with c1: 
                 if row.get('Fund'): st.markdown(f"**財報:** {row['Fund']}")
-                # ★ 顯示籌碼面 (含軋空)
                 if row.get('Chip'): st.markdown(f"**籌碼:** {row['Chip']}")
             with c2: 
                 if row.get('Sent'): st.markdown(f"**情緒:** {row['Sent']}")
