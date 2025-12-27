@@ -17,7 +17,7 @@ st.set_page_config(
 )
 
 st.title("📱 2025 全明星量化戰情室 (聖杯旗艦版)")
-st.caption("FUSION 策略 (含 VIX/RVOL 濾網) | 財報基本面 | 即時行情")
+st.caption("FUSION 策略 (含 VIX/RVOL 濾網) | 財報 | 即時行情 | 完整價格資訊")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
@@ -29,25 +29,22 @@ if st.button('🔄 立即更新行情'):
 def get_real_live_price(symbol):
     try:
         ticker = yf.Ticker(symbol)
-        # 美股優先用 history 抓含盤前盤後 (解決盤後價格不準問題)
+        # 美股優先用 history 抓含盤前盤後
         if ".TW" not in symbol:
             df = ticker.history(period="1d", interval="1m", prepost=True)
             if not df.empty: return float(df['Close'].iloc[-1])
         
-        # 台股或 history 抓不到，退回使用 fast_info
+        # 退回 fast_info
         price = ticker.fast_info.get('last_price')
         if price and not np.isnan(price): return float(price)
         return None
     except: return None
 
 def get_real_volume(symbol):
-    # 取得當日累積成交量 (用於計算 RVOL)
     try:
         ticker = yf.Ticker(symbol)
         df = ticker.history(period="1d", interval="1m", prepost=True) 
         if not df.empty:
-            # 近似計算：使用當日最後一筆的 Volume 往往不準，改用當日累計 volume
-            # 但 yfinance history period=1d 給的是分鐘線，我們抓 daily 比較準
             df_day = ticker.history(period="1d")
             if not df_day.empty: return float(df_day['Volume'].iloc[-1])
         return 0
@@ -55,20 +52,18 @@ def get_real_volume(symbol):
 
 def get_safe_data(ticker):
     try:
-        # 抓取 2 年日線供技術指標計算
         df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         return df
     except: return None
 
-# ★ 新增：取得 VIX 恐慌指數
-@st.cache_data(ttl=300) # 5分鐘更新一次 VIX 即可
+# 取得 VIX
+@st.cache_data(ttl=300)
 def get_vix_now():
     try:
         vix = yf.Ticker("^VIX")
         price = vix.fast_info.get('last_price')
-        # 如果 fast_info 抓不到，試試 history
         if not price or np.isnan(price):
             df = vix.history(period="1d")
             if not df.empty: price = df['Close'].iloc[-1]
@@ -84,8 +79,6 @@ def get_fundamentals(symbol):
         if "=" in symbol or "^" in symbol: return None 
         stock = yf.Ticker(symbol)
         info = stock.info
-        
-        # 抓取關鍵欄位
         return {
             "growth": info.get('revenueGrowth', 0), 
             "pe": info.get('trailingPE') if info.get('trailingPE') else info.get('forwardPE'),
@@ -108,16 +101,12 @@ def analyze_sentiment_finbert(symbol):
         stock = yf.Ticker(symbol)
         news = stock.news
         if not news: return 0, "無新聞"
-        
         classifier = load_finbert_model()
-        # 只抓前 3 則標題分析
         texts = [i.get('title')[:512] for i in news[:3] if i.get('title')]
         if not texts: return 0, "無新聞"
-        
         results = classifier(texts)
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
         total = sum(score_map[r['label']] * r['score'] for r in results)
-        
         return total / len(texts), texts[0]
     except: return 0, "分析略過"
 
@@ -134,24 +123,22 @@ def analyze_chips_volume(df, inst_pct, short_pct):
     except: return ""
 
 # ==========================================
-# 2. 技術指標與決策邏輯 (含 VIX/RVOL 判斷)
+# 2. 技術指標與決策邏輯
 # ==========================================
 def analyze_ticker(config):
     symbol = config['symbol']
     try:
-        # 1. 數據準備
         df_daily = get_safe_data(symbol)
         if df_daily is None: return None
-        prev_close = df_daily['Close'].iloc[-1]
+        prev_close = df_daily['Close'].iloc[-1] # 昨日收盤價
         
         live_price = get_real_live_price(symbol)
         if live_price is None: live_price = prev_close
         
-        # 抓即時量 (為了算 RVOL)
         live_vol = get_real_volume(symbol)
         if live_vol == 0: live_vol = df_daily['Volume'].iloc[-1]
 
-        # 合併 K 線計算指標
+        # 合併計算
         new_row = pd.DataFrame({
             'Close': [live_price], 'High': [max(live_price, df_daily['High'].iloc[-1])],
             'Low': [min(live_price, df_daily['Low'].iloc[-1])], 'Open': [live_price], 'Volume': [live_vol]
@@ -164,22 +151,14 @@ def analyze_ticker(config):
         signal, action_msg = "⚪ WAIT", "觀望"
         mode = config['mode']
 
-        # --- 策略邏輯區 ---
-
-        # ★ FUSION 模式 (聖杯策略：含 VIX + RVOL 濾網)
+        # FUSION 邏輯 (聖杯策略)
         if mode == "FUSION":
             curr_rsi = ta.rsi(close, length=config['rsi_len']).iloc[-1]
             trend_ma = ta.ema(close, length=config['ma_trend']).iloc[-1]
-            
-            # 計算 RVOL (相對成交量)
-            # 簡單定義：今日預估量 / 過去 20 日均量
             avg_vol = df_daily['Volume'].rolling(window=20).mean().iloc[-1]
             curr_rvol = (live_vol / avg_vol) if avg_vol > 0 else 1.0
-            
-            # 取得 VIX
             curr_vix = get_vix_now()
             
-            # 讀取參數 (如果沒有設定，給寬鬆預設值)
             vix_limit = config.get('vix_max', 100)
             rvol_limit = config.get('rvol_max', 10)
             
@@ -196,25 +175,22 @@ def analyze_ticker(config):
                     if not is_vix_safe: reasons.append(f"VIX過高({curr_vix:.1f})")
                     if not is_rvol_safe: reasons.append(f"爆量({curr_rvol:.1f}倍)")
                     action_msg = f"等待安全 (過濾: {' '.join(reasons)})"
-                    
             elif curr_rsi > config['exit_rsi']:
                 signal, action_msg = "💰 SELL", f"RSI過熱 ({curr_rsi:.1f})"
             else:
                 action_msg = f"趨勢等待 (RSI:{curr_rsi:.1f})"
 
-        # SUPERTREND
+        # 其他策略模式 (保持不變)
         elif mode == "SUPERTREND":
             st_data = ta.supertrend(high, low, close, length=config['period'], multiplier=config['multiplier'])
             if st_data is not None:
                 if st_data.iloc[-1, 1] == 1: signal, action_msg = "🚀 BUY", "趨勢向上"
                 else: signal, action_msg = "📉 SELL", "趨勢向下"
-
-        # RSI 相關策略
+        
         elif mode in ["RSI_RSI", "RSI_MA"]:
             curr_rsi = ta.rsi(close, length=config['rsi_len']).iloc[-1]
             use_trend = config.get('ma_trend', 0) > 0
             is_trend_ok = (live_price > ta.ema(close, length=config['ma_trend']).iloc[-1]) if use_trend else True
-            
             if is_trend_ok and curr_rsi < config['entry_rsi']:
                 signal, action_msg = "🔥 BUY", f"RSI低檔 ({curr_rsi:.1f})"
             elif mode == "RSI_RSI" and curr_rsi > config['exit_rsi']:
@@ -224,14 +200,12 @@ def analyze_ticker(config):
             else:
                 action_msg = f"RSI: {curr_rsi:.1f}"
 
-        # KD
         elif mode == "KD":
             k = ta.stoch(high, low, close).iloc[:, 0].iloc[-1]
             if k < config['entry_k']: signal, action_msg = "🚀 BUY", f"KD低檔 ({k:.1f})"
             elif k > config['exit_k']: signal, action_msg = "💀 SELL", f"KD高檔 ({k:.1f})"
             else: action_msg = f"KD值: {k:.1f}"
 
-        # BOLL_RSI
         elif mode == "BOLL_RSI":
             curr_rsi = ta.rsi(close, length=config['rsi_len']).iloc[-1]
             bb = ta.bbands(close, length=20, std=2)
@@ -243,14 +217,13 @@ def analyze_ticker(config):
             else:
                 action_msg = f"通道震盪 (RSI: {curr_rsi:.1f})"
 
-        # MA_CROSS
         elif mode == "MA_CROSS":
              fast = ta.sma(close, length=config['fast_ma']).iloc[-1]
              slow = ta.sma(close, length=config['slow_ma']).iloc[-1]
              if fast > slow: signal, action_msg = "🔥 BUY", "均線多頭"
              else: signal, action_msg = "☁️ SELL", "均線空頭"
 
-        # --- 整合財報 ---
+        # 整合財報與籌碼
         fund_data = get_fundamentals(symbol)
         fund_msg = "N/A"
         is_cheap, is_growth = False, False
@@ -264,29 +237,27 @@ def analyze_ticker(config):
             if pe and pe < 20: is_cheap = True
             if g and g > 0.15: is_growth = True
 
-        # 情緒與籌碼
         score, news = analyze_sentiment_finbert(symbol)
         sent_msg = f"🙂樂觀({score:.2f})" if score > 0.2 else (f"😨悲觀({score:.2f})" if score < -0.2 else "中立")
         chip_msg = analyze_chips_volume(df_daily, inst_pct, short_pct)
 
-        # 訊號加權
         if "BUY" in signal and is_cheap: signal = "💰 VALUE BUY"
         if "BUY" in signal and is_growth: signal = "💎 GROWTH BUY"
         
         return {
             "Symbol": symbol, "Name": config['name'], "Price": live_price,
+            "Prev_Close": prev_close, # ★ 這裡確保傳回昨收價
             "Change": live_price - prev_close, "Signal": signal, "Action": action_msg,
             "Fund": fund_msg, "Sent": sent_msg, "Chip": chip_msg, "News": news
         }
     except Exception as e:
-        return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Signal": "ERR", "Action": str(e)}
+        return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Prev_Close": 0, "Signal": "ERR", "Action": str(e)}
 
 # ==========================================
-# 3. 執行與顯示
+# 3. 執行與顯示 (修復版面顯示)
 # ==========================================
 st.sidebar.header("監控面板")
 
-# ★ 用戶原始策略設定 (含 NVDA/GOOGL 的 VIX 與 RVOL 濾網)
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
     "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
@@ -313,13 +284,16 @@ for i, (key, config) in enumerate(strategies.items()):
         res = analyze_ticker(config)
         if res and res['Price'] > 0:
             with st.container(border=True):
-                # 標題與價格
+                # 標題與重點指標
                 c1, c2 = st.columns([2, 1])
                 c1.subheader(res['Name'])
-                chg_color = "green" if res['Change'] >= 0 else "red"
-                c2.markdown(f"**${res['Price']:.2f}** (:{chg_color}[{res['Change']:.2f}])")
                 
-                # 訊號與建議
+                # ★ 這裡恢復顯示昨收與現價對比
+                chg_color = "green" if res['Change'] >= 0 else "red"
+                c2.markdown(f"**${res['Price']:.2f}**")
+                c2.caption(f"昨收: {res['Prev_Close']:.2f} (:{chg_color}[{res['Change']:+.2f}])")
+                
+                # 訊號
                 if "BUY" in res['Signal']: st.success(f"{res['Signal']} | {res['Action']}")
                 elif "SELL" in res['Signal']: st.error(f"{res['Signal']} | {res['Action']}")
                 else: st.info(f"{res['Signal']} | {res['Action']}")
@@ -334,4 +308,4 @@ for i, (key, config) in enumerate(strategies.items()):
         else:
             st.error(f"{config['name']} 讀取失敗")
 
-st.caption("✅ 聖杯版載入完成 | Gemini AI Assistant")
+st.caption("✅ 聖杯完全版 | 價格與濾網已修復 | Gemini AI")
