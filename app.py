@@ -10,7 +10,7 @@ from datetime import datetime
 from transformers import pipeline
 
 # ==========================================
-# 0. 頁面設定
+# 0. 頁面設定 & UI 優化 (TradingView 風格)
 # ==========================================
 st.set_page_config(
     page_title="2025 量化戰情室 (旗艦版)",
@@ -18,6 +18,60 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ★★★ CSS 美化區 ★★★
+st.markdown("""
+    <style>
+        /* 全域背景：改為深灰藍 (TradingView Dark) */
+        .stApp {
+            background-color: #0e1117;
+        }
+        
+        /* 調整標題文字顏色 */
+        h1, h2, h3, h4, h5, h6, span, div {
+            color: #e0e0e0;
+            font-family: 'Roboto', sans-serif;
+        }
+        
+        /* 讓 Metric 數據卡片有立體感 */
+        div[data-testid="stMetric"] {
+            background-color: #1c202a;
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid #2d3342;
+            box-shadow: 2px 2px 5px rgba(0,0,0,0.3);
+        }
+        div[data-testid="stMetricLabel"] > div {
+            color: #9db2bf !important; /* 標籤顏色 */
+        }
+        div[data-testid="stMetricValue"] > div {
+            color: #ffffff !important; /* 數值顏色 */
+        }
+        
+        /* 側邊欄優化 */
+        section[data-testid="stSidebar"] {
+            background-color: #161920;
+        }
+        
+        /* 按鈕優化 */
+        .stButton > button {
+            background-color: #2962ff;
+            color: white;
+            border-radius: 6px;
+            border: none;
+            font-weight: bold;
+        }
+        .stButton > button:hover {
+            background-color: #1e4bd1;
+        }
+        
+        /* Expander 邊框 */
+        .streamlit-expanderHeader {
+            background-color: #1c202a;
+            color: white;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
 st.title("📱 2025 全明星量化戰情室 (旗艦版)")
 st.caption("五維分析: 技術 + 財報 + FinBERT情緒 + ATR波動 + 籌碼(OBV/空單)")
@@ -54,7 +108,7 @@ def get_real_live_price(symbol):
 
 def get_safe_data(ticker):
     try:
-        # 下載數據
+        # 下載數據 (保持 2y 以確保 200MA 計算正確)
         df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         
         if df is None or df.empty: return None
@@ -170,96 +224,128 @@ def analyze_chips_volume(df, inst_percent, short_percent):
     except Exception as e: return f"籌碼錯誤: {str(e)}"
 
 # ==========================================
-# ★ 模組 5: 視覺化與輕量回測
+# ★ 模組 5: 視覺化與輕量回測 (修復版)
 # ==========================================
 def plot_interactive_chart(df, config, signals=None):
     if df is None or df.empty: return None
 
-    # 建立子圖 (K線圖 + 副圖)
+    # 配色方案 (TradingView 風格)
+    COLOR_UP = '#089981'     # 漲：薄荷綠
+    COLOR_DOWN = '#f23645'   # 跌：珊瑚紅
+    COLOR_BG = '#131722'     # 背景：深藍灰
+    COLOR_GRID = '#2a2e39'   # 網格：淡灰
+    COLOR_TEXT = '#d1d4dc'   # 文字：柔白
+
+    # 建立子圖
     fig = make_subplots(
         rows=2, cols=1, 
         shared_xaxes=True, 
-        vertical_spacing=0.05, 
-        row_heights=[0.7, 0.3],
+        vertical_spacing=0.03, 
+        row_heights=[0.75, 0.25],
         specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
     )
 
     # --- 主圖 (K線) ---
     fig.add_trace(go.Candlestick(
-        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
-        name='K線'
+        x=df.index, 
+        open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
+        name='Price',
+        increasing_line_color=COLOR_UP, increasing_fillcolor=COLOR_UP,
+        decreasing_line_color=COLOR_DOWN, decreasing_fillcolor=COLOR_DOWN
     ), row=1, col=1)
 
-    # --- 策略指標線 (SuperTrend / EMA) ---
-    if config['mode'] == "SUPERTREND":
+    # ==========================================
+    # ★ 策略指標線 (修復 TSM 均線問題)
+    # ==========================================
+    
+    # 1. 雙均線交叉 (MA_CROSS) - 如 TSM
+    if config['mode'] == "MA_CROSS":
+        fast_ma = ta.sma(df['Close'], length=config['fast_ma'])
+        slow_ma = ta.sma(df['Close'], length=config['slow_ma'])
+        # 快線 (黃色)
+        fig.add_trace(go.Scatter(x=df.index, y=fast_ma, mode='lines', name=f'MA {config["fast_ma"]}', line=dict(color='#ffeb3b', width=1.5)), row=1, col=1)
+        # 慢線 (藍色)
+        fig.add_trace(go.Scatter(x=df.index, y=slow_ma, mode='lines', name=f'MA {config["slow_ma"]}', line=dict(color='#2962ff', width=2)), row=1, col=1)
+
+    # 2. 超級趨勢 (SuperTrend)
+    elif config['mode'] == "SUPERTREND":
         st_data = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
         if st_data is not None:
-            fig.add_trace(go.Scatter(x=df.index, y=st_data[st_data.columns[0]], mode='lines', name='SuperTrend', line=dict(color='orange', width=2)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=st_data[st_data.columns[0]], mode='lines', name='SuperTrend', line=dict(color='#ff9800', width=2)), row=1, col=1)
+    
+    # 3. 一般趨勢濾網 (單條 EMA)
     elif config.get('ma_trend'):
         ma = ta.ema(df['Close'], length=config['ma_trend'])
-        fig.add_trace(go.Scatter(x=df.index, y=ma, mode='lines', name=f'EMA {config["ma_trend"]}', line=dict(color='cyan', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=ma, mode='lines', name=f'EMA {config["ma_trend"]}', line=dict(color='#2962ff', width=1.5)), row=1, col=1)
 
     # --- 副圖 (RSI / KD / Volume) ---
     if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
-        fig.add_trace(go.Scatter(x=df.index, y=rsi, mode='lines', name='RSI', line=dict(color='purple')), row=2, col=1)
-        fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color="green", row=2, col=1)
-        fig.add_hline(y=config.get('exit_rsi', 70), line_dash="dash", line_color="red", row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, mode='lines', name='RSI', line=dict(color='#b39ddb', width=1.5)), row=2, col=1)
+        # 增加 RSI 區間色帶
+        fig.add_hrect(y0=config.get('entry_rsi', 30), y1=config.get('exit_rsi', 70), fillcolor="rgba(255, 255, 255, 0.05)", line_width=0, row=2, col=1)
+        fig.add_hline(y=config.get('entry_rsi', 30), line_dash="solid", line_color=COLOR_UP, row=2, col=1, opacity=0.5)
+        fig.add_hline(y=config.get('exit_rsi', 70), line_dash="solid", line_color=COLOR_DOWN, row=2, col=1, opacity=0.5)
+
     elif config['mode'] == "KD":
         stoch = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
         if stoch is not None:
-            fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 0], name='K', line=dict(color='orange')), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 1], name='D', line=dict(color='blue')), row=2, col=1)
-            fig.add_hline(y=20, line_dash="dash", line_color="green", row=2, col=1, opacity=0.3)
-            fig.add_hline(y=80, line_dash="dash", line_color="red", row=2, col=1, opacity=0.3)
-    else:
-        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color='rgba(100, 100, 100, 0.5)'), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 0], name='K', line=dict(color='#ffeb3b', width=1)), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 1], name='D', line=dict(color='#2962ff', width=1)), row=2, col=1)
+
+    else: # 預設顯示成交量
+        colors = [COLOR_UP if c >= o else COLOR_DOWN for c, o in zip(df['Close'], df['Open'])]
+        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color=colors, opacity=0.5), row=2, col=1)
 
     # --- 買賣點標記 ---
     if signals is not None:
         buy_pts = df.loc[signals == 1]
         sell_pts = df.loc[signals == -1]
-        # 買點 (綠色向上三角)
         if not buy_pts.empty: 
             fig.add_trace(go.Scatter(
-                x=buy_pts.index, y=buy_pts['Low']*0.99, mode='markers', 
-                marker=dict(symbol='triangle-up', size=12, color='lime', line=dict(width=1, color='black')), 
-                name='Buy'
+                x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', 
+                marker=dict(symbol='triangle-up', size=10, color='#00e676', line=dict(width=1, color='black')), name='Buy'
             ), row=1, col=1)
-        # 賣點 (紅色向下三角)
         if not sell_pts.empty: 
             fig.add_trace(go.Scatter(
-                x=sell_pts.index, y=sell_pts['High']*1.01, mode='markers', 
-                marker=dict(symbol='triangle-down', size=12, color='red', line=dict(width=1, color='black')), 
-                name='Sell'
+                x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', 
+                marker=dict(symbol='triangle-down', size=10, color='#ff1744', line=dict(width=1, color='black')), name='Sell'
             ), row=1, col=1)
 
-    # --- 版面設定 (關鍵修改) ---
+    # --- Layout 美化 ---
     fig.update_layout(
-        height=600,  # 加高圖表
-        margin=dict(t=30, b=0, l=10, r=10), 
-        template="plotly_dark",
+        height=550,
+        margin=dict(t=40, b=0, l=10, r=10),
+        paper_bgcolor=COLOR_BG,
+        plot_bgcolor=COLOR_BG,
+        font=dict(color=COLOR_TEXT, family="Roboto"),
+        showlegend=True, # 開啟圖例
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode='x unified', # 十字準星
         xaxis=dict(
-            rangeslider=dict(visible=True), # ★ 開啟下方滑桿
+            rangeslider=dict(visible=False), # 關閉醜醜的原生滑桿，改用 Zoom
+            showgrid=True, gridcolor=COLOR_GRID, gridwidth=1,
             type="date"
-        )
+        ),
+        yaxis=dict(showgrid=True, gridcolor=COLOR_GRID, gridwidth=1),
+        xaxis2=dict(showgrid=True, gridcolor=COLOR_GRID, gridwidth=1),
+        yaxis2=dict(showgrid=True, gridcolor=COLOR_GRID, gridwidth=1)
     )
 
-    # ★ 設定時間軸按鈕與預設範圍
+    # 時間軸按鈕 (預設顯示最近 120 天)
     fig.update_xaxes(
-        rangebreaks=[dict(bounds=["sat", "mon"])], # (選擇性) 隱藏週末空缺
         rangeselector=dict(
             buttons=list([
-                dict(count=1, label="1月", step="month", stepmode="backward"),
-                dict(count=3, label="3月", step="month", stepmode="backward"),
-                dict(count=6, label="半年", step="month", stepmode="backward"),
-                dict(step="all", label="全部")
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=3, label="3M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(step="all", label="All")
             ]),
-            bgcolor="#2b2b2b",
+            bgcolor="#2a2e39",
+            activecolor="#2962ff",
             font=dict(color="white")
         ),
-        # 預設只顯示最近 150 根 K 線，解決「擠在一起」的問題
-        range=[df.index[-min(150, len(df))], df.index[-1]]
+        range=[df.index[-min(120, len(df))], df.index[-1]]
     )
 
     return fig
@@ -491,7 +577,6 @@ def analyze_ticker(config):
             "Symbol": symbol, "Name": config['name'], "Price": live_price, "Prev_Close": prev_close, 
             "Signal": final_signal, "Action": action_msg, "Buy_At": buy_at, "Sell_At": sell_at, "Type": signal_type,
             "Fund": fund_msg, "Sent": sent_msg, "News": news_title, "Pred": pred_msg, "Chip": chip_msg, "Logs": debug_logs,
-            # ★★★ 關鍵回傳 ★★★
             "Raw_DF": df_daily  
         }
     except Exception as e:
@@ -581,7 +666,7 @@ for i, (key, config) in enumerate(strategies.items()):
             c1.markdown(f"**財報:** {row.get('Fund', '--')}\n\n**籌碼:** {row.get('Chip', '--')}")
             c2.markdown(f"**情緒:** {row.get('Sent', '--')}\n\n**預測:** {row.get('Pred', '--')}")
 
-        # ★★★ 強制除錯圖表區 ★★★
+        # ★★★ 圖表區 (已修復 TSM 顯示問題) ★★★
         raw_df = row.get("Raw_DF")
         if raw_df is not None and not raw_df.empty:
             with st.expander("📊 查看 K線圖與回測績效", expanded=False):
@@ -609,4 +694,3 @@ for i, (key, config) in enumerate(strategies.items()):
         st.text(f"掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
 
 st.caption("✅ 掃描完成 | Auto-generated by Gemini AI")
-
