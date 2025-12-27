@@ -175,22 +175,32 @@ def analyze_chips_volume(df, inst_percent, short_percent):
 def plot_interactive_chart(df, config, signals=None):
     if df is None or df.empty: return None
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+    # 建立子圖 (K線圖 + 副圖)
+    fig = make_subplots(
+        rows=2, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.05, 
+        row_heights=[0.7, 0.3],
+        specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
+    )
 
-    # K線圖
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='K線'), row=1, col=1)
+    # --- 主圖 (K線) ---
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
+        name='K線'
+    ), row=1, col=1)
 
-    # 策略指標
+    # --- 策略指標線 (SuperTrend / EMA) ---
     if config['mode'] == "SUPERTREND":
         st_data = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
         if st_data is not None:
-            fig.add_trace(go.Scatter(x=df.index, y=st_data[st_data.columns[0]], mode='lines', name='SuperTrend', line=dict(color='orange', width=1)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=st_data[st_data.columns[0]], mode='lines', name='SuperTrend', line=dict(color='orange', width=2)), row=1, col=1)
     elif config.get('ma_trend'):
         ma = ta.ema(df['Close'], length=config['ma_trend'])
-        fig.add_trace(go.Scatter(x=df.index, y=ma, mode='lines', name=f'EMA {config["ma_trend"]}', line=dict(color='blue', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=ma, mode='lines', name=f'EMA {config["ma_trend"]}', line=dict(color='cyan', width=1)), row=1, col=1)
 
-    # 副圖指標
-    if "RSI" in config['mode'] or config['mode'] == "FUSION":
+    # --- 副圖 (RSI / KD / Volume) ---
+    if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
         fig.add_trace(go.Scatter(x=df.index, y=rsi, mode='lines', name='RSI', line=dict(color='purple')), row=2, col=1)
         fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color="green", row=2, col=1)
@@ -200,17 +210,58 @@ def plot_interactive_chart(df, config, signals=None):
         if stoch is not None:
             fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 0], name='K', line=dict(color='orange')), row=2, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 1], name='D', line=dict(color='blue')), row=2, col=1)
+            fig.add_hline(y=20, line_dash="dash", line_color="green", row=2, col=1, opacity=0.3)
+            fig.add_hline(y=80, line_dash="dash", line_color="red", row=2, col=1, opacity=0.3)
     else:
         fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color='rgba(100, 100, 100, 0.5)'), row=2, col=1)
 
-    # 買賣點
+    # --- 買賣點標記 ---
     if signals is not None:
         buy_pts = df.loc[signals == 1]
         sell_pts = df.loc[signals == -1]
-        if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=10, color='lime'), name='Buy'), row=1, col=1)
-        if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=10, color='red'), name='Sell'), row=1, col=1)
+        # 買點 (綠色向上三角)
+        if not buy_pts.empty: 
+            fig.add_trace(go.Scatter(
+                x=buy_pts.index, y=buy_pts['Low']*0.99, mode='markers', 
+                marker=dict(symbol='triangle-up', size=12, color='lime', line=dict(width=1, color='black')), 
+                name='Buy'
+            ), row=1, col=1)
+        # 賣點 (紅色向下三角)
+        if not sell_pts.empty: 
+            fig.add_trace(go.Scatter(
+                x=sell_pts.index, y=sell_pts['High']*1.01, mode='markers', 
+                marker=dict(symbol='triangle-down', size=12, color='red', line=dict(width=1, color='black')), 
+                name='Sell'
+            ), row=1, col=1)
 
-    fig.update_layout(height=500, margin=dict(t=30, b=0, l=0, r=0), template="plotly_dark", xaxis_rangeslider_visible=False)
+    # --- 版面設定 (關鍵修改) ---
+    fig.update_layout(
+        height=600,  # 加高圖表
+        margin=dict(t=30, b=0, l=10, r=10), 
+        template="plotly_dark",
+        xaxis=dict(
+            rangeslider=dict(visible=True), # ★ 開啟下方滑桿
+            type="date"
+        )
+    )
+
+    # ★ 設定時間軸按鈕與預設範圍
+    fig.update_xaxes(
+        rangebreaks=[dict(bounds=["sat", "mon"])], # (選擇性) 隱藏週末空缺
+        rangeselector=dict(
+            buttons=list([
+                dict(count=1, label="1月", step="month", stepmode="backward"),
+                dict(count=3, label="3月", step="month", stepmode="backward"),
+                dict(count=6, label="半年", step="month", stepmode="backward"),
+                dict(step="all", label="全部")
+            ]),
+            bgcolor="#2b2b2b",
+            font=dict(color="white")
+        ),
+        # 預設只顯示最近 150 根 K 線，解決「擠在一起」的問題
+        range=[df.index[-min(150, len(df))], df.index[-1]]
+    )
+
     return fig
 
 def quick_backtest(df, config):
@@ -558,3 +609,4 @@ for i, (key, config) in enumerate(strategies.items()):
         st.text(f"掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
 
 st.caption("✅ 掃描完成 | Auto-generated by Gemini AI")
+
