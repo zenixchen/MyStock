@@ -1,9 +1,10 @@
-pip install plotly
 import streamlit as st
 import pandas_ta as ta
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime
 # ★ 深度學習 NLP 套件
 from transformers import pipeline
@@ -59,6 +60,8 @@ def get_safe_data(ticker):
         df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        # 確保索引是 Datetime，方便後續繪圖
+        df.index = pd.to_datetime(df.index)
         return df
     except: return None
 
@@ -210,11 +213,8 @@ def analyze_chips_volume(df, inst_percent, short_percent):
     except Exception as e:
         return f"籌碼錯誤: {str(e)}"
 
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
 # ==========================================
-# ★ 模組 5: 視覺化與輕量回測
+# ★ 模組 5: 視覺化與輕量回測 (新增)
 # ==========================================
 
 def plot_interactive_chart(df, config, signals=None):
@@ -238,7 +238,6 @@ def plot_interactive_chart(df, config, signals=None):
         # 重新計算一次 SuperTrend 用於繪圖
         st_data = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
         if st_data is not None:
-            # SuperTrend 的欄位名稱通常是 SUPERT_7_3.0
             st_col = st_data.columns[0] 
             fig.add_trace(go.Scatter(x=df.index, y=st_data[st_col], mode='lines', name='SuperTrend', line=dict(color='orange', width=1)), row=1, col=1)
 
@@ -327,8 +326,7 @@ def quick_backtest(df, config):
     # --- 根據策略邏輯產生訊號 (簡化版邏輯) ---
     try:
         if config['mode'] == "RSI_RSI" or config['mode'] == "FUSION":
-            rsi = ta.rsi(close, length=config['rsi_len'])
-            # 簡單邏輯：RSI < Entry 買，RSI > Exit 賣
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             signals[rsi < config['entry_rsi']] = 1
             signals[rsi > config['exit_rsi']] = -1
             
@@ -353,8 +351,6 @@ def quick_backtest(df, config):
             signals[(direction == -1) & (direction.shift(1) == 1)] = -1
 
         # --- 計算績效 (Vectorized Backtest) ---
-        # 假設：買入後持有直到出現賣出訊號 (簡化)
-        # 持倉狀態: 1=持有, 0=空手
         position = 0
         returns = []
         entry_price = 0
@@ -623,11 +619,11 @@ def analyze_ticker(config):
             "News": news_title,
             "Pred": pred_msg,
             "Chip": chip_msg,
-            "Logs": debug_logs
-            "Raw_DF": df_daily  # <--- ★★★ 請務必加入這一行，把數據傳出來繪圖！
+            "Logs": debug_logs,
+            "Raw_DF": df_daily  # ★★★ 關鍵修正：將 DataFrame 傳出以供繪圖 ★★★
         }
     except Exception as e:
-        return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Prev_Close": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR", "Logs": []}
+        return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Prev_Close": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR", "Logs": [], "Raw_DF": None}
 
 # ==========================================
 # 3. 執行區
@@ -707,26 +703,14 @@ for i in range(len(strategies)):
     with (col1 if i % 2 == 0 else col2):
         placeholder_list.append(st.empty())
 
-# ==========================================
-# 3. 執行區 (請替換原本的迴圈)
-# ==========================================
-
-# ... (前面的 sidebar 和市場掃描與 placeholder_list 建立不用動) ...
-
-# ★★★ 請將原本的 for i, (key, config) in enumerate(strategies.items()): 迴圈替換為以下內容 ★★★
-
 for i, (key, config) in enumerate(strategies.items()):
     with placeholder_list[i].container():
         st.text(f"⏳ 分析 {config['name']}...")
     
-    # 執行分析
     row = analyze_ticker(config)
     
-    # 清空並重新繪製容器
     placeholder_list[i].empty()
     with placeholder_list[i].container(border=True):
-        
-        # --- 區塊 A: 標題與價格 (保持不變) ---
         st.subheader(f"{row['Name']}")
         
         if row['Price'] > 0: 
@@ -742,7 +726,6 @@ for i, (key, config) in enumerate(strategies.items()):
         else: 
             st.write("**Data Error**")
 
-        # --- 區塊 B: 訊號顯示 (保持不變) ---
         if "STRONG BUY" in row['Signal']: st.success(f"💎 {row['Signal']}")
         elif "BUY" in row['Signal']: st.success(f"{row['Signal']}")
         elif "SELL" in row['Signal']: st.error(f"{row['Signal']}")
@@ -752,7 +735,6 @@ for i, (key, config) in enumerate(strategies.items()):
         
         st.caption(f"建議: {row['Action']}")
         
-        # --- 區塊 C: 五維分析數據 (保持不變) ---
         if row.get('Fund') or row.get('Sent') or row.get('Pred') or row.get('Chip'):
             c1, c2 = st.columns(2)
             with c1: 
@@ -828,5 +810,3 @@ for i, (key, config) in enumerate(strategies.items()):
         st.text(f"掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
 
 st.caption("✅ 掃描完成 | Auto-generated by Gemini AI")
-
-
