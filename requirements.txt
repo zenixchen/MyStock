@@ -1,7 +1,9 @@
 streamlit
-pandas
-pandas_ta
 yfinance
+pandas
 numpy
+pandas_ta
+plotly
 transformers
 torch
+scipy
