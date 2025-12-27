@@ -1,3 +1,4 @@
+pip install plotly
 import streamlit as st
 import pandas_ta as ta
 import yfinance as yf
@@ -208,6 +209,184 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         return chip_msg
     except Exception as e:
         return f"籌碼錯誤: {str(e)}"
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+# ==========================================
+# ★ 模組 5: 視覺化與輕量回測
+# ==========================================
+
+def plot_interactive_chart(df, config, signals=None):
+    """
+    繪製互動式 K 線圖，包含策略指標與買賣訊號
+    """
+    if df is None or df.empty: return None
+
+    # 建立副圖 (Subplots): 上面是 K 線，下面是副指標 (RSI/KD/Vol)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.03, row_heights=[0.7, 0.3])
+
+    # 1. 主圖：K 線
+    fig.add_trace(go.Candlestick(
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        name='K線'
+    ), row=1, col=1)
+
+    # 2. 根據策略繪製主圖指標 (MA / SuperTrend / BBands)
+    if config['mode'] == "SUPERTREND":
+        # 重新計算一次 SuperTrend 用於繪圖
+        st_data = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
+        if st_data is not None:
+            # SuperTrend 的欄位名稱通常是 SUPERT_7_3.0
+            st_col = st_data.columns[0] 
+            fig.add_trace(go.Scatter(x=df.index, y=st_data[st_col], mode='lines', name='SuperTrend', line=dict(color='orange', width=1)), row=1, col=1)
+
+    elif config['mode'] in ["MA_CROSS", "RSI_MA", "FUSION", "META", "NVDA", "QQQ"]:
+        # 繪製均線
+        if config.get('ma_trend'):
+            ma = ta.ema(df['Close'], length=config['ma_trend'])
+            fig.add_trace(go.Scatter(x=df.index, y=ma, mode='lines', name=f'EMA {config["ma_trend"]}', line=dict(color='blue', width=1)), row=1, col=1)
+        if config.get('fast_ma'):
+            ma_f = ta.sma(df['Close'], length=config['fast_ma'])
+            fig.add_trace(go.Scatter(x=df.index, y=ma_f, mode='lines', name=f'MA {config["fast_ma"]}', line=dict(color='cyan', width=1)), row=1, col=1)
+        if config.get('slow_ma'):
+            ma_s = ta.sma(df['Close'], length=config['slow_ma'])
+            fig.add_trace(go.Scatter(x=df.index, y=ma_s, mode='lines', name=f'MA {config["slow_ma"]}', line=dict(color='purple', width=1)), row=1, col=1)
+            
+    elif config['mode'] == "BOLL_RSI":
+        bb = ta.bbands(df['Close'], length=20, std=2)
+        if bb is not None:
+            fig.add_trace(go.Scatter(x=df.index, y=bb.iloc[:, 0], mode='lines', name='Lower', line=dict(color='gray', dash='dot')), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=bb.iloc[:, 2], mode='lines', name='Upper', line=dict(color='gray', dash='dot')), row=1, col=1)
+
+    # 3. 副圖：指標 (RSI / KD / Volume)
+    if "RSI" in config['mode'] or config['mode'] == "FUSION":
+        rsi_len = config.get('rsi_len', 14)
+        rsi = ta.rsi(df['Close'], length=rsi_len)
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, mode='lines', name=f'RSI {rsi_len}', line=dict(color='purple')), row=2, col=1)
+        # 畫超買超賣線
+        fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color="green", row=2, col=1)
+        fig.add_hline(y=config.get('exit_rsi', 70), line_dash="dash", line_color="red", row=2, col=1)
+        
+    elif config['mode'] == "KD":
+        stoch = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3, smooth_k=3)
+        if stoch is not None:
+            k = stoch.iloc[:, 0]
+            d = stoch.iloc[:, 1]
+            fig.add_trace(go.Scatter(x=df.index, y=k, mode='lines', name='K%', line=dict(color='orange')), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=d, mode='lines', name='D%', line=dict(color='blue')), row=2, col=1)
+            fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", line_color="green", row=2, col=1)
+            fig.add_hline(y=config.get('exit_k', 80), line_dash="dash", line_color="red", row=2, col=1)
+    else:
+        # 預設畫成交量
+        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Volume', marker_color='rgba(100, 100, 100, 0.5)'), row=2, col=1)
+
+    # 4. 標記買賣訊號點 (如果有回測產生的 signals)
+    if signals is not None and not signals.empty:
+        # 買點 (Buy)
+        buy_points = df.loc[signals == 1]
+        if not buy_points.empty:
+            fig.add_trace(go.Scatter(
+                x=buy_points.index, y=buy_points['Low'] * 0.98,
+                mode='markers', marker=dict(symbol='triangle-up', size=10, color='lime'),
+                name='買進訊號'
+            ), row=1, col=1)
+        
+        # 賣點 (Sell)
+        sell_points = df.loc[signals == -1]
+        if not sell_points.empty:
+            fig.add_trace(go.Scatter(
+                x=sell_points.index, y=sell_points['High'] * 1.02,
+                mode='markers', marker=dict(symbol='triangle-down', size=10, color='red'),
+                name='賣出訊號'
+            ), row=1, col=1)
+
+    fig.update_layout(
+        height=500, 
+        margin=dict(l=0, r=0, t=30, b=0),
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark",
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
+    )
+    return fig
+
+def quick_backtest(df, config):
+    """
+    快速回測：計算過去 1 年的簡單績效 (不含滑價與手續費，純訊號測試)
+    回傳: 訊號 Series, 績效 Dict
+    """
+    if df is None or len(df) < 50: return None, None
+    
+    # 複製一份以免影響原始資料
+    bt_df = df.copy()
+    close = bt_df['Close']
+    signals = pd.Series(0, index=bt_df.index) # 0:無, 1:買, -1:賣
+    
+    # --- 根據策略邏輯產生訊號 (簡化版邏輯) ---
+    try:
+        if config['mode'] == "RSI_RSI" or config['mode'] == "FUSION":
+            rsi = ta.rsi(close, length=config['rsi_len'])
+            # 簡單邏輯：RSI < Entry 買，RSI > Exit 賣
+            signals[rsi < config['entry_rsi']] = 1
+            signals[rsi > config['exit_rsi']] = -1
+            
+        elif config['mode'] == "KD":
+            stoch = ta.stoch(bt_df['High'], bt_df['Low'], close, k=9, d=3)
+            k = stoch.iloc[:, 0]
+            signals[k < config['entry_k']] = 1
+            signals[k > config['exit_k']] = -1
+            
+        elif config['mode'] == "MA_CROSS":
+            fast = ta.sma(close, length=config['fast_ma'])
+            slow = ta.sma(close, length=config['slow_ma'])
+            # 黃金交叉買，死亡交叉賣
+            signals[(fast > slow) & (fast.shift(1) <= slow.shift(1))] = 1
+            signals[(fast < slow) & (fast.shift(1) >= slow.shift(1))] = -1
+            
+        elif config['mode'] == "SUPERTREND":
+            st_data = ta.supertrend(bt_df['High'], bt_df['Low'], close, length=config['period'], multiplier=config['multiplier'])
+            direction = st_data.iloc[:, 1] # 1: Up, -1: Down
+            # 方向轉變時產生訊號
+            signals[(direction == 1) & (direction.shift(1) == -1)] = 1
+            signals[(direction == -1) & (direction.shift(1) == 1)] = -1
+
+        # --- 計算績效 (Vectorized Backtest) ---
+        # 假設：買入後持有直到出現賣出訊號 (簡化)
+        # 持倉狀態: 1=持有, 0=空手
+        position = 0
+        returns = []
+        entry_price = 0
+        trade_count = 0
+        win_count = 0
+        
+        for i in range(len(bt_df)):
+            sig = signals.iloc[i]
+            price = close.iloc[i]
+            
+            if position == 0 and sig == 1: # 進場
+                position = 1
+                entry_price = price
+            elif position == 1 and sig == -1: # 出場
+                position = 0
+                ret = (price - entry_price) / entry_price
+                returns.append(ret)
+                trade_count += 1
+                if ret > 0: win_count += 1
+                
+        total_ret = sum(returns)
+        win_rate = (win_count / trade_count * 100) if trade_count > 0 else 0
+        
+        perf = {
+            "Total_Return": total_ret * 100,
+            "Win_Rate": win_rate,
+            "Trades": trade_count
+        }
+        return signals, perf
+
+    except Exception as e:
+        return None, None
 
 # ==========================================
 # 2. 技術指標與決策邏輯
@@ -445,6 +624,7 @@ def analyze_ticker(config):
             "Pred": pred_msg,
             "Chip": chip_msg,
             "Logs": debug_logs
+            "Raw_DF": df_daily  # <--- ★★★ 請務必加入這一行，把數據傳出來繪圖！
         }
     except Exception as e:
         return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Prev_Close": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR", "Logs": []}
@@ -527,14 +707,26 @@ for i in range(len(strategies)):
     with (col1 if i % 2 == 0 else col2):
         placeholder_list.append(st.empty())
 
+# ==========================================
+# 3. 執行區 (請替換原本的迴圈)
+# ==========================================
+
+# ... (前面的 sidebar 和市場掃描與 placeholder_list 建立不用動) ...
+
+# ★★★ 請將原本的 for i, (key, config) in enumerate(strategies.items()): 迴圈替換為以下內容 ★★★
+
 for i, (key, config) in enumerate(strategies.items()):
     with placeholder_list[i].container():
         st.text(f"⏳ 分析 {config['name']}...")
     
+    # 執行分析
     row = analyze_ticker(config)
     
+    # 清空並重新繪製容器
     placeholder_list[i].empty()
     with placeholder_list[i].container(border=True):
+        
+        # --- 區塊 A: 標題與價格 (保持不變) ---
         st.subheader(f"{row['Name']}")
         
         if row['Price'] > 0: 
@@ -550,6 +742,7 @@ for i, (key, config) in enumerate(strategies.items()):
         else: 
             st.write("**Data Error**")
 
+        # --- 區塊 B: 訊號顯示 (保持不變) ---
         if "STRONG BUY" in row['Signal']: st.success(f"💎 {row['Signal']}")
         elif "BUY" in row['Signal']: st.success(f"{row['Signal']}")
         elif "SELL" in row['Signal']: st.error(f"{row['Signal']}")
@@ -559,6 +752,7 @@ for i, (key, config) in enumerate(strategies.items()):
         
         st.caption(f"建議: {row['Action']}")
         
+        # --- 區塊 C: 五維分析數據 (保持不變) ---
         if row.get('Fund') or row.get('Sent') or row.get('Pred') or row.get('Chip'):
             c1, c2 = st.columns(2)
             with c1: 
@@ -569,18 +763,70 @@ for i, (key, config) in enumerate(strategies.items()):
             
             if row.get('Pred'):
                 st.markdown(f"**🔮 明日預測:** {row['Pred']}")
+
+        # =========================================================
+        # ★★★ 新增區塊: 視覺化圖表與回測系統 ★★★
+        # =========================================================
+        # 檢查是否有數據可以繪圖 (Raw_DF 是否存在)
+        if row.get("Raw_DF") is not None and not row["Raw_DF"].empty:
             
-            if row.get('News') and row['News'] != "無新聞":
-                with st.expander("🧐 AI 思考過程 (點擊展開)"):
-                    if row.get('Logs'):
-                        for log in row['Logs']:
-                            st.text(log)
+            # 使用 expander 摺疊起來，以免畫面太長
+            with st.expander("📊 查看 K線圖與回測績效", expanded=False):
+                
+                # 建立兩個標籤頁
+                tab_chart, tab_backtest = st.tabs(["📈 技術分析圖", "🚀 歷史回測 (1年)"])
+                
+                # 先執行回測，取得買賣點訊號 (signals) 和績效 (perf)
+                bt_signals, perf = quick_backtest(row["Raw_DF"], config)
+                
+                # --- Tab 1: 繪製互動圖表 ---
+                with tab_chart:
+                    # 呼叫你剛剛寫好的繪圖函數，並傳入回測訊號來標記買賣點
+                    fig = plot_interactive_chart(row["Raw_DF"], config, bt_signals)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                
+                # --- Tab 2: 顯示回測結果 ---
+                with tab_backtest:
+                    if perf:
+                        # 顯示三個關鍵指標
+                        mc1, mc2, mc3 = st.columns(3)
+                        mc1.metric("交易次數", f"{perf['Trades']} 次")
+                        
+                        # 勝率顏色
+                        win_color = "normal"
+                        if perf['Win_Rate'] > 60: win_color = "normal" # Streamlit metric 預設綠色就是 normal
+                        mc2.metric("勝率", f"{perf['Win_Rate']:.1f}%")
+                        
+                        # 報酬率顏色
+                        ret_color = "normal"
+                        if perf['Total_Return'] > 0: ret_color = "normal"
+                        else: ret_color = "inverse" # 虧損顯示紅色
+                        
+                        mc3.metric("總報酬率", f"{perf['Total_Return']:.2f}%", delta="近一年策略表現", delta_color=ret_color)
+                        
+                        # 簡單的評語
+                        if perf['Total_Return'] > 20:
+                            st.success("🔥 此策略過去一年表現優異！")
+                        elif perf['Total_Return'] < -10:
+                            st.warning("⚠️ 此策略近期表現不佳，請小心使用。")
+                        else:
+                            st.info("💡 表現平穩。")
                     else:
-                        st.text(f"最新頭條: {row['News']}")
-                        st.caption("(AI 認為皆為中立/無情緒波動)")
+                        st.info("資料不足，無法進行有效回測。")
+
+        # --- 區塊 D: 底部掛單資訊與新聞 (保持不變) ---
+        if row.get('News') and row['News'] != "無新聞":
+            with st.expander("🧐 AI 思考過程 (新聞分析)"):
+                if row.get('Logs'):
+                    for log in row['Logs']:
+                        st.text(log)
+                else:
+                    st.text(f"最新頭條: {row['News']}")
         
         st.divider()
         st.text(f"掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
 
 st.caption("✅ 掃描完成 | Auto-generated by Gemini AI")
+
 
