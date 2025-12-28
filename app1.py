@@ -193,7 +193,8 @@ def analyze_sentiment_finbert(symbol):
         return avg_score, display_titles[0], debug_logs
     except Exception as e:
         return 0, f"AI 分析失敗: {str(e)[:20]}...", []
-        # ==========================================
+
+# ==========================================
 # ★ 模組 3: ATR 波動預測
 # ==========================================
 def predict_volatility(df):
@@ -387,6 +388,72 @@ def quick_backtest(df, config):
     except: return None, None
 
 # ==========================================
+# ★ 模組化顯示函數 (更新: 增加策略名稱顯示)
+# ==========================================
+def display_stock_card(placeholder, row, config):
+    """
+    將單一股票的顯示邏輯封裝，供主迴圈和自選掃描共用
+    """
+    with placeholder.container(border=True):
+        st.subheader(f"{row['Name']}")
+        
+        # 價格區塊
+        if row['Price'] > 0: 
+            kp1, kp2 = st.columns(2)
+            kp1.metric("昨日收盤", f"${row['Prev_Close']:,.2f}")
+            kp2.metric("目前價格", f"${row['Price']:,.2f}", f"{row['Price'] - row['Prev_Close']:.2f}")
+
+        # 訊號區塊
+        if "STRONG BUY" in row['Signal']: st.success(f"💎 {row['Signal']}")
+        elif "BUY" in row['Signal']: st.success(f"{row['Signal']}")
+        elif "SELL" in row['Signal']: st.error(f"{row['Signal']}")
+        elif "HOLD" in row['Signal']: st.info(f"{row['Signal']}")
+        elif "ERR" in row['Type']: st.error(f"錯誤: {row['Action']}")
+        else: st.write(f"⚪ {row['Signal']}")
+        
+        st.caption(f"建議: {row['Action']}")
+        
+        # 數據摘要區塊
+        if any([row.get(k) for k in ['Fund', 'Sent', 'Pred', 'Chip']]):
+            c1, c2 = st.columns(2)
+            c1.markdown(f"**財報:** {row.get('Fund', '--')}\n\n**籌碼:** {row.get('Chip', '--')}")
+            c2.markdown(f"**情緒:** {row.get('Sent', '--')}\n\n**預測:** {row.get('Pred', '--')}")
+
+        # 圖表與回測區塊
+        raw_df = row.get("Raw_DF")
+        if raw_df is not None and not raw_df.empty:
+            with st.expander("📊 查看 K線圖與回測績效", expanded=False):
+                t1, t2 = st.tabs(["📈 K線圖", "🚀 回測"])
+                signals, perf = quick_backtest(raw_df, config)
+                with t1:
+                    fig = plot_interactive_chart(raw_df, config, signals)
+                    if fig: st.plotly_chart(fig, use_container_width=True)
+                with t2:
+                    if perf:
+                        m1, m2, m3 = st.columns(3)
+                        m1.metric("交易", perf['Trades'])
+                        m2.metric("勝率", f"{perf['Win_Rate']:.0f}%")
+                        m3.metric("報酬", f"{perf['Total_Return']:.1f}%", delta_color="normal" if perf['Total_Return']>0 else "inverse")
+                    else: st.info("無法回測")
+        else:
+            if row['Type'] != "ERR": st.warning("⚠️ 無法顯示圖表 (Raw_DF 缺失)")
+
+        # AI 新聞思考區塊
+        if row.get('News') and row['News'] != "無新聞":
+            with st.expander("🧐 AI 思考過程"):
+                for log in row.get('Logs', []): st.text(log)
+        
+        st.divider()
+        # ★ 修正: 顯示策略名稱
+        strat_map = {
+            "RSI_RSI": "RSI區間", "KD": "KD震盪", "SUPERTREND": "超級趨勢", 
+            "MA_CROSS": "均線交叉", "FUSION": "AI融合", "BOLL_RSI": "布林極限",
+            "RSI_MA": "RSI+均線"
+        }
+        strat_name = strat_map.get(config['mode'], config['mode'])
+        st.text(f"🛠 策略: {strat_name} | 掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
+
+# ==========================================
 # ★ 新增模組: 參數優化器 (Grid Search)
 # ==========================================
 def optimize_rsi_strategy(df, symbol):
@@ -396,35 +463,30 @@ def optimize_rsi_strategy(df, symbol):
     if df is None or df.empty: return None
 
     # 設定測試範圍 (為了速度，不要設太密)
-    # 例如：長度測 [6, 12, 14, 20], 買點測 [20, 25, 30, 40], 賣點測 [60, 70, 75, 85]
     rsi_lengths = [6, 12, 14, 20]
     entries = [20, 25, 30, 40]
     exits = [60, 70, 75, 85]
     
     results = []
     
-    # 建立進度條 (因為這會跑一陣子)
+    # 建立進度條
     progress_text = f"AI 正在為 {symbol} 尋找最佳參數..."
     my_bar = st.progress(0, text=progress_text)
     total_loops = len(rsi_lengths) * len(entries) * len(exits)
     counter = 0
 
     for length in rsi_lengths:
-        # 先算出 RSI 序列 (避免重複計算)
         rsi_series = ta.rsi(df['Close'], length=length)
-        
         for ent in entries:
             for ext in exits:
                 counter += 1
-                if counter % 10 == 0: # 減少更新頻率以提升效能
+                if counter % 10 == 0:
                     my_bar.progress(counter / total_loops, text=f"正在測試 {symbol}: RSI({length}) {ent}/{ext}")
 
-                # 快速回測邏輯 (直接寫在這裡以求最快速度)
                 signals = pd.Series(0, index=df.index)
                 signals[rsi_series < ent] = 1
                 signals[rsi_series > ext] = -1
                 
-                # 計算績效
                 trades = 0; wins = 0; position = 0; entry_price = 0; total_ret = 0
                 close_prices = df['Close'].values
                 sig_values = signals.values
@@ -447,7 +509,8 @@ def optimize_rsi_strategy(df, symbol):
     
     my_bar.empty()
     return pd.DataFrame(results)
-    # ==========================================
+
+# ==========================================
 # 2. 技術指標與決策邏輯
 # ==========================================
 def find_price_for_rsi(df, target_rsi, length=2):
@@ -640,128 +703,6 @@ def analyze_ticker(config):
         return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Prev_Close": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR", "Logs": [], "Raw_DF": None}
 
 # ==========================================
-# ★ 模組化顯示函數 (重構核心)
-# ==========================================
-def display_stock_card(placeholder, row, config):
-    """
-    將單一股票的顯示邏輯封裝，供主迴圈和自選掃描共用
-    """
-    with placeholder.container(border=True):
-        st.subheader(f"{row['Name']}")
-        
-        # 價格區塊
-        if row['Price'] > 0: 
-            kp1, kp2 = st.columns(2)
-            kp1.metric("昨日收盤", f"${row['Prev_Close']:,.2f}")
-            kp2.metric("目前價格", f"${row['Price']:,.2f}", f"{row['Price'] - row['Prev_Close']:.2f}")
-
-        # 訊號區塊
-        if "STRONG BUY" in row['Signal']: st.success(f"💎 {row['Signal']}")
-        elif "BUY" in row['Signal']: st.success(f"{row['Signal']}")
-        elif "SELL" in row['Signal']: st.error(f"{row['Signal']}")
-        elif "HOLD" in row['Signal']: st.info(f"{row['Signal']}")
-        elif "ERR" in row['Type']: st.error(f"錯誤: {row['Action']}")
-        else: st.write(f"⚪ {row['Signal']}")
-        
-        st.caption(f"建議: {row['Action']}")
-        
-        # 數據摘要區塊
-        if any([row.get(k) for k in ['Fund', 'Sent', 'Pred', 'Chip']]):
-            c1, c2 = st.columns(2)
-            c1.markdown(f"**財報:** {row.get('Fund', '--')}\n\n**籌碼:** {row.get('Chip', '--')}")
-            c2.markdown(f"**情緒:** {row.get('Sent', '--')}\n\n**預測:** {row.get('Pred', '--')}")
-
-        # 圖表與回測區塊
-        raw_df = row.get("Raw_DF")
-        if raw_df is not None and not raw_df.empty:
-            with st.expander("📊 查看 K線圖與回測績效", expanded=False):
-                t1, t2 = st.tabs(["📈 K線圖", "🚀 回測"])
-                signals, perf = quick_backtest(raw_df, config)
-                with t1:
-                    fig = plot_interactive_chart(raw_df, config, signals)
-                    if fig: st.plotly_chart(fig, use_container_width=True)
-                with t2:
-                    if perf:
-                        m1, m2, m3 = st.columns(3)
-                        m1.metric("交易", perf['Trades'])
-                        m2.metric("勝率", f"{perf['Win_Rate']:.0f}%")
-                        m3.metric("報酬", f"{perf['Total_Return']:.1f}%", delta_color="normal" if perf['Total_Return']>0 else "inverse")
-                    else: st.info("無法回測")
-        else:
-            if row['Type'] != "ERR": st.warning("⚠️ 無法顯示圖表 (Raw_DF 缺失)")
-
-        # AI 新聞思考區塊
-        if row.get('News') and row['News'] != "無新聞":
-            with st.expander("🧐 AI 思考過程"):
-                for log in row.get('Logs', []): st.text(log)
-        
-        st.divider()
-        st.text(f"掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
-
-
-# ==========================================
-# 3. 執行區
-# ==========================================
-with st.sidebar:
-    st.header("🇹🇼 台股雷達")
-    def get_fast_info(ticker_symbol):
-        try:
-            t = yf.Ticker(ticker_symbol)
-            return t.fast_info['last_price'], t.fast_info['previous_close']
-        except: return None, None
-
-    try:
-        with st.spinner('更新台股數據中...'):
-            twii_now, twii_prev = get_fast_info("^TWII")
-            tsm_tw_now, _ = get_fast_info("2330.TW")
-            tsm_us_now, _ = get_fast_info("TSM")
-            usd_now, _ = get_fast_info("TWD=X")
-
-        if twii_now:
-            st.metric("台股加權指數", f"{twii_now:,.0f}", f"{(twii_now - twii_prev) / twii_prev * 100:+.2f}%")
-        
-        if tsm_tw_now and tsm_us_now and usd_now:
-            premium = ((tsm_us_now - (tsm_tw_now * 5) / usd_now) / ((tsm_tw_now * 5) / usd_now) * 100)
-            st.metric("TSM ADR 溢價率", f"{premium:+.2f}%", delta="美股 vs 台股", delta_color="inverse")
-    except Exception as e: st.error(f"異常: {e}")
-    
-    st.divider()
-    # ★★★ 新增：隱藏寶石掃描功能 ★★★
-    st.header("🕵️‍♀️ 隱藏寶石掃描")
-    st.caption("輸入代碼 (逗號分隔) 以搜尋其他潛力股")
-    custom_tickers_input = st.text_area("代碼", placeholder="PLTR, AMD, SOFI, 2603.TW")
-    # ★ 新增：是否開啟優化開關
-    enable_opt = st.checkbox("🧪 同步尋找最佳策略 (會比較慢)", value=False)
-    run_custom_scan = st.button("🚀 開始掃描自選股")
-
-    st.divider()
-    with st.expander("📚 指標說明", expanded=True):
-        st.markdown("""
-        **FinBERT 情緒 AI**: 🔥/❄️ 代表新聞利多/利空程度。
-        **ATR 波動**: 預測明日股價震盪區間。
-        **籌碼**: OBV 能量潮 + 機構持股比例。
-        """)
-
-# --- 定義核心監控名單 ---
-strategies = {
-    "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
-    "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-    "BA": { "symbol": "BA", "name": "BA (波音)", "mode": "SUPERTREND", "period": 15, "multiplier": 1.0 },
-    "META": { "symbol": "META", "name": "META (暴力反彈)", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-    "NVDA": { "symbol": "NVDA", "name": "NVDA (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
-    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
-    "QQQ": { "symbol": "QQQ", "name": "QQQ (穩健)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
-    "QLD": { "symbol": "QLD", "name": "QLD (2倍)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
-    "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (3倍)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
-    "EDZ": { "symbol": "EDZ", "name": "EDZ (救援)", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
-    "SOXL_S": { "symbol": "SOXL", "name": "SOXL (狙擊)", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
-    "SOXL_F": { "symbol": "SOXL", "name": "SOXL (快攻)", "mode": "KD", "entry_k": 10, "exit_k": 75 },
-    "BTC_W": { "symbol": "BTC-USD", "name": "BTC (波段)", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
-    "BTC_F": { "symbol": "BTC-USD", "name": "BTC (閃電)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
-    "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
-}
-
-# ==========================================
 # 4. 主畫面邏輯
 # ==========================================
 
@@ -801,14 +742,15 @@ if run_custom_scan and custom_tickers_input:
                             safe_df = opt_df[opt_df['Trades'] >= 3]
                             best_win = safe_df.sort_values(by="WinRate", ascending=False).iloc[0] if not safe_df.empty else best_ret
 
+                            # ★ 更新: 強化顯示交易次數
                             st.markdown(f"""
                             **🏆 報酬率冠軍參數:**
                             - RSI長度: `{int(best_ret['Length'])}` | 買進: `<{int(best_ret['Buy'])}` | 賣出: `>{int(best_ret['Sell'])}`
-                            - 總報酬: **{best_ret['Return']:.1f}%** (交易 {int(best_ret['Trades'])} 次)
+                            - 績效: 報酬 **{best_ret['Return']:.1f}%** | 交易 **{int(best_ret['Trades'])}** 次
                             
                             **🎯 高勝率參數:**
                             - RSI長度: `{int(best_win['Length'])}` | 買進: `<{int(best_win['Buy'])}` | 賣出: `>{int(best_win['Sell'])}`
-                            - 勝率: **{best_win['WinRate']:.0f}%** (總報酬 {best_win['Return']:.1f}%)
+                            - 績效: 勝率 **{best_win['WinRate']:.0f}%** | 交易 **{int(best_win['Trades'])}** 次
                             """)
                             
                             st.caption("💡 提示: 上述參數為歷史最佳，未來不一定保證獲利 (Overfitting 風險)")
