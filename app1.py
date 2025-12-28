@@ -703,6 +703,74 @@ def analyze_ticker(config):
         return {"Symbol": symbol, "Name": config['name'], "Price": 0, "Prev_Close": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR", "Logs": [], "Raw_DF": None}
 
 # ==========================================
+# 3. 執行區 (確保變數已初始化，防止 NameError)
+# ==========================================
+
+# 定義核心持股監控名單
+strategies = {
+    "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
+    "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
+    "BA": { "symbol": "BA", "name": "BA (波音)", "mode": "SUPERTREND", "period": 15, "multiplier": 1.0 },
+    "META": { "symbol": "META", "name": "META (暴力反彈)", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
+    "NVDA": { "symbol": "NVDA", "name": "NVDA (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    "QQQ": { "symbol": "QQQ", "name": "QQQ (穩健)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+    "QLD": { "symbol": "QLD", "name": "QLD (2倍)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+    "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (3倍)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
+    "EDZ": { "symbol": "EDZ", "name": "EDZ (救援)", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
+    "SOXL_S": { "symbol": "SOXL", "name": "SOXL (狙擊)", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
+    "SOXL_F": { "symbol": "SOXL", "name": "SOXL (快攻)", "mode": "KD", "entry_k": 10, "exit_k": 75 },
+    "BTC_W": { "symbol": "BTC-USD", "name": "BTC (波段)", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
+    "BTC_F": { "symbol": "BTC-USD", "name": "BTC (閃電)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
+    "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
+}
+
+# 初始化變數，確保即使 Sidebar 沒執行也不會報錯 (雖然 Sidebar 應該總是會執行)
+run_custom_scan = False
+custom_tickers_input = ""
+enable_opt = False
+
+with st.sidebar:
+    st.header("🇹🇼 台股雷達")
+    def get_fast_info(ticker_symbol):
+        try:
+            t = yf.Ticker(ticker_symbol)
+            return t.fast_info['last_price'], t.fast_info['previous_close']
+        except: return None, None
+
+    try:
+        with st.spinner('更新台股數據中...'):
+            twii_now, twii_prev = get_fast_info("^TWII")
+            tsm_tw_now, _ = get_fast_info("2330.TW")
+            tsm_us_now, _ = get_fast_info("TSM")
+            usd_now, _ = get_fast_info("TWD=X")
+
+        if twii_now:
+            st.metric("台股加權指數", f"{twii_now:,.0f}", f"{(twii_now - twii_prev) / twii_prev * 100:+.2f}%")
+        
+        if tsm_tw_now and tsm_us_now and usd_now:
+            premium = ((tsm_us_now - (tsm_tw_now * 5) / usd_now) / ((tsm_tw_now * 5) / usd_now) * 100)
+            st.metric("TSM ADR 溢價率", f"{premium:+.2f}%", delta="美股 vs 台股", delta_color="inverse")
+    except Exception as e: st.error(f"異常: {e}")
+    
+    st.divider()
+    # ★★★ 隱藏寶石掃描功能 (這裡定義 run_custom_scan) ★★★
+    st.header("🕵️‍♀️ 隱藏寶石掃描")
+    st.caption("輸入代碼 (逗號分隔) 以搜尋其他潛力股")
+    custom_tickers_input = st.text_area("代碼", placeholder="PLTR, AMD, SOFI, 2603.TW")
+    # ★ 優化開關
+    enable_opt = st.checkbox("🧪 同步尋找最佳策略 (會比較慢)", value=False)
+    run_custom_scan = st.button("🚀 開始掃描自選股")
+
+    st.divider()
+    with st.expander("📚 指標說明", expanded=True):
+        st.markdown("""
+        **FinBERT 情緒 AI**: 🔥/❄️ 代表新聞利多/利空程度。
+        **ATR 波動**: 預測明日股價震盪區間。
+        **籌碼**: OBV 能量潮 + 機構持股比例。
+        """)
+
+# ==========================================
 # 4. 主畫面邏輯
 # ==========================================
 
@@ -742,7 +810,7 @@ if run_custom_scan and custom_tickers_input:
                             safe_df = opt_df[opt_df['Trades'] >= 3]
                             best_win = safe_df.sort_values(by="WinRate", ascending=False).iloc[0] if not safe_df.empty else best_ret
 
-                            # ★ 更新: 強化顯示交易次數
+                            # ★ 強化顯示交易次數
                             st.markdown(f"""
                             **🏆 報酬率冠軍參數:**
                             - RSI長度: `{int(best_ret['Length'])}` | 買進: `<{int(best_ret['Buy'])}` | 賣出: `>{int(best_ret['Sell'])}`
