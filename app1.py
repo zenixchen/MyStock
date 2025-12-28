@@ -74,7 +74,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📱 2025 全明星量化戰情室 (旗艦版)")
-st.caption("五維分析: 技術 + 財報 + FinBERT情緒 + ATR波動 + 籌碼(OBV/空單)")
+st.caption("五維分析: 技術 + 財報 + FinBERT情緒 + ATR波動 + 籌碼(OBV/空單) | 資料範圍: 近 5 年")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
@@ -108,8 +108,8 @@ def get_real_live_price(symbol):
 
 def get_safe_data(ticker):
     try:
-        # 下載數據 (保持 2y 以確保 200MA 計算正確)
-        df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
+        # 下載 5 年數據以獲得更完整的 RSI 回測
+        df = yf.download(ticker, period="5y", interval="1d", progress=False, timeout=10)
         
         if df is None or df.empty: return None
         
@@ -388,7 +388,7 @@ def quick_backtest(df, config):
     except: return None, None
 
 # ==========================================
-# ★ 模組化顯示函數 (更新: 增加策略名稱顯示)
+# ★ 模組化顯示函數
 # ==========================================
 def display_stock_card(placeholder, row, config):
     """
@@ -444,7 +444,7 @@ def display_stock_card(placeholder, row, config):
                 for log in row.get('Logs', []): st.text(log)
         
         st.divider()
-        # ★ 修正: 顯示策略名稱
+        # 顯示策略名稱
         strat_map = {
             "RSI_RSI": "RSI區間", "KD": "KD震盪", "SUPERTREND": "超級趨勢", 
             "MA_CROSS": "均線交叉", "FUSION": "AI融合", "BOLL_RSI": "布林極限",
@@ -706,11 +706,14 @@ def analyze_ticker(config):
 # 3. 執行區 (確保變數已初始化，防止 NameError)
 # ==========================================
 
-# 定義核心持股監控名單
+# 定義核心持股監控名單 (BA 已更新)
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
     "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-    "BA": { "symbol": "BA", "name": "BA (波音)", "mode": "SUPERTREND", "period": 15, "multiplier": 1.0 },
+    
+    # ★★★ 已更新: BA 改用「勝率王」參數 (Buy<25, Sell>65) ★★★
+    "BA": { "symbol": "BA", "name": "BA (波音)", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 25, "exit_rsi": 65, "ma_trend": 0 },
+    
     "META": { "symbol": "META", "name": "META (暴力反彈)", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
     "NVDA": { "symbol": "NVDA", "name": "NVDA (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
     "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
@@ -725,7 +728,7 @@ strategies = {
     "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
 }
 
-# 初始化變數，確保即使 Sidebar 沒執行也不會報錯 (雖然 Sidebar 應該總是會執行)
+# 初始化變數
 run_custom_scan = False
 custom_tickers_input = ""
 enable_opt = False
@@ -754,7 +757,7 @@ with st.sidebar:
     except Exception as e: st.error(f"異常: {e}")
     
     st.divider()
-    # ★★★ 隱藏寶石掃描功能 (這裡定義 run_custom_scan) ★★★
+    # ★★★ 隱藏寶石掃描功能 ★★★
     st.header("🕵️‍♀️ 隱藏寶石掃描")
     st.caption("輸入代碼 (逗號分隔) 以搜尋其他潛力股")
     custom_tickers_input = st.text_area("代碼", placeholder="PLTR, AMD, SOFI, 2603.TW")
