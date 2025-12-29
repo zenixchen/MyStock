@@ -199,36 +199,47 @@ def evolve_strategy(df, symbol):
 # ==========================================
 # ★ 模組 B: 自適應市場體制識別 (Regime Detection)
 # ==========================================
-def detect_market_regime(df):
+# ==========================================
+# ★ 優化後的體制識別：使用 DI 交叉判斷方向
+# ==========================================
+def detect_market_regime(df, threshold=25):
     """
-    判斷市場狀態:
-    1. Bull Trend (多頭趨勢): 價格 > 200MA 且 ADX > 25
-    2. Bear Trend (空頭趨勢): 價格 < 200MA 且 ADX > 25
-    3. Ranging (盤整震盪): ADX < 25 (無論價格位置)
+    判斷市場狀態 (DI 交叉版):
+    1. Ranging (盤整): ADX < threshold
+    2. Bull Trend (多頭): ADX > threshold 且 +DI > -DI
+    3. Bear Trend (空頭): ADX > threshold 且 -DI > +DI
     """
-    if df is None or len(df) < 200: return "UNKNOWN", 0
+    if df is None or len(df) < 100: return "UNKNOWN", 0
 
     try:
-        # 1. 計算 ADX (趨勢強度)
-        adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-        if adx_df is None or adx_df.empty: return "UNKNOWN", 0
-        current_adx = adx_df['ADX_14'].iloc[-1]
+        # 1. 計算 ADX 完整數據 (包含 ADX, DMP, DMN)
+        # pandas_ta 的 adx 函數會返回三列數據
+        adx_data = ta.adx(df['High'], df['Low'], df['Close'], length=14)
+        
+        if adx_data is None or adx_data.empty: return "UNKNOWN", 0
+        
+        # 取得最新一筆數據
+        # 注意：pandas_ta 的欄位命名預設為 ADX_14, DMP_14 (+DI), DMN_14 (-DI)
+        current_adx = adx_data['ADX_14'].iloc[-1]
+        plus_di = adx_data['DMP_14'].iloc[-1]   # 多方力道
+        minus_di = adx_data['DMN_14'].iloc[-1]  # 空方力道
 
-        # 2. 計算長期均線 (趨勢方向)
-        ma200 = ta.ema(df['Close'], length=200).iloc[-1]
-        close = df['Close'].iloc[-1]
-
-        # 3. 判定邏輯
+        # 2. 判定邏輯
         regime = ""
-        if current_adx < 25:
-            regime = "RANGING" # 震盪盤
+        
+        # 先看戰況激不激烈 (趨勢強度)
+        if current_adx < threshold:
+            regime = "RANGING" # 盤整震盪
         else:
-            if close > ma200:
-                regime = "BULL_TREND" # 多頭趨勢
+            # 再看誰贏 (趨勢方向) - 這是您要的修改
+            if plus_di > minus_di:
+                regime = "BULL_TREND" # 多方勝
             else:
-                regime = "BEAR_TREND" # 空頭趨勢
+                regime = "BEAR_TREND" # 空方勝
+                
         return regime, current_adx
-    except:
+    except Exception as e:
+        # print(f"Error: {e}") # 除錯用
         return "UNKNOWN", 0
 
 def get_adaptive_config(df, original_config):
