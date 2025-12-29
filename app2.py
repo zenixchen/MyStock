@@ -13,8 +13,8 @@ from transformers import pipeline
 # 0. 頁面設定 & UI 優化
 # ==========================================
 st.set_page_config(
-    page_title="2025 量化戰情室 (AI 自適應版)",
-    page_icon="🧠",
+    page_title="2025 量化戰情室 (AI進化版)",
+    page_icon="🧬",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -37,10 +37,10 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🧠 2025 全明星量化戰情室 (AI 自適應版)")
-st.caption("五維分析 + AI 市場體制識別 (Trend/Range) | 自動微調策略參數")
+st.title("🧬 2025 全明星量化戰情室 (AI 進化版)")
+st.caption("五維分析 + 體制識別 (Trend/Range) + 參數自我進化 (Walk-Forward Opt)")
 
-if st.button('🔄 立即更新行情'):
+if st.button('🔄 立即進化並更新行情'):
     st.cache_data.clear()
     st.rerun()
 
@@ -66,7 +66,7 @@ def get_real_live_price(symbol):
 
 def get_safe_data(ticker):
     try:
-        # 下載長一點的數據以計算 200MA
+        # 下載 2 年數據以計算 200MA 與長期回測
         df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         if df is None or df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): 
@@ -76,7 +76,70 @@ def get_safe_data(ticker):
     except: return None
 
 # ==========================================
-# ★ 新增核心模組: 自適應市場體制識別 (AI Brain)
+# ★ 模組 A: 策略自我進化 (Walk-Forward Optimization)
+# ==========================================
+def evolve_strategy(df, symbol):
+    """
+    進化邏輯：
+    暴力測試過去 6 個月 (約 120 K棒) 的參數組合，
+    找出「勝率 + 報酬率」綜合分數最高的設定。
+    """
+    if df is None or len(df) < 150: return None, None
+
+    # 定義基因庫 (參數範圍)
+    param_grid = [
+        {'rsi_len': 6,  'entry': 20, 'exit': 70, 'desc': '極短線 (RSI 6)'}, 
+        {'rsi_len': 6,  'entry': 30, 'exit': 80, 'desc': '短線積極 (RSI 6)'},
+        {'rsi_len': 14, 'entry': 30, 'exit': 70, 'desc': '標準 (RSI 14)'},
+        {'rsi_len': 14, 'entry': 25, 'exit': 75, 'desc': '標準寬鬆 (RSI 14)'},
+        {'rsi_len': 24, 'entry': 40, 'exit': 60, 'desc': '長線平穩 (RSI 24)'},
+    ]
+
+    best_score = -999
+    best_config = None
+    best_perf = ""
+
+    # 使用最近 126 天 (約半年) 來訓練
+    train_df = df.iloc[-126:].copy()
+    close = train_df['Close']
+
+    for params in param_grid:
+        # 模擬策略訊號
+        rsi = ta.rsi(close, length=params['rsi_len'])
+        if rsi is None: continue
+        
+        signals = pd.Series(0, index=train_df.index)
+        signals[rsi < params['entry']] = 1
+        signals[rsi > params['exit']] = -1
+        
+        # 快速向量回測 (簡化版)
+        prices = close.values
+        sig_vals = signals.values
+        trades = 0; wins = 0; total_ret = 0; position = 0; entry_price = 0
+        
+        for i in range(len(prices)):
+            if position == 0 and sig_vals[i] == 1:
+                position = 1; entry_price = prices[i]
+            elif position == 1 and sig_vals[i] == -1:
+                position = 0; ret = (prices[i] - entry_price) / entry_price
+                total_ret += ret
+                trades += 1
+                if ret > 0: wins += 1
+        
+        # 評分標準：總報酬 + (勝率加權)
+        if trades > 0:
+            win_rate = wins / trades
+            score = (total_ret * 100) + (win_rate * 20) # 勝率權重較高，偏好穩定
+            
+            if score > best_score:
+                best_score = score
+                best_config = params
+                best_perf = f"半年回測: 報酬 {total_ret*100:.1f}% | 勝率 {win_rate*100:.0f}% ({trades}趟)"
+
+    return best_config, best_perf
+
+# ==========================================
+# ★ 模組 B: 自適應市場體制識別 (Regime Detection)
 # ==========================================
 def detect_market_regime(df):
     """
@@ -87,8 +150,8 @@ def detect_market_regime(df):
     """
     if df is None or len(df) < 200: return "UNKNOWN", 0
 
-    # 1. 計算 ADX (趨勢強度)
     try:
+        # 1. 計算 ADX (趨勢強度)
         adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
         if adx_df is None or adx_df.empty: return "UNKNOWN", 0
         current_adx = adx_df['ADX_14'].iloc[-1]
@@ -112,7 +175,7 @@ def detect_market_regime(df):
 
 def get_adaptive_config(df, original_config):
     """
-    根據市場狀態，自動微調策略與參數，保持原策略邏輯但不被市場雙巴
+    結合「進化參數」與「體制識別」，做最終決策
     """
     regime, adx_val = detect_market_regime(df)
     new_config = original_config.copy()
@@ -120,59 +183,56 @@ def get_adaptive_config(df, original_config):
     # 記錄體制供顯示用
     new_config['regime'] = regime
     new_config['adx'] = adx_val
-    new_config['adaptive_msg'] = "維持原始設定" # 預設
+    
+    # 若沒有發生進化，預設訊息
+    if 'adaptive_msg' not in new_config:
+        new_config['adaptive_msg'] = "維持原始設定"
 
-    # 如果是美元匯率或特定商品，可能不適用通用邏輯，可在此排除
-    if "TWD" in new_config['symbol']:
-        return new_config
+    # 如果是美元匯率或特殊商品，略過複雜邏輯
+    if "TWD" in new_config['symbol']: return new_config
 
-    # ★ 自適應邏輯核心 ★
+    # ★ 體制覆蓋邏輯 (Regime Override) ★
+    # 即使進化出了參數，如果遇到極端趨勢，仍需強制修正以保命或追價
+    
     if regime == "BULL_TREND":
-        # === 多頭趨勢 (Lion) ===
+        # === 多頭趨勢 ===
         if original_config['mode'] in ["KD", "BOLL_RSI"]:
-            # 震盪指標在趨勢盤容易賣飛，改為 SuperTrend 或放寬 RSI
-            new_config['mode'] = "SUPERTREND"
+            new_config['mode'] = "SUPERTREND" # 強制切換趨勢策略
             new_config['period'] = 10
             new_config['multiplier'] = 3.0
-            new_config['adaptive_msg'] = "趨勢強勁，轉為 SuperTrend 趨勢跟隨"
+            new_config['adaptive_msg'] += " ➔ 強力趨勢，轉為 SuperTrend"
         elif "RSI" in original_config['mode']:
-            # RSI 強勢微調：回檔 45 即買，賣點延後
-            new_config['entry_rsi'] = max(original_config.get('entry_rsi', 30), 45)
+            # 趨勢盤，買點不能太嚴格 (至少 45)，賣點要放寬 (90)
+            new_config['entry_rsi'] = max(new_config.get('entry_rsi', 30), 45)
             new_config['exit_rsi'] = 90
-            new_config['adaptive_msg'] = "多頭強勢：放寬買點 (RSI<45)，讓利潤奔跑"
+            new_config['adaptive_msg'] += " (多頭修正: 放寬買點、延後賣出)"
 
     elif regime == "BEAR_TREND":
-        # === 空頭趨勢 (Bear) ===
+        # === 空頭趨勢 ===
         if "RSI" in original_config['mode']:
-            # 嚴格抄底
+            # 嚴格抄底，反彈快逃
             new_config['entry_rsi'] = 20
             new_config['exit_rsi'] = 50
-            new_config['adaptive_msg'] = "空頭趨勢：嚴格抄底 (RSI<20)，反彈快逃"
+            new_config['adaptive_msg'] += " (空頭修正: 嚴格抄底 RSI<20)"
         else:
-            # 強制轉為保守 RSI 策略
             new_config['mode'] = "RSI_RSI"
             new_config['entry_rsi'] = 20
             new_config['exit_rsi'] = 45
             new_config['adaptive_msg'] = "空頭保護：強制轉為深跌反彈策略"
 
     elif regime == "RANGING":
-        # === 盤整震盪 (Crab) ===
+        # === 盤整震盪 ===
         if original_config['mode'] in ["SUPERTREND", "MA_CROSS"]:
-            # 趨勢策略在盤整會被雙巴，轉為 KD
             new_config['mode'] = "KD"
             new_config['entry_k'] = 20
             new_config['exit_k'] = 80
-            new_config['adaptive_msg'] = "盤整震盪：轉為 KD 區間操作避免雙巴"
-        elif "RSI" in original_config['mode']:
-            # 標準區間
-            new_config['entry_rsi'] = 30
-            new_config['exit_rsi'] = 70
-            new_config['adaptive_msg'] = "盤整震盪：回歸 RSI 標準區間 (30-70)"
+            new_config['adaptive_msg'] = "盤整震盪：轉為 KD 區間操作"
+        # 若原本是 RSI，就維持「進化」出來的參數即可，不需額外修正
 
     return new_config
 
 # ==========================================
-# ★ 模組 1: 財報基本面
+# ★ 模組 C: 財報 / 情緒 / 籌碼
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_fundamentals(symbol):
@@ -180,20 +240,14 @@ def get_fundamentals(symbol):
         if "=" in symbol or "^" in symbol or "-USD" in symbol: return None 
         stock = yf.Ticker(symbol)
         info = stock.info
-        quote_type = info.get('quoteType', '').upper()
-        if quote_type != 'EQUITY': return None
+        if info.get('quoteType', '').upper() != 'EQUITY': return None
         return {
-            "growth": info.get('revenueGrowth', 0), 
-            "pe": info.get('trailingPE', None), 
-            "eps": info.get('trailingEps', None), 
-            "inst": info.get('heldPercentInstitutions', 0),
+            "growth": info.get('revenueGrowth', 0), "pe": info.get('trailingPE', None), 
+            "eps": info.get('trailingEps', None), "inst": info.get('heldPercentInstitutions', 0),
             "short": info.get('shortPercentOfFloat', 0)
         }
     except: return None
 
-# ==========================================
-# ★ 模組 2: FinBERT 情緒分析
-# ==========================================
 @st.cache_resource
 def load_finbert_model():
     return pipeline("sentiment-analysis", model="ProsusAI/finbert")
@@ -202,96 +256,81 @@ def analyze_sentiment_finbert(symbol):
     try:
         if "=" in symbol or "^" in symbol: return 0, "無新聞", []
         stock = yf.Ticker(symbol)
-        news_list = stock.news
-        if not news_list: return 0, "無新聞", []
+        news = stock.news
+        if not news: return 0, "無新聞", []
         
         classifier = load_finbert_model()
-        texts_to_analyze = []
-        display_titles = []
-        for item in news_list[:5]:
-            title = item.get('title')
-            if not title and 'content' in item: title = item['content'].get('title')
-            summary = item.get('summary', '')
-            if title:
-                full_text = f"{title}. {summary}"
-                texts_to_analyze.append(full_text[:512])
-                display_titles.append(title)
-        if not texts_to_analyze: return 0, "無新聞 (格式不符)", []
+        texts = [f"{item.get('title', '')}. {item.get('summary', '')}"[:512] for item in news[:5]]
+        titles = [item.get('title', '') for item in news[:5]]
+        if not texts: return 0, "無新聞", []
 
-        results = classifier(texts_to_analyze)
-        total_score = 0
+        results = classifier(texts)
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
-        debug_logs = []
+        total_score = 0; logs = []
+        
         for i, res in enumerate(results):
-            sentiment = res['label']
-            confidence = res['score']
-            total_score += score_map[sentiment] * confidence
-            icon = "🔥" if sentiment == "positive" else "❄️" if sentiment == "negative" else "⚪"
-            debug_logs.append(f"{icon} {sentiment.upper()} ({confidence:.2f}): {display_titles[i]}")
+            val = score_map[res['label']] * res['score']
+            total_score += val
+            icon = "🔥" if res['label']=="positive" else "❄️" if res['label']=="negative" else "⚪"
+            logs.append(f"{icon} {res['label'][:3].upper()} {res['score']:.2f}: {titles[i]}")
             
-        avg_score = total_score / len(texts_to_analyze)
-        return avg_score, display_titles[0], debug_logs
-    except Exception as e:
-        return 0, f"AI 分析失敗: {str(e)[:20]}...", []
+        return total_score/len(texts), titles[0], logs
+    except Exception as e: return 0, f"AI Error: {str(e)[:20]}", []
 
-# ==========================================
-# ★ 模組 3 & 4: 波動與籌碼
-# ==========================================
 def predict_volatility(df):
     try:
-        if df is None or df.empty: return None, None
         atr = ta.atr(df['High'], df['Low'], df['Close'], length=14)
         if atr is None: return None, None
         return df['Close'].iloc[-1] + atr.iloc[-1], df['Close'].iloc[-1] - atr.iloc[-1]
     except: return None, None
 
-def analyze_chips_volume(df, inst_percent, short_percent):
+def analyze_chips_volume(df, inst, short_pct):
     try:
-        if df is None or df.empty: return "資料不足"
         obv = ta.obv(df['Close'], df['Volume'])
-        if obv is None or len(obv) < 20: return "量能計算失敗"
-        chip_msg = "🔴 籌碼流入 (OBV上升)" if obv.iloc[-1] > ta.sma(obv, length=20).iloc[-1] else "🟢 籌碼渙散 (OBV下降)"
-        if inst_percent and inst_percent > 0: chip_msg += f" | 機構: {inst_percent*100:.0f}%"
-        if short_percent and short_percent > 0:
-            sp = short_percent * 100
-            if sp > 20: chip_msg += f" | ⚠️ 軋空警戒 ({sp:.1f}%)"
-            elif sp > 10: chip_msg += f" | 空單偏高 ({sp:.1f}%)"
-        return chip_msg
-    except Exception as e: return f"籌碼錯誤: {str(e)}"
+        if obv is None or len(obv)<20: return "無量能數據"
+        trend = "🔴 流入" if obv.iloc[-1] > ta.sma(obv, length=20).iloc[-1] else "🟢 渙散"
+        msg = f"{trend}"
+        if inst and inst > 0: msg += f" | 機構 {inst*100:.0f}%"
+        if short_pct and short_pct > 0.2: msg += f" | ⚠️ 軋空警戒 ({short_pct*100:.1f}%)"
+        return msg
+    except: return "計算錯誤"
 
 # ==========================================
-# ★ 模組 5: 視覺化與輕量回測
+# ★ 模組 D: 視覺化與回測 (含 200MA)
 # ==========================================
 def plot_interactive_chart(df, config, signals=None):
     if df is None or df.empty: return None
     COLOR_UP, COLOR_DOWN = '#089981', '#f23645'
     
-    fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
-        row_heights=[0.75, 0.25], specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
-    )
-    # K線圖
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.8, 0.2])
+
+    # K線
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
         name='Price', increasing_line_color=COLOR_UP, decreasing_line_color=COLOR_DOWN
     ), row=1, col=1)
 
-    # 顯示策略指標
-    if config['mode'] == "MA_CROSS":
-        fast_ma = ta.sma(df['Close'], length=config['fast_ma'])
-        slow_ma = ta.sma(df['Close'], length=config['slow_ma'])
-        fig.add_trace(go.Scatter(x=df.index, y=fast_ma, mode='lines', name=f'MA {config["fast_ma"]}', line=dict(color='#ffeb3b')), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=slow_ma, mode='lines', name=f'MA {config["slow_ma"]}', line=dict(color='#2962ff')), row=1, col=1)
-    elif config['mode'] == "SUPERTREND":
+    # ★ 200 EMA (牛熊分界線)
+    try:
+        ma200 = ta.ema(df['Close'], length=200)
+        fig.add_trace(go.Scatter(x=df.index, y=ma200, mode='lines', name='200 EMA (牛熊分界)', line=dict(color='#9c27b0', width=2)), row=1, col=1)
+    except: pass
+
+    # 策略指標
+    if config['mode'] == "SUPERTREND":
         st_data = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
         if st_data is not None:
             fig.add_trace(go.Scatter(x=df.index, y=st_data[st_data.columns[0]], mode='lines', name='SuperTrend', line=dict(color='#ff9800')), row=1, col=1)
+    elif config['mode'] == "MA_CROSS":
+        fast = ta.sma(df['Close'], length=config['fast_ma'])
+        slow = ta.sma(df['Close'], length=config['slow_ma'])
+        fig.add_trace(go.Scatter(x=df.index, y=fast, name=f'MA {config["fast_ma"]}', line=dict(color='yellow', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=slow, name=f'MA {config["slow_ma"]}', line=dict(color='blue', width=1)), row=1, col=1)
 
     # 副圖
     if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
         fig.add_trace(go.Scatter(x=df.index, y=rsi, mode='lines', name='RSI', line=dict(color='#b39ddb')), row=2, col=1)
-        fig.add_hrect(y0=config.get('entry_rsi', 30), y1=config.get('exit_rsi', 70), fillcolor="rgba(255, 255, 255, 0.05)", line_width=0, row=2, col=1)
         fig.add_hline(y=config.get('entry_rsi', 30), line_dash="solid", line_color=COLOR_UP, row=2, col=1)
         fig.add_hline(y=config.get('exit_rsi', 70), line_dash="solid", line_color=COLOR_DOWN, row=2, col=1)
     elif config['mode'] == "KD":
@@ -300,15 +339,18 @@ def plot_interactive_chart(df, config, signals=None):
             fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 0], name='K', line=dict(color='#ffeb3b')), row=2, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 1], name='D', line=dict(color='#2962ff')), row=2, col=1)
 
-    # 買賣訊號
+    # 買賣訊號點
     if signals is not None:
         buy_pts = df.loc[signals == 1]; sell_pts = df.loc[signals == -1]
-        if not buy_pts.empty: 
-            fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=10, color='#00e676'), name='Buy'), row=1, col=1)
-        if not sell_pts.empty: 
-            fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=10, color='#ff1744'), name='Sell'), row=1, col=1)
+        if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#00e676'), name='Buy'), row=1, col=1)
+        if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#ff1744'), name='Sell'), row=1, col=1)
 
-    fig.update_layout(height=500, margin=dict(t=30, b=0, l=10, r=10), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc'), showlegend=True)
+    # 版面設定
+    adx_val = config.get('adx', 0); regime = config.get('regime', 'N/A')
+    title_text = f"策略視圖 | 市場體制: {regime} (強度 ADX: {adx_val:.1f})"
+    
+    fig.update_layout(title=dict(text=title_text, font=dict(size=14, color='white')), height=500, margin=dict(t=50, b=0, l=10, r=10), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc'), showlegend=True, hovermode='x unified')
+    fig.update_xaxes(rangeslider=dict(visible=False), row=1, col=1)
     return fig
 
 def quick_backtest(df, config):
@@ -316,7 +358,6 @@ def quick_backtest(df, config):
     bt_df = df.copy(); close = bt_df['Close']; signals = pd.Series(0, index=bt_df.index)
     
     try:
-        # 根據動態 Config 進行回測
         if config['mode'] in ["RSI_RSI", "FUSION", "RSI_MA", "BOLL_RSI"]:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             signals[rsi < config['entry_rsi']] = 1
@@ -346,16 +387,15 @@ def quick_backtest(df, config):
 
 def display_stock_card(placeholder, row, config):
     with placeholder.container(border=True):
-        # 標題區：名稱 + 市場體制 (AI Brain 結果)
         regime_icon = "🦁" if config.get('regime') == "BULL_TREND" else "🐻" if config.get('regime') == "BEAR_TREND" else "🦀"
         regime_text = "多頭" if config.get('regime') == "BULL_TREND" else "空頭" if config.get('regime') == "BEAR_TREND" else "盤整"
         
         st.subheader(f"{row['Name']}")
         st.markdown(f"**市場狀態:** {regime_icon} {regime_text} (ADX:{config.get('adx',0):.0f})")
+        
         if config.get('adaptive_msg'):
-            st.caption(f"🤖 AI調整: {config['adaptive_msg']}")
+            st.info(f"🧬 AI 進化策略: {config['adaptive_msg']}")
 
-        # 價格與訊號
         if row['Price'] > 0: 
             kp1, kp2 = st.columns(2)
             kp1.metric("昨日收盤", f"${row['Prev_Close']:,.2f}")
@@ -369,23 +409,21 @@ def display_stock_card(placeholder, row, config):
         
         st.caption(f"建議: {row['Action']}")
         
-        # 數據區
         c1, c2 = st.columns(2)
         c1.markdown(f"**財報:** {row.get('Fund', '--')}\n\n**籌碼:** {row.get('Chip', '--')}")
         c2.markdown(f"**情緒:** {row.get('Sent', '--')}\n\n**預測:** {row.get('Pred', '--')}")
 
-        # 圖表區
         if row.get("Raw_DF") is not None:
-            with st.expander("📊 K線圖與 AI 修正後回測", expanded=False):
+            with st.expander("📊 K線圖與驗證 (點擊展開)", expanded=False):
                 signals, perf = quick_backtest(row["Raw_DF"], config)
                 st.plotly_chart(plot_interactive_chart(row["Raw_DF"], config, signals), use_container_width=True)
-                if perf: st.write(f"目前策略模擬績效: 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
+                if perf: st.write(f"當前策略模擬績效: 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
         
         st.divider()
-        st.text(f"🛠 當前策略: {config['mode']} | 掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
+        st.text(f"🛠 執行策略: {config['mode']} | 掛買: {row['Buy_At']} | 掛賣: {row['Sell_At']}")
 
 # ==========================================
-# 2. 策略決策邏輯 (含工具函式)
+# 4. 主邏輯與策略庫
 # ==========================================
 def find_price_for_rsi(df, target_rsi, length=2):
     if df is None or df.empty: return 0
@@ -407,14 +445,36 @@ def analyze_ticker(base_config):
         df_daily = get_safe_data(symbol)
         if df_daily is None: raise Exception("數據下載失敗")
         
-        # ★★★ 關鍵修改：獲取自適應配置 ★★★
+        # ---------------------------------------------------
+        # ★★★ AI 進化區塊 (Evolution Block) ★★★
+        # ---------------------------------------------------
+        evolved_msg = ""
+        # 只有當模式包含 RSI 時才啟用進化 (避免干擾 TSM/USD 邏輯)
+        if "RSI" in base_config['mode'] or base_config['mode'] == "FUSION":
+            best_params, best_perf = evolve_strategy(df_daily, symbol)
+            
+            if best_params:
+                # 覆蓋原本的設定，這就是「進化」
+                base_config['rsi_len'] = best_params['rsi_len']
+                base_config['entry_rsi'] = best_params['entry']
+                base_config['exit_rsi'] = best_params['exit']
+                evolved_msg = f"{best_params['desc']} - {best_perf}"
+        
+        # ---------------------------------------------------
+        # ★★★ 體制適應 (Regime Adaptation) ★★★
+        # ---------------------------------------------------
         config = get_adaptive_config(df_daily, base_config)
+        if evolved_msg: 
+             # 將進化訊息與體制適應訊息合併
+             config['adaptive_msg'] = f"{evolved_msg} ➔ {config.get('adaptive_msg', '')}"
 
+        # ---------------------------------------------------
+        # 計算訊號
+        # ---------------------------------------------------
         prev_close = df_daily['Close'].iloc[-1]
         live_price = get_real_live_price(symbol)
         if live_price is None or np.isnan(live_price): live_price = prev_close
         
-        # 模擬今日 K 線
         calc_df = df_daily.copy()
         new_row = pd.DataFrame({'Close': [live_price], 'High': [max(live_price, df_daily['High'].iloc[-1])], 'Low': [min(live_price, df_daily['Low'].iloc[-1])], 'Open': [live_price], 'Volume': [0]}, index=[pd.Timestamp.now()])
         calc_df = pd.concat([calc_df, new_row])
@@ -424,46 +484,26 @@ def analyze_ticker(base_config):
         signal, action_msg, signal_type = "💤 WAIT", "觀望中", "WAIT"
         buy_at, sell_at = "---", "---"
 
-        # --- 使用 config (已是自適應後的) 進行判斷 ---
         if config['mode'] == "SUPERTREND":
             st_data = ta.supertrend(high, low, close, length=config['period'], multiplier=config['multiplier'])
             if st_data is not None:
                 curr_dir, prev_dir, st_value = st_data.iloc[-1, 1], st_data.iloc[-2, 1], st_data.iloc[-1, 0]
                 sell_at = f"${st_value:.2f}"
-                if prev_dir == -1 and curr_dir == 1: 
-                    signal, action_msg, signal_type = "🚀 BUY", "趨勢翻多 (Breakout)", "BUY"
-                elif prev_dir == 1 and curr_dir == -1: 
-                    signal, action_msg, signal_type = "📉 SELL", "趨勢翻空 (Breakdown)", "SELL"
-                elif curr_dir == 1: 
-                    signal, action_msg, signal_type = "✊ HOLD", f"趨勢多頭 (止損 {st_value:.2f})", "HOLD"
-                else: 
-                    signal, action_msg, signal_type = "☁️ EMPTY", f"趨勢空頭", "EMPTY"
+                if prev_dir == -1 and curr_dir == 1: signal, action_msg, signal_type = "🚀 BUY", "趨勢翻多 (Breakout)", "BUY"
+                elif prev_dir == 1 and curr_dir == -1: signal, action_msg, signal_type = "📉 SELL", "趨勢翻空 (Breakdown)", "SELL"
+                elif curr_dir == 1: signal, action_msg, signal_type = "✊ HOLD", f"趨勢多頭 (止損 {st_value:.2f})", "HOLD"
+                else: signal, action_msg, signal_type = "☁️ EMPTY", f"趨勢空頭", "EMPTY"
 
-        elif config['mode'] == "FUSION":
-            curr_rsi = ta.rsi(close, length=config['rsi_len']).iloc[-1]
-            trend_ma = ta.ema(close, length=config['ma_trend']).iloc[-1]
-            b_price = find_price_for_rsi(df_daily, config['entry_rsi'], length=config['rsi_len'])
-            s_price = find_price_for_rsi(df_daily, config['exit_rsi'], length=config['rsi_len'])
-            buy_at, sell_at = f"${b_price:.2f}", f"${s_price:.2f}"
-            is_buy = (curr_price > trend_ma) and (curr_rsi < config['entry_rsi'])
-            if is_buy: 
-                signal, action_msg, signal_type = "🔥 BUY", "趨勢向上+短線超跌", "BUY"
-            elif curr_rsi > config['exit_rsi']: 
-                signal, action_msg, signal_type = "💰 SELL", "RSI過熱", "SELL"
-            else: action_msg = f"等待 (RSI: {curr_rsi:.1f})"
-
-        elif config['mode'] in ["RSI_RSI", "RSI_MA"]:
+        elif config['mode'] in ["RSI_RSI", "RSI_MA", "FUSION"]:
             rsi_len = config.get('rsi_len', 14)
             curr_rsi = ta.rsi(close, length=rsi_len).iloc[-1]
-            use_trend = config.get('ma_trend', 0) > 0
-            is_trend_ok = (curr_price > ta.ema(close, length=config['ma_trend']).iloc[-1]) if use_trend else True
             b_price = find_price_for_rsi(df_daily, config['entry_rsi'], length=rsi_len)
             buy_at = f"${b_price:.2f}"
             
-            if config['mode'] == "RSI_RSI": 
+            if config['mode'] == "RSI_RSI" or config['mode'] == "FUSION": 
                 s_val = find_price_for_rsi(df_daily, config['exit_rsi'], length=rsi_len)
                 sell_at = f"${s_val:.2f}"
-                if is_trend_ok and curr_rsi < config['entry_rsi']: 
+                if curr_rsi < config['entry_rsi']: 
                     signal, action_msg, signal_type = "🔥 BUY", f"RSI低檔 ({curr_rsi:.1f})", "BUY"
                 elif curr_rsi > config['exit_rsi']: 
                     signal, action_msg, signal_type = "💰 SELL", f"RSI高檔 ({curr_rsi:.1f})", "SELL"
@@ -471,7 +511,7 @@ def analyze_ticker(base_config):
             else: 
                 s_val = ta.sma(close, length=config['exit_ma']).iloc[-1]
                 sell_at = f"${s_val:.2f} (MA)"
-                if is_trend_ok and curr_rsi < config['entry_rsi']: 
+                if curr_rsi < config['entry_rsi']: 
                     signal, action_msg, signal_type = "🔥 BUY", f"短線超賣", "BUY"
                 elif curr_price > s_val: 
                     signal, action_msg, signal_type = "💰 SELL", f"觸及均線壓力", "SELL"
@@ -480,38 +520,20 @@ def analyze_ticker(base_config):
             stoch = ta.stoch(high, low, close, k=9, d=3, smooth_k=3)
             curr_k = stoch.iloc[:, 0].iloc[-1]
             buy_at, sell_at = f"K<{config['entry_k']}", f"K>{config['exit_k']}"
-            if curr_k < config['entry_k']: 
-                signal, action_msg, signal_type = "🚀 BUY", f"KD低檔交叉", "BUY"
-            elif curr_k > config['exit_k']: 
-                signal, action_msg, signal_type = "💀 SELL", f"KD高檔鈍化", "SELL"
+            if curr_k < config['entry_k']: signal, action_msg, signal_type = "🚀 BUY", f"KD低檔交叉", "BUY"
+            elif curr_k > config['exit_k']: signal, action_msg, signal_type = "💀 SELL", f"KD高檔鈍化", "SELL"
             else: action_msg = f"K值: {curr_k:.1f}"
-
-        elif config['mode'] == "BOLL_RSI":
-            rsi_val = ta.rsi(close, length=config.get('rsi_len', 14)).iloc[-1]
-            bb = ta.bbands(close, length=20, std=2)
-            lower, mid, upper = bb.iloc[:, 0].iloc[-1], bb.iloc[:, 1].iloc[-1], bb.iloc[:, 2].iloc[-1]
-            buy_at, sell_at = f"${lower:.2f}", f"${mid:.2f}"
-            if curr_price < lower and rsi_val < config['entry_rsi']: 
-                signal, action_msg, signal_type = "🚑 BUY", "破下軌+超跌", "BUY"
-            elif curr_price >= upper: 
-                signal, action_msg, signal_type = "💀 SELL", "觸上軌", "SELL"
-            elif curr_price >= mid: 
-                signal, action_msg, signal_type = "⚠️ HOLD", "中軸震盪", "HOLD"
 
         elif config['mode'] == "MA_CROSS":
              fast = ta.sma(close, length=config['fast_ma']); slow = ta.sma(close, length=config['slow_ma'])
              curr_fast, prev_fast = fast.iloc[-1], fast.iloc[-2]
              curr_slow, prev_slow = slow.iloc[-1], slow.iloc[-2]
-             if prev_fast <= prev_slow and curr_fast > curr_slow:
-                 signal, action_msg, signal_type = "🔥 BUY", "黃金交叉", "BUY"
-             elif prev_fast >= prev_slow and curr_fast < curr_slow:
-                 signal, action_msg, signal_type = "📉 SELL", "死亡交叉", "SELL"
-             elif curr_fast > curr_slow:
-                 signal, action_msg, signal_type = "✊ HOLD", "多頭排列", "HOLD"
-             else:
-                 signal, action_msg, signal_type = "☁️ EMPTY", "空頭排列", "EMPTY"
+             if prev_fast <= prev_slow and curr_fast > curr_slow: signal, action_msg, signal_type = "🔥 BUY", "黃金交叉", "BUY"
+             elif prev_fast >= prev_slow and curr_fast < curr_slow: signal, action_msg, signal_type = "📉 SELL", "死亡交叉", "SELL"
+             elif curr_fast > curr_slow: signal, action_msg, signal_type = "✊ HOLD", "多頭排列", "HOLD"
+             else: signal, action_msg, signal_type = "☁️ EMPTY", "空頭排列", "EMPTY"
 
-        # 基本面/情緒整合
+        # 整合財報與情緒
         fund_data = get_fundamentals(symbol)
         fund_msg = ""
         is_growth = False; is_cheap = False
@@ -547,61 +569,42 @@ def analyze_ticker(base_config):
         return {"Symbol": symbol, "Name": base_config['name'], "Price": 0, "Prev_Close": 0, "Signal": "ERR", "Action": str(e), "Type": "ERR", "Logs": [], "Raw_DF": None}
 
 # ==========================================
-# 3. 執行區 (設定清單)
+# 5. 策略清單與執行
 # ==========================================
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
     "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
     "BA": { "symbol": "BA", "name": "BA (波音)", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 25, "exit_rsi": 65, "ma_trend": 0 },
     "META": { "symbol": "META", "name": "META (暴力反彈)", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-    "NVDA": { "symbol": "NVDA", "name": "NVDA (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
-    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    "NVDA": { "symbol": "NVDA", "name": "NVDA (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
+    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
     "QQQ": { "symbol": "QQQ", "name": "QQQ (穩健)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
     "QLD": { "symbol": "QLD", "name": "QLD (2倍)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
     "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (3倍)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
     "EDZ": { "symbol": "EDZ", "name": "EDZ (救援)", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
     "SOXL_S": { "symbol": "SOXL", "name": "SOXL (狙擊)", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
-    "SOXL_F": { "symbol": "SOXL", "name": "SOXL (快攻)", "mode": "KD", "entry_k": 10, "exit_k": 75 },
     "BTC_W": { "symbol": "BTC-USD", "name": "BTC (波段)", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
-    "BTC_F": { "symbol": "BTC-USD", "name": "BTC (閃電)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
     "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
 }
 
 with st.sidebar:
     st.header("🇹🇼 台股雷達")
-    def get_fast_info(ticker_symbol):
-        try:
-            t = yf.Ticker(ticker_symbol)
-            return t.fast_info['last_price'], t.fast_info['previous_close']
-        except: return None, None
-
     try:
         with st.spinner('更新台股數據中...'):
-            twii_now, twii_prev = get_fast_info("^TWII")
-            tsm_tw_now, _ = get_fast_info("2330.TW")
-            tsm_us_now, _ = get_fast_info("TSM")
-            usd_now, _ = get_fast_info("TWD=X")
-
-        if twii_now:
+            t = yf.Ticker("^TWII"); twii_now = t.fast_info['last_price']; twii_prev = t.fast_info['previous_close']
             st.metric("台股加權指數", f"{twii_now:,.0f}", f"{(twii_now - twii_prev) / twii_prev * 100:+.2f}%")
-        
-        if tsm_tw_now and tsm_us_now and usd_now:
-            premium = ((tsm_us_now - (tsm_tw_now * 5) / usd_now) / ((tsm_tw_now * 5) / usd_now) * 100)
-            st.metric("TSM ADR 溢價率", f"{premium:+.2f}%", delta="美股 vs 台股", delta_color="inverse")
-    except Exception as e: st.error(f"異常: {e}")
-    
+    except: st.error("連線異常")
     st.divider()
-    st.info("💡 系統小提示: 策略現在會自動偵測『趨勢』或『盤整』，並微調參數以提高勝率。")
+    st.info("🧬 AI 進化引擎已啟動：每次掃描皆會執行『步進最佳化』，為每檔股票尋找最佳參數。")
 
-# 主畫面執行
-st.subheader("📋 核心持股清單 (AI Auto-Adaptive)")
+st.subheader("📋 核心持股清單 (AI Evolution + Regime)")
 col1, col2 = st.columns(2)
 placeholder_list = [col1.empty() if i % 2 == 0 else col2.empty() for i in range(len(strategies))]
 
 for i, (key, config) in enumerate(strategies.items()):
-    with placeholder_list[i].container(): st.text(f"⏳ AI 分析 {config['name']} 中...")
+    with placeholder_list[i].container(): st.text(f"🧬 AI 正在進化並分析 {config['name']} ...")
     row = analyze_ticker(config)
     placeholder_list[i].empty()
     display_stock_card(placeholder_list[i], row, get_adaptive_config(row.get('Raw_DF'), config))
-    
-st.success("✅ 掃描完成 | AI Brain Active")
+
+st.success("✅ 掃描完成 | Strategies Evolved & Adapted")
