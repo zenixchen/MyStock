@@ -74,7 +74,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📱 2025 全明星量化戰情室 (旗艦版)")
-st.caption("五維分析: 技術 + 財報 + FinBERT情緒 + ATR波動 + 籌碼(OBV/空單) | 資料範圍: 近 5 年")
+st.caption("五維分析: 技術 + 財報 + FinBERT情緒 + ATR波動 + 籌碼(OBV/空單) | RSI 修正版")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
@@ -542,10 +542,27 @@ def analyze_ticker(config):
         live_price = get_real_live_price(symbol)
         if live_price is None or np.isnan(live_price): live_price = prev_close
         
-        # 模擬今日 K 線
+        # ★★★ 修正開始：防止重複疊加今日 K 線 (修復 RSI 異常) ★★★
+        # 邏輯：檢查最後一筆資料日期。如果是今天，則更新；如果是過去，則新增。
         calc_df = df_daily.copy()
-        new_row = pd.DataFrame({'Close': [live_price], 'High': [max(live_price, df_daily['High'].iloc[-1])], 'Low': [min(live_price, df_daily['Low'].iloc[-1])], 'Open': [live_price], 'Volume': [0]}, index=[pd.Timestamp.now()])
-        calc_df = pd.concat([calc_df, new_row])
+        
+        # 取得最後一筆的日期
+        last_date = calc_df.index[-1].date()
+        today_date = pd.Timestamp.now().date()
+        
+        if last_date == today_date:
+            # 已有今日資料，執行更新 (High取最大，Low取最小)
+            calc_df.iloc[-1, calc_df.columns.get_loc('Close')] = live_price
+            calc_df.iloc[-1, calc_df.columns.get_loc('High')] = max(live_price, calc_df.iloc[-1]['High'])
+            calc_df.iloc[-1, calc_df.columns.get_loc('Low')] = min(live_price, calc_df.iloc[-1]['Low'])
+        else:
+            # 資料停留在過去，新增今日資料 (High/Low/Open 初始值均為 live_price)
+            new_row = pd.DataFrame({
+                'Open': [live_price], 'High': [live_price], 'Low': [live_price], 'Close': [live_price], 'Volume': [0]
+            }, index=[pd.Timestamp.now()])
+            calc_df = pd.concat([calc_df, new_row])
+        # ★★★ 修正結束 ★★★
+
         close, high, low = calc_df['Close'], calc_df['High'], calc_df['Low']
         curr_price = live_price
 
