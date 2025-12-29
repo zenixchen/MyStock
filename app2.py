@@ -9,16 +9,23 @@ from datetime import datetime
 # ★ 深度學習 NLP 套件
 from transformers import pipeline
 import sys
-
-# 強制設定預設編碼為 UTF-8 (修復 UnicodeEncodeError)
-sys.stdout.reconfigure(encoding='utf-8')
+import re
 
 # ==========================================
-# ★★★ LLM 設定區 (Groq) ★★★
+# ★★★ 1. 強制編碼修復 (終極版) ★★★
+# ==========================================
+# 同時設定 stdout 和 stderr，防止日誌報錯崩潰
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
+# ==========================================
+# LLM 設定區 (Groq)
 # ==========================================
 try:
     from groq import Groq
-    # 預設不填，讓使用者在側邊欄填入
     GROQ_API_KEY_DEFAULT = "" 
 except ImportError:
     GROQ_API_KEY_DEFAULT = ""
@@ -46,7 +53,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("💎 2025 全明星量化戰情室 (LLM 邏輯版)")
-st.caption("15檔核心持股 (原始策略) + LLM 深度推演 (標題+摘要) | 讀取 15 則新聞")
+st.caption("15檔核心持股 (原始策略) + LLM 深度推演 (標題+摘要) | 編碼與顯示修復版")
 
 # ==========================================
 # 1. 核心函數 (資料獲取)
@@ -74,8 +81,19 @@ def get_safe_data(ticker):
         return df
     except: return None
 
+def clean_text_for_llm(text):
+    """
+    ★★★ 核心修復：暴力移除所有可能導致 crash 的特殊符號 ★★★
+    只保留中英文字、數字和基本標點
+    """
+    if not isinstance(text, str): return ""
+    # 移除 ★ (Unicode 2605) 和其他非基本字符
+    # 這裡使用正則表達式，只允許：中日韓文字(\u4e00-\u9fff)、英數(\w)、空格(\s)、基本標點(.,:;%()-)
+    # 其餘全部替換為空字串
+    return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', text)
+
 def get_news_content(symbol):
-    """★ 修改：抓取 15 則新聞 + 摘要供 LLM 分析"""
+    """抓取 15 則新聞 + 摘要供 LLM 分析"""
     try:
         if "=" in symbol or "^" in symbol: return []
         stock = yf.Ticker(symbol)
@@ -88,7 +106,10 @@ def get_news_content(symbol):
             title = n.get('title', n.get('content', {}).get('title', ''))
             summary = n.get('summary', '') 
             
-            # 拼湊標題 + 摘要
+            # ★★★ 關鍵：清洗文字，移除星星等怪符號 ★★★
+            title = clean_text_for_llm(title)
+            summary = clean_text_for_llm(summary)
+
             if summary:
                 full_text = f"標題: {title}\n   摘要: {summary}"
             else:
@@ -130,8 +151,12 @@ def analyze_sentiment_finbert(symbol):
         if not news_list: return 0, "無新聞", []
         
         classifier = load_finbert_model()
-        # ★ 修改：FinBERT 也改為讀取 15 則標題 (FinBERT只讀標題即可，讀摘要太慢)
-        texts = [n.get('title', '') for n in news_list[:15] if n.get('title')]
+        # FinBERT 也讀取 15 則標題 (需清洗)
+        texts = []
+        for n in news_list[:15]:
+            t = n.get('title', '')
+            if t: texts.append(clean_text_for_llm(t)) # 清洗
+
         if not texts: return 0, "無新聞", []
 
         results = classifier(texts)
@@ -151,7 +176,7 @@ def analyze_sentiment_finbert(symbol):
 def analyze_logic_llm(client, symbol, news_titles, tech_signal):
     if not client or not news_titles: return "無 AI 分析 (未連線或無新聞)", "⚪", False
     try:
-        # news_titles 現在包含了摘要，內容會比較長
+        # 確保 prompt 裡面也沒有怪字
         news_text = "\n\n".join([f"{i+1}. {t}" for i, t in enumerate(news_titles)])
         
         prompt = f"""
@@ -171,7 +196,7 @@ def analyze_logic_llm(client, symbol, news_titles, tech_signal):
         
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile", # 使用最新模型
+            model="llama-3.3-70b-versatile",
             temperature=0.3,
         )
         return chat_completion.choices[0].message.content, "🤖", True
@@ -264,7 +289,8 @@ def analyze_ticker(config, groq_client=None):
     # ★★★ 策略邏輯 ★★★
     if config['mode'] == "SUPERTREND":
         st_val = ta.supertrend(h, l, c, length=config['period'], multiplier=config['multiplier'])
-        strategy_desc = f"SuperTrend (期間:{config['period']}, 倍數:{config['multiplier']})"
+        # 顯示參數
+        strategy_desc = f"SuperTrend (Period={config['period']}, Mult={config['multiplier']})"
         if st_val is not None:
             dr = st_val.iloc[-1, 1]; p_dr = st_val.iloc[-2, 1]; s_line = st_val.iloc[-1, 0]
             sell_at = f"${s_line:.2f}"
@@ -278,6 +304,7 @@ def analyze_ticker(config, groq_client=None):
         ma = ta.ema(c, length=config['ma_trend']).iloc[-1]
         buy_at = f"${find_price_for_rsi(df, config['entry_rsi'], config['rsi_len'])}"
         sell_at = f"${find_price_for_rsi(df, config['exit_rsi'], config['rsi_len'])}"
+        # 顯示參數
         strategy_desc = f"FUSION (RSI<{config['entry_rsi']} + EMA{config['ma_trend']})"
         
         if lp > ma and rsi < config['entry_rsi']: sig = "🔥 BUY"; act = "趨勢回檔超跌"; sig_type="BUY"
@@ -289,7 +316,8 @@ def analyze_ticker(config, groq_client=None):
         buy_at = f"${find_price_for_rsi(df, config['entry_rsi'], config.get('rsi_len', 14))}"
         
         if config['mode'] == "RSI_RSI":
-            strategy_desc = f"RSI區間 (長度:{config.get('rsi_len',14)}, 買<{config['entry_rsi']}, 賣>{config['exit_rsi']})"
+            # 顯示參數
+            strategy_desc = f"RSI區間 (Length={config.get('rsi_len',14)}, Buy<{config['entry_rsi']}, Sell>{config['exit_rsi']})"
             sell_at = f"${find_price_for_rsi(df, config['exit_rsi'], config.get('rsi_len', 14))}"
             if rsi < config['entry_rsi']: sig = "🔥 BUY"; act = f"RSI低檔 ({rsi:.1f})"; sig_type="BUY"
             elif rsi > config['exit_rsi']: sig = "💰 SELL"; act = f"RSI高檔 ({rsi:.1f})"; sig_type="SELL"
@@ -304,6 +332,7 @@ def analyze_ticker(config, groq_client=None):
     elif config['mode'] == "KD":
         k = ta.stoch(h, l, c, k=9, d=3).iloc[-1, 0]
         buy_at = f"K<{config['entry_k']}"; sell_at = f"K>{config['exit_k']}"
+        # 顯示參數
         strategy_desc = f"KD震盪 (K<{config['entry_k']} 買, K>{config['exit_k']} 賣)"
         if k < config['entry_k']: sig = "🚀 BUY"; act = f"KD低檔 ({k:.1f})"; sig_type="BUY"
         elif k > config['exit_k']: sig = "💀 SELL"; act = f"KD高檔 ({k:.1f})"; sig_type="SELL"
@@ -312,7 +341,8 @@ def analyze_ticker(config, groq_client=None):
     elif config['mode'] == "MA_CROSS":
         f, s = ta.sma(c, config['fast_ma']), ta.sma(c, config['slow_ma'])
         curr_f, prev_f = f.iloc[-1], f.iloc[-2]; curr_s, prev_s = s.iloc[-1], s.iloc[-2]
-        strategy_desc = f"均線交叉 (快:{config['fast_ma']}, 慢:{config['slow_ma']})"
+        # 顯示參數
+        strategy_desc = f"均線交叉 (Fast:{config['fast_ma']}, Slow:{config['slow_ma']})"
         if prev_f <= prev_s and curr_f > curr_s: sig = "🔥 BUY"; act = "黃金交叉"; sig_type="BUY"
         elif prev_f >= prev_s and curr_f < curr_s: sig = "📉 SELL"; act = "死亡交叉"; sig_type="SELL"
         elif curr_f > curr_s: sig = "✊ HOLD"; act = "多頭排列"; sig_type="HOLD"
@@ -422,7 +452,7 @@ def display_card(placeholder, row, config):
     with placeholder.container(border=True):
         st.subheader(f"{row['Name']}")
         
-        # 顯示價格 (昨日收盤 vs 即時)
+        # ★★★ 顯示：價格 (昨日收盤 vs 即時) ★★★
         c1, c2 = st.columns(2)
         c1.metric("昨日收盤", f"${row['Prev_Close']:,.2f}")
         c2.metric("即時價格", f"${row['Price']:,.2f}", f"{row['Price']-row['Prev_Close']:.2f}")
@@ -431,7 +461,7 @@ def display_card(placeholder, row, config):
         sig_col = "green" if "BUY" in row['Signal'] else "red" if "SELL" in row['Signal'] else "gray"
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
         
-        # 顯示目前使用的策略與參數
+        # ★★★ 顯示：目前策略與參數 ★★★
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
         if row['Is_LLM']:
@@ -489,7 +519,7 @@ if run_scan and custom_input:
                         best = opt_res.sort_values(by="Return", ascending=False).iloc[0]
                         st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
 
-# B. 核心持股清單 (100% 原始參數)
+# B. 核心持股清單 (100% 您的原始參數)
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
     "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
