@@ -388,7 +388,18 @@ def plot_interactive_chart(df, config, signals=None):
         fig.add_trace(go.Scatter(x=df.index, y=fast, name=f'MA {config["fast_ma"]}', line=dict(color='yellow', width=1)), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=slow, name=f'MA {config["slow_ma"]}', line=dict(color='blue', width=1)), row=1, col=1)
 
-    # 副圖
+    # 副圖  
+    # 這裡判斷：如果是 ADX 相關的判斷邏輯，我們畫出 DI 線
+    if "SUPERTREND" in config['mode'] or "RSI" in config['mode']: # 或是直接檢查 config['regime']
+        try:
+            adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
+            # 畫 +DI (紅色虛線)
+            fig.add_trace(go.Scatter(x=df.index, y=adx_df['DMP_14'], mode='lines', name='+DI (多)', 
+                                     line=dict(color='#ff5252', width=1, dash='dot')), row=2, col=1)
+            # 畫 -DI (綠色虛線)
+            fig.add_trace(go.Scatter(x=df.index, y=adx_df['DMN_14'], mode='lines', name='-DI (空)', 
+                                     line=dict(color='#00e676', width=1, dash='dot')), row=2, col=1)
+        except: pass
     if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
         fig.add_trace(go.Scatter(x=df.index, y=rsi, mode='lines', name='RSI', line=dict(color='#b39ddb')), row=2, col=1)
