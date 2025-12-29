@@ -19,7 +19,7 @@ except Exception:
     pass
 
 # ==========================================
-# ★★★ 2. 套件安全匯入 (防崩潰機制) ★★★
+# ★★★ 2. 套件安全匯入 ★★★
 # ==========================================
 try:
     from transformers import pipeline
@@ -30,12 +30,13 @@ except ImportError:
 
 try:
     from groq import Groq
-    GROQ_API_KEY_DEFAULT = "" 
+    HAS_GROQ = True
 except ImportError:
+    HAS_GROQ = False
     GROQ_API_KEY_DEFAULT = ""
 
 # ==========================================
-# 0. 頁面設定 (TradingView 風格)
+# 0. 頁面設定
 # ==========================================
 st.set_page_config(
     page_title="2025 量化戰情室 (Pro Charts)",
@@ -44,51 +45,28 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# CSS 美化：讓整體介面更接近 TradingView Dark Mode
 st.markdown("""
     <style>
-        /* 背景色 */
         .stApp { background-color: #0e1117; }
-        
-        /* 文字顏色 */
         h1, h2, h3, h4, h5, h6, span, div, p { color: #d1d4dc !important; font-family: 'Roboto', sans-serif; }
-        
-        /* 數據卡片優化 */
-        div[data-testid="stMetric"] { 
-            background-color: #1c202a; 
-            border: 1px solid #2a2e39; 
-            border-radius: 8px; 
-            padding: 10px;
-        }
+        div[data-testid="stMetric"] { background-color: #1c202a; border: 1px solid #2a2e39; border-radius: 8px; padding: 10px; }
         div[data-testid="stMetricLabel"] > div { color: #787b86 !important; }
         div[data-testid="stMetricValue"] > div { color: #d1d4dc !important; }
-        
-        /* 側邊欄 */
         section[data-testid="stSidebar"] { background-color: #161920; border-right: 1px solid #2a2e39; }
-        
-        /* 按鈕優化 */
-        .stButton > button { 
-            background-color: #2962ff; 
-            color: white; 
-            border: none; 
-            border-radius: 4px;
-            font-weight: 600; 
-        }
+        .stButton > button { background-color: #2962ff; color: white; border: none; border-radius: 4px; font-weight: 600; }
         .stButton > button:hover { background-color: #1e4bd1; }
-        
-        /* Expander */
         .streamlit-expanderHeader { background-color: #1c202a !important; color: #d1d4dc !important; border: 1px solid #2a2e39; }
     </style>
 """, unsafe_allow_html=True)
 
 st.title("💎 2025 全明星量化戰情室 (Pro Charts)")
-st.caption("TradingView 風格圖表 + AI 邏輯推演")
+st.caption("TradingView 風格圖表 + AI 邏輯推演 (智慧容錯版)")
 
 if not HAS_TRANSFORMERS:
-    st.warning("⚠️ 系統提示：FinBERT 模組未載入 (資源限制)，請優先參考 Groq AI 分析。")
+    st.warning("⚠️ 系統提示：FinBERT 模組未載入 (資源限制)，將優先使用 Groq AI 或顯示 N/A。")
 
 # ==========================================
-# 1. 核心函數 (資料獲取)
+# 1. 核心函數
 # ==========================================
 def get_real_live_price(symbol):
     try:
@@ -183,10 +161,16 @@ def analyze_sentiment_finbert(symbol):
     except Exception as e: return 0, str(e), []
 
 # ==========================================
-# 3. LLM 邏輯分析
+# 3. LLM 邏輯分析 (安全版)
 # ==========================================
 def analyze_logic_llm(client, symbol, news_titles, tech_signal):
-    if not client or not news_titles: return "無 AI 分析 (未連線或無新聞)", "⚪", False
+    # 防呆：如果 client 沒傳進來，直接回傳 False，讓外層去呼叫 FinBERT
+    if not client: 
+        return None, None, False
+        
+    if not news_titles: 
+        return "無新聞可分析", "⚪", False
+        
     try:
         news_text = "\n\n".join([f"{i+1}. {t}" for i, t in enumerate(news_titles)])
         prompt = f"""
@@ -203,7 +187,12 @@ def analyze_logic_llm(client, symbol, news_titles, tech_signal):
             model="llama-3.3-70b-versatile", temperature=0.3,
         )
         return chat_completion.choices[0].message.content, "🤖", True
-    except Exception as e: return f"LLM Error: {str(e)}", "⚠️", False
+    except Exception as e:
+        # ★★★ 關鍵修改：如果是 401 錯誤，回傳 False 讓外層降級 ★★★
+        error_str = str(e)
+        if "401" in error_str or "invalid_api_key" in error_str:
+            return None, None, False # 回傳 False，觸發 FinBERT 備案
+        return f"LLM Error: {error_str}", "⚠️", False
 
 # ==========================================
 # 4. 技術指標與優化
@@ -358,15 +347,26 @@ def analyze_ticker(config, groq_client=None):
     fund = get_fundamentals(symbol)
     fund_msg = f"PE: {fund['pe']:.1f}" if fund and fund['pe'] else "N/A"
     
-    llm_res = "未啟用 LLM"; is_llm = False
+    # ★★★ 智慧切換邏輯 ★★★
+    llm_res = "Init"; is_llm = False
+    news = get_news_content(symbol)
+    
+    # 1. 嘗試 LLM
     if groq_client:
-        news = get_news_content(symbol)
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
-        llm_res, _, is_llm = analyze_logic_llm(groq_client, symbol, news, tech_ctx)
-    else:
-        news = get_news_content(symbol)
+        llm_res, icon, success = analyze_logic_llm(groq_client, symbol, news, tech_ctx)
+        
+        # 2. 如果 LLM 成功，標記 True
+        if success:
+            is_llm = True
+        else:
+            # 3. 如果 LLM 失敗 (例如 401 錯誤)，降級到 FinBERT
+            is_llm = False # 標記為非 LLM
+            
+    # 4. 如果 is_llm 為 False，執行 FinBERT 備案
+    if not is_llm:
         score, _, logs = analyze_sentiment_finbert(symbol)
-        llm_res = f"情緒分: {score:.2f} (無 Groq Key)"; is_llm = False
+        llm_res = f"情緒分: {score:.2f} (Groq 連線失敗或無 Key，使用 FinBERT)"
 
     p_high, p_low = predict_volatility(df)
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
@@ -380,12 +380,11 @@ def analyze_ticker(config, groq_client=None):
     }
 
 # ==========================================
-# 6. ★★★ 視覺化 (TradingView 風格升級版) ★★★
+# 6. 視覺化 (TradingView 風格)
 # ==========================================
 def plot_chart(df, config, signals=None):
     if df is None: return None
     
-    # 建立雙子圖 (75% K線, 25% 指標)
     fig = make_subplots(
         rows=2, cols=1, 
         shared_xaxes=True, 
@@ -394,28 +393,20 @@ def plot_chart(df, config, signals=None):
         specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
     )
     
-    # --- 1. K線圖 (TradingView 配色) ---
     fig.add_trace(go.Candlestick(
         x=df.index, 
         open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
         name='Price',
-        increasing_line_color='#089981', # TradingView 綠
+        increasing_line_color='#089981', 
         increasing_fillcolor='#089981',
-        decreasing_line_color='#f23645', # TradingView 紅
+        decreasing_line_color='#f23645', 
         decreasing_fillcolor='#f23645'
     ), row=1, col=1)
     
-    # --- 2. 策略指標繪製 ---
     if config['mode'] == "SUPERTREND":
         st = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
         if st is not None: 
-            # SuperTrend 線條
-            fig.add_trace(go.Scatter(
-                x=df.index, y=st[st.columns[0]], 
-                name='SuperTrend', 
-                mode='lines',
-                line=dict(color='#2962ff', width=2) # 亮藍色
-            ), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=st[st.columns[0]], name='SuperTrend', mode='lines', line=dict(color='#2962ff', width=2)), row=1, col=1)
 
     elif config['mode'] == "MA_CROSS":
         f = ta.sma(df['Close'], config['fast_ma'])
@@ -423,15 +414,10 @@ def plot_chart(df, config, signals=None):
         fig.add_trace(go.Scatter(x=df.index, y=f, name=f'MA{config["fast_ma"]}', line=dict(color='#ff9800', width=1.5)), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=s, name=f'MA{config["slow_ma"]}', line=dict(color='#2962ff', width=2)), row=1, col=1)
         
-    # --- 3. 副圖指標 (RSI/KD) ---
     if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
-        # RSI 線
         fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb', width=2)), row=2, col=1)
-        # 超買超賣區間填色
-        fig.add_hrect(y0=config.get('entry_rsi', 30), y1=config.get('exit_rsi', 70), 
-                      fillcolor="rgba(255, 255, 255, 0.05)", line_width=0, row=2, col=1)
-        # 上下界線
+        fig.add_hrect(y0=config.get('entry_rsi', 30), y1=config.get('exit_rsi', 70), fillcolor="rgba(255, 255, 255, 0.05)", line_width=0, row=2, col=1)
         fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color='#089981', row=2, col=1)
         fig.add_hline(y=config.get('exit_rsi', 70), line_dash="dash", line_color='#f23645', row=2, col=1)
 
@@ -443,48 +429,26 @@ def plot_chart(df, config, signals=None):
             fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", line_color='#089981', row=2, col=1)
             fig.add_hline(y=config.get('exit_k', 80), line_dash="dash", line_color='#f23645', row=2, col=1)
 
-    # --- 4. 買賣訊號標記 ---
     if signals is not None:
         buy_pts = df.loc[signals == 1]
         sell_pts = df.loc[signals == -1]
         if not buy_pts.empty:
-            fig.add_trace(go.Scatter(
-                x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', 
-                marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), 
-                name='Buy'
-            ), row=1, col=1)
+            fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
         if not sell_pts.empty:
-            fig.add_trace(go.Scatter(
-                x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', 
-                marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), 
-                name='Sell'
-            ), row=1, col=1)
+            fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
 
-    # --- 5. TradingView 風格 Layout ---
     fig.update_layout(
-        height=500,
-        margin=dict(t=30, b=0, l=0, r=0),
-        paper_bgcolor='#131722', # 深色背景
-        plot_bgcolor='#131722',
-        font=dict(color='#d1d4dc', family="Roboto"), # 淺灰文字
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode='x unified', # 十字準星
-        
-        xaxis=dict(
-            showgrid=True, gridcolor='#2a2e39', # 網格線
-            rangeslider=dict(visible=False), # 隱藏下方 Slider
-            showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot" # 十字線效果
-        ),
-        yaxis=dict(
-            showgrid=True, gridcolor='#2a2e39',
-            showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"
-        ),
+        height=500, margin=dict(t=30, b=0, l=0, r=0),
+        paper_bgcolor='#131722', plot_bgcolor='#131722',
+        font=dict(color='#d1d4dc', family="Roboto"),
+        showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode='x unified',
+        xaxis=dict(showgrid=True, gridcolor='#2a2e39', rangeslider=dict(visible=False), showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"),
+        yaxis=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"),
         xaxis2=dict(showgrid=True, gridcolor='#2a2e39'),
         yaxis2=dict(showgrid=True, gridcolor='#2a2e39')
     )
 
-    # --- 6. 時間選擇器 (Range Selector) ---
     fig.update_xaxes(
         rangeselector=dict(
             buttons=list([
@@ -494,12 +458,9 @@ def plot_chart(df, config, signals=None):
                 dict(count=1, label="YTD", step="year", stepmode="todate"),
                 dict(step="all", label="All")
             ]),
-            bgcolor="#2a2e39",
-            activecolor="#2962ff",
-            font=dict(color="white")
+            bgcolor="#2a2e39", activecolor="#2962ff", font=dict(color="white")
         )
     )
-
     return fig
 
 def quick_backtest(df, config):
@@ -532,7 +493,6 @@ def quick_backtest(df, config):
 def display_card(placeholder, row, config):
     with placeholder.container(border=True):
         st.subheader(f"{row['Name']}")
-        
         c1, c2 = st.columns(2)
         c1.metric("昨日收盤", f"${row['Prev_Close']:,.2f}")
         c2.metric("即時價格", f"${row['Price']:,.2f}", f"{row['Price']-row['Prev_Close']:.2f}")
@@ -561,7 +521,8 @@ def display_card(placeholder, row, config):
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 設定")
-    user_key = st.text_input("Groq API Key (選填)", value=GROQ_API_KEY_DEFAULT, type="password")
+    # ★★★ 這裡新增檢查：如果沒填或是預設值，視為 None ★★★
+    user_key_input = st.text_input("Groq API Key (選填)", value="", type="password")
     
     st.divider()
     st.header("🕵️‍♀️ 隱藏寶石掃描")
@@ -570,12 +531,14 @@ with st.sidebar:
     run_scan = st.button("🚀 掃描自選股")
 
 groq_client = None
-if user_key: 
+# 只有當 HAS_GROQ 為真，且使用者真的填了 Key (長度>10) 才建立 client
+if HAS_GROQ and user_key_input and len(user_key_input) > 10:
     try: 
         from groq import Groq
-        groq_client = Groq(api_key=user_key)
+        groq_client = Groq(api_key=user_key_input)
     except Exception as e: 
-        st.sidebar.error(f"錯誤詳情: {e}")
+        # 如果初始化就錯了，安靜失敗，不賦值給 groq_client
+        pass
 
 if run_scan and custom_input:
     st.subheader("🔍 自選股掃描結果")
