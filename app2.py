@@ -429,8 +429,11 @@ with st.sidebar:
 
 groq_client = None
 if user_key: 
-    try: groq_client = Groq(api_key=user_key)
-    except: st.sidebar.error("API Key 無效")
+    try: 
+        from groq import Groq  # 確保有引用
+        groq_client = Groq(api_key=user_key)
+    except Exception as e: 
+        st.sidebar.error(f"錯誤詳情: {e}")  # 這樣我就知道是哪裡錯了
 
 # A. 自選股掃描
 if run_scan and custom_input:
