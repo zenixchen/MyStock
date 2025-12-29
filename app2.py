@@ -78,6 +78,64 @@ def get_safe_data(ticker):
 # ==========================================
 # ★ 模組 A: 策略自我進化 (Walk-Forward Optimization)
 # ==========================================
+
+# 1. 獨立的 SuperTrend 優化函數 (供 BULL_TREND 使用)
+def optimize_supertrend(df):
+    """
+    針對趨勢盤，暴力測試最佳的 SuperTrend 參數
+    """
+    if df is None or len(df) < 100: return 10, 3.0, "預設"
+
+    # 定義測試範圍 (週期, 倍數)
+    params_grid = [
+        (10, 3.0), # 標準 (穩健)
+        (7, 3.0),  # 敏感 (適合飆股)
+        (14, 2.0), # 寬鬆 (適合大波動且不想被洗)
+        (20, 2.0)  # 長線 (大波段)
+    ]
+    
+    best_score = -999
+    best_params = (10, 3.0)
+    
+    # 用最近半年數據回測
+    train_df = df.iloc[-126:].copy()
+    high = train_df['High']; low = train_df['Low']; close = train_df['Close']
+
+    for p, m in params_grid:
+        try:
+            st_data = ta.supertrend(high, low, close, length=p, multiplier=m)
+            if st_data is None: continue
+            
+            # 計算訊號
+            direction = st_data.iloc[:, 1]
+            signals = pd.Series(0, index=train_df.index)
+            signals[(direction == 1) & (direction.shift(1) == -1)] = 1  # 轉多
+            signals[(direction == -1) & (direction.shift(1) == 1)] = -1 # 轉空
+            
+            # 簡易回測
+            trades = 0; wins = 0; total_ret = 0; position = 0; entry = 0
+            prices = close.values; sig_vals = signals.values
+            
+            for i in range(len(prices)):
+                if position == 0 and sig_vals[i] == 1:
+                    position = 1; entry = prices[i]
+                elif position == 1 and sig_vals[i] == -1:
+                    position = 0; ret = (prices[i] - entry) / entry
+                    total_ret += ret; trades += 1
+                    if ret > 0: wins += 1
+            
+            # 評分: 報酬優先，勝率為輔
+            if trades > 0:
+                score = total_ret * 100 + (wins/trades * 10)
+                if score > best_score:
+                    best_score = score
+                    best_params = (p, m)
+        except: continue
+        
+    return best_params[0], best_params[1], f"最佳化 ({best_params[0]}/{best_params[1]})"
+
+
+# 2. 獨立的 RSI 進化函數 (供 analyze_ticker 使用)
 def evolve_strategy(df, symbol):
     """
     進化邏輯：
@@ -174,46 +232,39 @@ def detect_market_regime(df):
         return "UNKNOWN", 0
 
 def get_adaptive_config(df, original_config):
-    """
-    結合「進化參數」與「體制識別」，做最終決策
-    """
     regime, adx_val = detect_market_regime(df)
     new_config = original_config.copy()
     
-    # 記錄體制供顯示用
     new_config['regime'] = regime
     new_config['adx'] = adx_val
+    if 'adaptive_msg' not in new_config: new_config['adaptive_msg'] = "維持原始設定"
     
-    # 若沒有發生進化，預設訊息
-    if 'adaptive_msg' not in new_config:
-        new_config['adaptive_msg'] = "維持原始設定"
-
-    # 如果是美元匯率或特殊商品，略過複雜邏輯
     if "TWD" in new_config['symbol']: return new_config
 
     # ★ 體制覆蓋邏輯 (Regime Override) ★
-    # 即使進化出了參數，如果遇到極端趨勢，仍需強制修正以保命或追價
     
     if regime == "BULL_TREND":
         # === 多頭趨勢 ===
         if original_config['mode'] in ["KD", "BOLL_RSI"]:
-            new_config['mode'] = "SUPERTREND" # 強制切換趨勢策略
-            new_config['period'] = 10
-            new_config['multiplier'] = 3.0
-            new_config['adaptive_msg'] += " ➔ 強力趨勢，轉為 SuperTrend"
+            # ★★★ 關鍵修改：不只切換，還執行 SuperTrend 優化 ★★★
+            best_p, best_m, opt_msg = optimize_supertrend(df)
+            
+            new_config['mode'] = "SUPERTREND"
+            new_config['period'] = best_p
+            new_config['multiplier'] = best_m
+            new_config['adaptive_msg'] += f" ➔ 強力趨勢，轉為 SuperTrend {opt_msg}"
+            
         elif "RSI" in original_config['mode']:
-            # 趨勢盤，買點不能太嚴格 (至少 45)，賣點要放寬 (90)
             new_config['entry_rsi'] = max(new_config.get('entry_rsi', 30), 45)
             new_config['exit_rsi'] = 90
-            new_config['adaptive_msg'] += " (多頭修正: 放寬買點、延後賣出)"
+            new_config['adaptive_msg'] += " (多頭修正: 放寬買點)"
 
     elif regime == "BEAR_TREND":
         # === 空頭趨勢 ===
         if "RSI" in original_config['mode']:
-            # 嚴格抄底，反彈快逃
             new_config['entry_rsi'] = 20
             new_config['exit_rsi'] = 50
-            new_config['adaptive_msg'] += " (空頭修正: 嚴格抄底 RSI<20)"
+            new_config['adaptive_msg'] += " (空頭修正: 嚴格抄底)"
         else:
             new_config['mode'] = "RSI_RSI"
             new_config['entry_rsi'] = 20
@@ -227,7 +278,6 @@ def get_adaptive_config(df, original_config):
             new_config['entry_k'] = 20
             new_config['exit_k'] = 80
             new_config['adaptive_msg'] = "盤整震盪：轉為 KD 區間操作"
-        # 若原本是 RSI，就維持「進化」出來的參數即可，不需額外修正
 
     return new_config
 
