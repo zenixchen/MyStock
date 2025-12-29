@@ -129,7 +129,7 @@ def analyze_sentiment_finbert(symbol):
     except Exception as e: return 0, str(e), []
 
 # ==========================================
-# 3. LLM 邏輯分析 (Groq) - 新增功能
+# 3. LLM 邏輯分析 (Groq) - 已修復模型名稱
 # ==========================================
 def analyze_logic_llm(client, symbol, news_titles, tech_signal):
     if not client or not news_titles: return "無 AI 分析 (未連線或無新聞)", "⚪", False
@@ -148,9 +148,12 @@ def analyze_logic_llm(client, symbol, news_titles, tech_signal):
         2. 情緒評分 (-10悲觀 ~ +10樂觀)。
         3. 操作建議 (做多/觀望/做空)。
         """
+        
+        # ★★★ 修正點：更換為最新的 Llama 3.3 模型 ★★★
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama3-8b-8192", temperature=0.3,
+            model="llama-3.3-70b-versatile", # 舊的 llama3-8b-8192 已停用
+            temperature=0.3,
         )
         return chat_completion.choices[0].message.content, "🤖", True
     except Exception as e: return f"LLM Error: {str(e)}", "⚠️", False
