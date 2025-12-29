@@ -6,7 +6,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
-# 深度學習 NLP 套件
+# ★ 深度學習 NLP 套件
 from transformers import pipeline
 import sys
 
@@ -14,10 +14,11 @@ import sys
 sys.stdout.reconfigure(encoding='utf-8')
 
 # ==========================================
-# LLM 設定區 (Groq)
+# ★★★ LLM 設定區 (Groq) ★★★
 # ==========================================
 try:
     from groq import Groq
+    # 預設不填，讓使用者在側邊欄填入
     GROQ_API_KEY_DEFAULT = "" 
 except ImportError:
     GROQ_API_KEY_DEFAULT = ""
@@ -45,7 +46,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("💎 2025 全明星量化戰情室 (LLM 邏輯版)")
-st.caption("15檔核心持股 (原始策略) + LLM 新聞邏輯推演 | 修復編碼問題")
+st.caption("15檔核心持股 (原始策略) + LLM 深度推演 (標題+摘要) | 讀取 15 則新聞")
 
 # ==========================================
 # 1. 核心函數 (資料獲取)
@@ -74,17 +75,27 @@ def get_safe_data(ticker):
     except: return None
 
 def get_news_content(symbol):
-    """抓取新聞標題供 LLM 分析"""
+    """★ 修改：抓取 15 則新聞 + 摘要供 LLM 分析"""
     try:
         if "=" in symbol or "^" in symbol: return []
         stock = yf.Ticker(symbol)
         news = stock.news
         if not news: return []
-        # 過濾掉非 ASCII 的怪字元，避免報錯
+        
         clean_news = []
-        for n in news[:3]:
+        # 設定讀取 15 則
+        for n in news[:15]: 
             title = n.get('title', n.get('content', {}).get('title', ''))
-            clean_news.append(title)
+            summary = n.get('summary', '') 
+            
+            # 拼湊標題 + 摘要
+            if summary:
+                full_text = f"標題: {title}\n   摘要: {summary}"
+            else:
+                full_text = f"標題: {title}"
+                
+            if len(title) > 5: 
+                clean_news.append(full_text)
         return clean_news
     except: return []
 
@@ -119,7 +130,8 @@ def analyze_sentiment_finbert(symbol):
         if not news_list: return 0, "無新聞", []
         
         classifier = load_finbert_model()
-        texts = [n.get('title', '') for n in news_list[:5] if n.get('title')]
+        # ★ 修改：FinBERT 也改為讀取 15 則標題 (FinBERT只讀標題即可，讀摘要太慢)
+        texts = [n.get('title', '') for n in news_list[:15] if n.get('title')]
         if not texts: return 0, "無新聞", []
 
         results = classifier(texts)
@@ -134,30 +146,32 @@ def analyze_sentiment_finbert(symbol):
     except Exception as e: return 0, str(e), []
 
 # ==========================================
-# 3. LLM 邏輯分析 (Groq) - 已修復模型名稱
+# 3. LLM 邏輯分析 (Groq)
 # ==========================================
 def analyze_logic_llm(client, symbol, news_titles, tech_signal):
     if not client or not news_titles: return "無 AI 分析 (未連線或無新聞)", "⚪", False
     try:
-        # 強制編碼處理
-        news_text = "\n".join([f"- {t}" for t in news_titles])
+        # news_titles 現在包含了摘要，內容會比較長
+        news_text = "\n\n".join([f"{i+1}. {t}" for i, t in enumerate(news_titles)])
+        
         prompt = f"""
         你是專業操盤手。分析 {symbol}。
-        新聞：
+        
+        【最新新聞與摘要】：
         {news_text}
         
-        技術面訊號：
+        【技術面訊號】：
         {tech_signal}
         
         請用繁體中文回答：
-        1. 一句話總結多空邏輯 (50字內)。
+        1. 一句話總結多空邏輯 (從摘要中找出原因)。
         2. 情緒評分 (-10悲觀 ~ +10樂觀)。
         3. 操作建議 (做多/觀望/做空)。
         """
         
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
+            model="llama-3.3-70b-versatile", # 使用最新模型
             temperature=0.3,
         )
         return chat_completion.choices[0].message.content, "🤖", True
@@ -245,7 +259,6 @@ def analyze_ticker(config, groq_client=None):
     c, h, l = calc_df['Close'], calc_df['High'], calc_df['Low']
     
     sig = "WAIT"; act = "觀望"; buy_at = "---"; sell_at = "---"; sig_type = "WAIT"
-    # 用來存放顯示給使用者的策略說明
     strategy_desc = ""
     
     # ★★★ 策略邏輯 ★★★
@@ -418,7 +431,7 @@ def display_card(placeholder, row, config):
         sig_col = "green" if "BUY" in row['Signal'] else "red" if "SELL" in row['Signal'] else "gray"
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
         
-        # ★ 新增：顯示目前使用的策略與參數
+        # 顯示目前使用的策略與參數
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
         if row['Is_LLM']:
@@ -476,7 +489,7 @@ if run_scan and custom_input:
                         best = opt_res.sort_values(by="Return", ascending=False).iloc[0]
                         st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
 
-# B. 核心持股清單 (100% 您的原始參數)
+# B. 核心持股清單 (100% 原始參數)
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
     "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
