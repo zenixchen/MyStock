@@ -388,29 +388,50 @@ def plot_interactive_chart(df, config, signals=None):
         fig.add_trace(go.Scatter(x=df.index, y=fast, name=f'MA {config["fast_ma"]}', line=dict(color='yellow', width=1)), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=slow, name=f'MA {config["slow_ma"]}', line=dict(color='blue', width=1)), row=1, col=1)
 
-    # 副圖  
-    # 這裡判斷：如果是 ADX 相關的判斷邏輯，我們畫出 DI 線
-    if "SUPERTREND" in config['mode'] or "RSI" in config['mode']: # 或是直接檢查 config['regime']
+   # ==========================================
+    # . 副圖 (RSI / KD / ADX 整合顯示)
+    # --- A. 先畫 ADX 系統 (作為背景參考) ---
+    # 只要是有用到趨勢判斷的策略，都顯示 ADX 資訊
+    if config.get('regime') in ["BULL_TREND", "BEAR_TREND", "RANGING"] or "RSI" in config['mode']:
         try:
+            # 計算 ADX 全家桶
             adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-            # 畫 +DI (紅色虛線)
+            
+            # 1. 畫 ADX 強度線 (黃色實線) - 讓你知道現在有沒有行情
+            fig.add_trace(go.Scatter(x=df.index, y=adx_df['ADX_14'], mode='lines', name='ADX (強度)', 
+                                     line=dict(color='yellow', width=2), opacity=0.5), row=2, col=1)
+            
+            # 2. 畫 +DI (多方, 紅色虛線)
             fig.add_trace(go.Scatter(x=df.index, y=adx_df['DMP_14'], mode='lines', name='+DI (多)', 
                                      line=dict(color='#ff5252', width=1, dash='dot')), row=2, col=1)
-            # 畫 -DI (綠色虛線)
+            
+            # 3. 畫 -DI (空方, 綠色虛線)
             fig.add_trace(go.Scatter(x=df.index, y=adx_df['DMN_14'], mode='lines', name='-DI (空)', 
                                      line=dict(color='#00e676', width=1, dash='dot')), row=2, col=1)
+            
+            # 4. 畫一條 ADX=25 的參考線 (門檻)
+            fig.add_hline(y=config.get('adx_threshold', 25), line_dash="dot", line_color="gray", row=2, col=1)
+            
         except: pass
+
+    # --- B. 再畫主要策略指標 (RSI / KD) ---
     if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
-        fig.add_trace(go.Scatter(x=df.index, y=rsi, mode='lines', name='RSI', line=dict(color='#b39ddb')), row=2, col=1)
+        # RSI 畫粗一點，蓋在 ADX 上面
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, mode='lines', name='RSI', line=dict(color='#b39ddb', width=2)), row=2, col=1)
+        
+        # 買賣區間線
         fig.add_hline(y=config.get('entry_rsi', 30), line_dash="solid", line_color=COLOR_UP, row=2, col=1)
         fig.add_hline(y=config.get('exit_rsi', 70), line_dash="solid", line_color=COLOR_DOWN, row=2, col=1)
+        
     elif config['mode'] == "KD":
         stoch = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
         if stoch is not None:
             fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 0], name='K', line=dict(color='#ffeb3b')), row=2, col=1)
             fig.add_trace(go.Scatter(x=df.index, y=stoch.iloc[:, 1], name='D', line=dict(color='#2962ff')), row=2, col=1)
-
+            # KD 買賣區間
+            fig.add_hline(y=config.get('entry_k', 20), line_dash="solid", line_color=COLOR_UP, row=2, col=1)
+            fig.add_hline(y=config.get('exit_k', 80), line_dash="solid", line_color=COLOR_DOWN, row=2, col=1)
     # 買賣訊號點
     if signals is not None:
         buy_pts = df.loc[signals == 1]; sell_pts = df.loc[signals == -1]
