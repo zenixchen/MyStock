@@ -60,7 +60,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("💎 2025 全明星量化戰情室 (Pro Charts)")
-st.caption("TradingView 風格圖表 + AI 邏輯推演 (智慧容錯版)")
+st.caption("TradingView 風格圖表 + AI 邏輯推演 (FinBERT 詳細版)")
 
 if not HAS_TRANSFORMERS:
     st.warning("⚠️ 系統提示：FinBERT 模組未載入 (資源限制)，將優先使用 Groq AI 或顯示 N/A。")
@@ -113,7 +113,7 @@ def get_news_content(symbol):
     except: return []
 
 # ==========================================
-# 2. 基本面與 FinBERT
+# 2. 基本面與 FinBERT (★修復詳細資訊★)
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_fundamentals(symbol):
@@ -144,32 +144,45 @@ def analyze_sentiment_finbert(symbol):
         stock = yf.Ticker(symbol)
         news_list = stock.news
         if not news_list: return 0, "無新聞", []
+        
         classifier = load_finbert_model()
         if not classifier: return 0, "模型載入失敗", []
+        
         texts = []
+        raw_titles = [] # 用來顯示原始標題
         for n in news_list[:15]:
             t = n.get('title', '')
-            if t: texts.append(clean_text_for_llm(t))
+            if t: 
+                texts.append(clean_text_for_llm(t))
+                raw_titles.append(t)
+        
         if not texts: return 0, "無新聞", []
+        
         results = classifier(texts)
         total_score = 0
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
+        
+        # ★★★ 這裡把詳細列表加回來了 ★★★
+        debug_logs = []
         for i, res in enumerate(results):
             val = score_map[res['label']] * res['score']
             total_score += val
-        return total_score/len(texts), texts[0], []
+            
+            # 製作詳細日誌
+            icon = "🔥" if res['label'] == "positive" else "❄️" if res['label'] == "negative" else "⚪"
+            # 格式: 🔥 POSITIVE (0.95): 新聞標題...
+            log_str = f"{icon} {res['label'].upper()} ({res['score']:.2f}): {raw_titles[i][:40]}..."
+            debug_logs.append(log_str)
+            
+        return total_score/len(texts), texts[0], debug_logs
     except Exception as e: return 0, str(e), []
 
 # ==========================================
-# 3. LLM 邏輯分析 (安全版)
+# 3. LLM 邏輯分析
 # ==========================================
 def analyze_logic_llm(client, symbol, news_titles, tech_signal):
-    # 防呆：如果 client 沒傳進來，直接回傳 False，讓外層去呼叫 FinBERT
-    if not client: 
-        return None, None, False
-        
-    if not news_titles: 
-        return "無新聞可分析", "⚪", False
+    if not client: return None, None, False
+    if not news_titles: return "無新聞可分析", "⚪", False
         
     try:
         news_text = "\n\n".join([f"{i+1}. {t}" for i, t in enumerate(news_titles)])
@@ -188,10 +201,9 @@ def analyze_logic_llm(client, symbol, news_titles, tech_signal):
         )
         return chat_completion.choices[0].message.content, "🤖", True
     except Exception as e:
-        # ★★★ 關鍵修改：如果是 401 錯誤，回傳 False 讓外層降級 ★★★
         error_str = str(e)
         if "401" in error_str or "invalid_api_key" in error_str:
-            return None, None, False # 回傳 False，觸發 FinBERT 備案
+            return None, None, False
         return f"LLM Error: {error_str}", "⚠️", False
 
 # ==========================================
@@ -268,7 +280,7 @@ def analyze_ticker(config, groq_client=None):
             "Symbol": symbol, "Name": config['name'], "Signal": "ERR", "Action": "資料下載失敗",
             "Price": 0, "Prev_Close": 0, "Raw_DF": None, "Type": "ERR", "Strat_Desc": "無數據",
             "Is_LLM": False, "LLM_Analysis": "無法分析", "Chip": "N/A", "Pred": "N/A",
-            "Buy_At": "---", "Sell_At": "---"
+            "Buy_At": "---", "Sell_At": "---", "Logs": []
         }
 
     lp = get_real_live_price(symbol) or df['Close'].iloc[-1]
@@ -349,6 +361,7 @@ def analyze_ticker(config, groq_client=None):
     
     # ★★★ 智慧切換邏輯 ★★★
     llm_res = "Init"; is_llm = False
+    logs = [] # FinBERT 日誌
     news = get_news_content(symbol)
     
     # 1. 嘗試 LLM
@@ -356,17 +369,16 @@ def analyze_ticker(config, groq_client=None):
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
         llm_res, icon, success = analyze_logic_llm(groq_client, symbol, news, tech_ctx)
         
-        # 2. 如果 LLM 成功，標記 True
         if success:
             is_llm = True
         else:
-            # 3. 如果 LLM 失敗 (例如 401 錯誤)，降級到 FinBERT
-            is_llm = False # 標記為非 LLM
+            is_llm = False 
             
-    # 4. 如果 is_llm 為 False，執行 FinBERT 備案
+    # 2. 如果 is_llm 為 False，執行 FinBERT 備案
     if not is_llm:
+        # 這裡會回傳 logs 列表
         score, _, logs = analyze_sentiment_finbert(symbol)
-        llm_res = f"情緒分: {score:.2f} (Groq 連線失敗或無 Key，使用 FinBERT)"
+        llm_res = f"情緒分: {score:.2f} (無 Groq Key 或連線失敗)"
 
     p_high, p_low = predict_volatility(df)
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
@@ -375,8 +387,9 @@ def analyze_ticker(config, groq_client=None):
     return {
         "Symbol": symbol, "Name": config['name'], "Price": lp, "Prev_Close": prev_c,
         "Signal": sig, "Action": act, "Type": sig_type, "Buy_At": buy_at, "Sell_At": sell_at,
-        "Fund": fund_msg, "LLM_Analysis": llm_res, "Is_LLM": is_llm, "Raw_DF": df,
-        "Pred": pred_msg, "Chip": chip_msg, "Strat_Desc": strategy_desc
+        "Fund": fund_msg, "LLM_Analysis": llm_res, "Is_LLM": is_llm, 
+        "Raw_DF": df, "Pred": pred_msg, "Chip": chip_msg, "Strat_Desc": strategy_desc,
+        "Logs": logs # 傳回 logs 供顯示
     }
 
 # ==========================================
@@ -385,32 +398,16 @@ def analyze_ticker(config, groq_client=None):
 def plot_chart(df, config, signals=None):
     if df is None: return None
     
-    fig = make_subplots(
-        rows=2, cols=1, 
-        shared_xaxes=True, 
-        vertical_spacing=0.02, 
-        row_heights=[0.75, 0.25],
-        specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
-    )
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.75, 0.25], specs=[[{"secondary_y": False}], [{"secondary_y": False}]])
     
-    fig.add_trace(go.Candlestick(
-        x=df.index, 
-        open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
-        name='Price',
-        increasing_line_color='#089981', 
-        increasing_fillcolor='#089981',
-        decreasing_line_color='#f23645', 
-        decreasing_fillcolor='#f23645'
-    ), row=1, col=1)
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#f23645', decreasing_fillcolor='#f23645'), row=1, col=1)
     
     if config['mode'] == "SUPERTREND":
         st = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
-        if st is not None: 
-            fig.add_trace(go.Scatter(x=df.index, y=st[st.columns[0]], name='SuperTrend', mode='lines', line=dict(color='#2962ff', width=2)), row=1, col=1)
+        if st is not None: fig.add_trace(go.Scatter(x=df.index, y=st[st.columns[0]], name='SuperTrend', mode='lines', line=dict(color='#2962ff', width=2)), row=1, col=1)
 
     elif config['mode'] == "MA_CROSS":
-        f = ta.sma(df['Close'], config['fast_ma'])
-        s = ta.sma(df['Close'], config['slow_ma'])
+        f = ta.sma(df['Close'], config['fast_ma']); s = ta.sma(df['Close'], config['slow_ma'])
         fig.add_trace(go.Scatter(x=df.index, y=f, name=f'MA{config["fast_ma"]}', line=dict(color='#ff9800', width=1.5)), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=s, name=f'MA{config["slow_ma"]}', line=dict(color='#2962ff', width=2)), row=1, col=1)
         
@@ -430,37 +427,12 @@ def plot_chart(df, config, signals=None):
             fig.add_hline(y=config.get('exit_k', 80), line_dash="dash", line_color='#f23645', row=2, col=1)
 
     if signals is not None:
-        buy_pts = df.loc[signals == 1]
-        sell_pts = df.loc[signals == -1]
-        if not buy_pts.empty:
-            fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
-        if not sell_pts.empty:
-            fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
+        buy_pts = df.loc[signals == 1]; sell_pts = df.loc[signals == -1]
+        if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
+        if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
 
-    fig.update_layout(
-        height=500, margin=dict(t=30, b=0, l=0, r=0),
-        paper_bgcolor='#131722', plot_bgcolor='#131722',
-        font=dict(color='#d1d4dc', family="Roboto"),
-        showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode='x unified',
-        xaxis=dict(showgrid=True, gridcolor='#2a2e39', rangeslider=dict(visible=False), showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"),
-        yaxis=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"),
-        xaxis2=dict(showgrid=True, gridcolor='#2a2e39'),
-        yaxis2=dict(showgrid=True, gridcolor='#2a2e39')
-    )
-
-    fig.update_xaxes(
-        rangeselector=dict(
-            buttons=list([
-                dict(count=1, label="1M", step="month", stepmode="backward"),
-                dict(count=3, label="3M", step="month", stepmode="backward"),
-                dict(count=6, label="6M", step="month", stepmode="backward"),
-                dict(count=1, label="YTD", step="year", stepmode="todate"),
-                dict(step="all", label="All")
-            ]),
-            bgcolor="#2a2e39", activecolor="#2962ff", font=dict(color="white")
-        )
-    )
+    fig.update_layout(height=500, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc', family="Roboto"), showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), hovermode='x unified', xaxis=dict(showgrid=True, gridcolor='#2a2e39', rangeslider=dict(visible=False), showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), yaxis=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), xaxis2=dict(showgrid=True, gridcolor='#2a2e39'), yaxis2=dict(showgrid=True, gridcolor='#2a2e39'))
+    fig.update_xaxes(rangeselector=dict(buttons=list([dict(count=1, label="1M", step="month", stepmode="backward"), dict(count=3, label="3M", step="month", stepmode="backward"), dict(count=6, label="6M", step="month", stepmode="backward"), dict(count=1, label="YTD", step="year", stepmode="todate"), dict(step="all", label="All")]), bgcolor="#2a2e39", activecolor="#2962ff", font=dict(color="white")))
     return fig
 
 def quick_backtest(df, config):
@@ -499,14 +471,20 @@ def display_card(placeholder, row, config):
         
         sig_col = "green" if "BUY" in row['Signal'] else "red" if "SELL" in row['Signal'] else "gray"
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
-        
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
+        # ★★★ 顯示 AI 分析結果 ★★★
         if row['Is_LLM']:
             with st.expander("🧠 AI 觀點 (LLM)", expanded=True):
                 st.markdown(row['LLM_Analysis'])
         else:
-            st.caption(f"FinBERT/Info: {row['LLM_Analysis']}")
+            # 沒用 LLM 時，顯示 FinBERT 分數
+            st.caption(f"FinBERT: {row['LLM_Analysis']}")
+            # 如果有 FinBERT 詳細日誌，顯示在下方 Expander
+            if row.get('Logs'):
+                with st.expander("📊 FinBERT 詳細情緒列表", expanded=False):
+                    for log in row['Logs']:
+                        st.text(log)
 
         if row['Raw_DF'] is not None:
             with st.expander("📊 K線與回測 (Pro Charts)", expanded=False):
@@ -521,7 +499,6 @@ def display_card(placeholder, row, config):
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 設定")
-    # ★★★ 這裡新增檢查：如果沒填或是預設值，視為 None ★★★
     user_key_input = st.text_input("Groq API Key (選填)", value="", type="password")
     
     st.divider()
@@ -531,14 +508,11 @@ with st.sidebar:
     run_scan = st.button("🚀 掃描自選股")
 
 groq_client = None
-# 只有當 HAS_GROQ 為真，且使用者真的填了 Key (長度>10) 才建立 client
 if HAS_GROQ and user_key_input and len(user_key_input) > 10:
     try: 
         from groq import Groq
         groq_client = Groq(api_key=user_key_input)
-    except Exception as e: 
-        # 如果初始化就錯了，安靜失敗，不賦值給 groq_client
-        pass
+    except Exception as e: pass
 
 if run_scan and custom_input:
     st.subheader("🔍 自選股掃描結果")
