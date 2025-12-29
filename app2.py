@@ -10,7 +10,7 @@ import sys
 import re
 
 # ==========================================
-# ★★★ 1. 強制編碼修復 (防止 UnicodeError) ★★★
+# ★★★ 1. 強制編碼修復 ★★★
 # ==========================================
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -21,7 +21,6 @@ except Exception:
 # ==========================================
 # ★★★ 2. 套件安全匯入 (防崩潰機制) ★★★
 # ==========================================
-# 嘗試匯入 transformers，如果伺服器跑不動，就自動跳過，不讓程式崩潰
 try:
     from transformers import pipeline
     HAS_TRANSFORMERS = True
@@ -29,7 +28,6 @@ except ImportError:
     HAS_TRANSFORMERS = False
     print("⚠️ Warning: transformers not found. FinBERT will be disabled.")
 
-# 嘗試匯入 Groq
 try:
     from groq import Groq
     GROQ_API_KEY_DEFAULT = "" 
@@ -37,33 +35,57 @@ except ImportError:
     GROQ_API_KEY_DEFAULT = ""
 
 # ==========================================
-# 0. 頁面設定
+# 0. 頁面設定 (TradingView 風格)
 # ==========================================
 st.set_page_config(
-    page_title="2025 量化戰情室 (LLM 邏輯版)",
+    page_title="2025 量化戰情室 (Pro Charts)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# CSS 美化：讓整體介面更接近 TradingView Dark Mode
 st.markdown("""
     <style>
+        /* 背景色 */
         .stApp { background-color: #0e1117; }
-        h1, h2, h3, h4, h5, h6, span, div { color: #e0e0e0; font-family: 'Roboto', sans-serif; }
-        div[data-testid="stMetric"] { background-color: #1c202a; border: 1px solid #2d3342; border-radius: 8px; }
-        section[data-testid="stSidebar"] { background-color: #161920; }
-        .stButton > button { background-color: #2962ff; color: white; border: none; font-weight: bold; }
+        
+        /* 文字顏色 */
+        h1, h2, h3, h4, h5, h6, span, div, p { color: #d1d4dc !important; font-family: 'Roboto', sans-serif; }
+        
+        /* 數據卡片優化 */
+        div[data-testid="stMetric"] { 
+            background-color: #1c202a; 
+            border: 1px solid #2a2e39; 
+            border-radius: 8px; 
+            padding: 10px;
+        }
+        div[data-testid="stMetricLabel"] > div { color: #787b86 !important; }
+        div[data-testid="stMetricValue"] > div { color: #d1d4dc !important; }
+        
+        /* 側邊欄 */
+        section[data-testid="stSidebar"] { background-color: #161920; border-right: 1px solid #2a2e39; }
+        
+        /* 按鈕優化 */
+        .stButton > button { 
+            background-color: #2962ff; 
+            color: white; 
+            border: none; 
+            border-radius: 4px;
+            font-weight: 600; 
+        }
         .stButton > button:hover { background-color: #1e4bd1; }
-        .streamlit-expanderHeader { background-color: #1c202a; color: white; }
+        
+        /* Expander */
+        .streamlit-expanderHeader { background-color: #1c202a !important; color: #d1d4dc !important; border: 1px solid #2a2e39; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 2025 全明星量化戰情室 (LLM 邏輯版)")
-st.caption("15檔核心持股 + LLM 深度推演 | 防崩潰安全版")
+st.title("💎 2025 全明星量化戰情室 (Pro Charts)")
+st.caption("TradingView 風格圖表 + AI 邏輯推演")
 
-# 如果沒裝成功，顯示提示
 if not HAS_TRANSFORMERS:
-    st.warning("⚠️ 系統偵測：`transformers` 套件因資源限制未載入。FinBERT 情緒分析將暫停，請使用 Groq LLM 功能。")
+    st.warning("⚠️ 系統提示：FinBERT 模組未載入 (資源限制)，請優先參考 Groq AI 分析。")
 
 # ==========================================
 # 1. 核心函數 (資料獲取)
@@ -91,35 +113,29 @@ def get_safe_data(ticker):
     except: return None
 
 def clean_text_for_llm(text):
-    """暴力移除特殊符號，防止編碼錯誤"""
     if not isinstance(text, str): return ""
     return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', text)
 
 def get_news_content(symbol):
-    """抓取 15 則新聞 + 摘要"""
     try:
         if "=" in symbol or "^" in symbol: return []
         stock = yf.Ticker(symbol)
         news = stock.news
         if not news: return []
-        
         clean_news = []
         for n in news[:15]: 
             title = n.get('title', n.get('content', {}).get('title', ''))
             summary = n.get('summary', '') 
             title = clean_text_for_llm(title)
             summary = clean_text_for_llm(summary)
-            if summary:
-                full_text = f"標題: {title}\n   摘要: {summary}"
-            else:
-                full_text = f"標題: {title}"
-            if len(title) > 5: 
-                clean_news.append(full_text)
+            if summary: full_text = f"標題: {title}\n   摘要: {summary}"
+            else: full_text = f"標題: {title}"
+            if len(title) > 5: clean_news.append(full_text)
         return clean_news
     except: return []
 
 # ==========================================
-# 2. 基本面與 FinBERT (安全版)
+# 2. 基本面與 FinBERT
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_fundamentals(symbol):
@@ -139,47 +155,35 @@ def get_fundamentals(symbol):
 
 @st.cache_resource
 def load_finbert_model():
-    # ★★★ 安全檢查：如果沒套件就直接回傳 None，不報錯 ★★★
     if not HAS_TRANSFORMERS: return None
-    try:
-        return pipeline("sentiment-analysis", model="ProsusAI/finbert")
-    except Exception:
-        return None
+    try: return pipeline("sentiment-analysis", model="ProsusAI/finbert")
+    except: return None
 
 def analyze_sentiment_finbert(symbol):
-    # 如果沒安裝 transformers，直接回傳 N/A，程式繼續跑
-    if not HAS_TRANSFORMERS:
-        return 0, "套件未安裝(跳過)", []
-
+    if not HAS_TRANSFORMERS: return 0, "套件未安裝(跳過)", []
     try:
         if "=" in symbol or "^" in symbol: return 0, "無新聞", []
         stock = yf.Ticker(symbol)
         news_list = stock.news
         if not news_list: return 0, "無新聞", []
-        
         classifier = load_finbert_model()
-        if not classifier: return 0, "模型載入失敗", [] # 雙重保險
-
+        if not classifier: return 0, "模型載入失敗", []
         texts = []
         for n in news_list[:15]:
             t = n.get('title', '')
             if t: texts.append(clean_text_for_llm(t))
-
         if not texts: return 0, "無新聞", []
-
         results = classifier(texts)
         total_score = 0
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
-        
         for i, res in enumerate(results):
             val = score_map[res['label']] * res['score']
             total_score += val
-            
         return total_score/len(texts), texts[0], []
     except Exception as e: return 0, str(e), []
 
 # ==========================================
-# 3. LLM 邏輯分析 (Groq)
+# 3. LLM 邏輯分析
 # ==========================================
 def analyze_logic_llm(client, symbol, news_titles, tech_signal):
     if not client or not news_titles: return "無 AI 分析 (未連線或無新聞)", "⚪", False
@@ -196,8 +200,7 @@ def analyze_logic_llm(client, symbol, news_titles, tech_signal):
         """
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
-            temperature=0.3,
+            model="llama-3.3-70b-versatile", temperature=0.3,
         )
         return chat_completion.choices[0].message.content, "🤖", True
     except Exception as e: return f"LLM Error: {str(e)}", "⚠️", False
@@ -223,7 +226,6 @@ def optimize_rsi_strategy(df, symbol):
             for ext in exits:
                 count+=1; my_bar.progress(count/total)
                 sig = np.zeros(len(close)); pos=0; entry=0; wins=0; trds=0; ret_tot=0
-                
                 sig[rsi_val < ent] = 1; sig[rsi_val > ext] = -1
                 for i in range(len(close)):
                     if pos==0 and sig[i]==1: pos=1; entry=close[i]
@@ -272,25 +274,23 @@ def analyze_ticker(config, groq_client=None):
     symbol = config['symbol']
     df = get_safe_data(symbol)
     
-    # ★ 資料失敗時的防呆回傳，補齊所有欄位 ★
     if df is None: 
         return {
             "Symbol": symbol, "Name": config['name'], "Signal": "ERR", "Action": "資料下載失敗",
             "Price": 0, "Prev_Close": 0, "Raw_DF": None, "Type": "ERR", "Strat_Desc": "無數據",
-            "Is_LLM": False, "LLM_Analysis": "無法分析", "Chip": "N/A", "Pred": "N/A"
+            "Is_LLM": False, "LLM_Analysis": "無法分析", "Chip": "N/A", "Pred": "N/A",
+            "Buy_At": "---", "Sell_At": "---"
         }
 
     lp = get_real_live_price(symbol) or df['Close'].iloc[-1]
     prev_c = df['Close'].iloc[-1]
     
-    # 模擬今日 K 線
     new_row = pd.DataFrame({'Close': [lp], 'High': [max(lp, df['High'].iloc[-1])], 'Low': [min(lp, df['Low'].iloc[-1])], 'Open': [lp], 'Volume': [0]}, index=[pd.Timestamp.now()])
     calc_df = pd.concat([df.copy(), new_row])
     c, h, l = calc_df['Close'], calc_df['High'], calc_df['Low']
     
     sig = "WAIT"; act = "觀望"; buy_at = "---"; sell_at = "---"; sig_type = "WAIT"; strategy_desc = ""
     
-    # ★★★ 策略邏輯 ★★★
     if config['mode'] == "SUPERTREND":
         st_val = ta.supertrend(h, l, c, length=config['period'], multiplier=config['multiplier'])
         strategy_desc = f"SuperTrend (P={config['period']}, M={config['multiplier']})"
@@ -380,34 +380,126 @@ def analyze_ticker(config, groq_client=None):
     }
 
 # ==========================================
-# 6. 視覺化
+# 6. ★★★ 視覺化 (TradingView 風格升級版) ★★★
 # ==========================================
 def plot_chart(df, config, signals=None):
     if df is None: return None
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.75, 0.25])
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
     
+    # 建立雙子圖 (75% K線, 25% 指標)
+    fig = make_subplots(
+        rows=2, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.02, 
+        row_heights=[0.75, 0.25],
+        specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
+    )
+    
+    # --- 1. K線圖 (TradingView 配色) ---
+    fig.add_trace(go.Candlestick(
+        x=df.index, 
+        open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
+        name='Price',
+        increasing_line_color='#089981', # TradingView 綠
+        increasing_fillcolor='#089981',
+        decreasing_line_color='#f23645', # TradingView 紅
+        decreasing_fillcolor='#f23645'
+    ), row=1, col=1)
+    
+    # --- 2. 策略指標繪製 ---
     if config['mode'] == "SUPERTREND":
         st = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
-        if st is not None: fig.add_trace(go.Scatter(x=df.index, y=st[st.columns[0]], name='SuperTrend', line=dict(color='orange')), row=1, col=1)
+        if st is not None: 
+            # SuperTrend 線條
+            fig.add_trace(go.Scatter(
+                x=df.index, y=st[st.columns[0]], 
+                name='SuperTrend', 
+                mode='lines',
+                line=dict(color='#2962ff', width=2) # 亮藍色
+            ), row=1, col=1)
+
     elif config['mode'] == "MA_CROSS":
-        f = ta.sma(df['Close'], config['fast_ma']); s = ta.sma(df['Close'], config['slow_ma'])
-        fig.add_trace(go.Scatter(x=df.index, y=f, line=dict(color='yellow')), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=s, line=dict(color='blue')), row=1, col=1)
+        f = ta.sma(df['Close'], config['fast_ma'])
+        s = ta.sma(df['Close'], config['slow_ma'])
+        fig.add_trace(go.Scatter(x=df.index, y=f, name=f'MA{config["fast_ma"]}', line=dict(color='#ff9800', width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=s, name=f'MA{config["slow_ma"]}', line=dict(color='#2962ff', width=2)), row=1, col=1)
         
+    # --- 3. 副圖指標 (RSI/KD) ---
     if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
-        fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb')), row=2, col=1)
-        fig.add_hline(y=config.get('entry_rsi', 30), line_color='green', row=2, col=1)
-        fig.add_hline(y=config.get('exit_rsi', 70), line_color='red', row=2, col=1)
+        # RSI 線
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb', width=2)), row=2, col=1)
+        # 超買超賣區間填色
+        fig.add_hrect(y0=config.get('entry_rsi', 30), y1=config.get('exit_rsi', 70), 
+                      fillcolor="rgba(255, 255, 255, 0.05)", line_width=0, row=2, col=1)
+        # 上下界線
+        fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color='#089981', row=2, col=1)
+        fig.add_hline(y=config.get('exit_rsi', 70), line_dash="dash", line_color='#f23645', row=2, col=1)
+
     elif config['mode'] == "KD":
         k = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
         if k is not None:
-            fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 0], name='K', line=dict(color='yellow')), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 1], name='D', line=dict(color='blue')), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 0], name='K', line=dict(color='#ffeb3b', width=1.5)), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 1], name='D', line=dict(color='#2962ff', width=1.5)), row=2, col=1)
+            fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", line_color='#089981', row=2, col=1)
+            fig.add_hline(y=config.get('exit_k', 80), line_dash="dash", line_color='#f23645', row=2, col=1)
 
-    fig.update_layout(height=450, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='white'), showlegend=False)
-    fig.update_xaxes(rangeslider=dict(visible=False))
+    # --- 4. 買賣訊號標記 ---
+    if signals is not None:
+        buy_pts = df.loc[signals == 1]
+        sell_pts = df.loc[signals == -1]
+        if not buy_pts.empty:
+            fig.add_trace(go.Scatter(
+                x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', 
+                marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), 
+                name='Buy'
+            ), row=1, col=1)
+        if not sell_pts.empty:
+            fig.add_trace(go.Scatter(
+                x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', 
+                marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), 
+                name='Sell'
+            ), row=1, col=1)
+
+    # --- 5. TradingView 風格 Layout ---
+    fig.update_layout(
+        height=500,
+        margin=dict(t=30, b=0, l=0, r=0),
+        paper_bgcolor='#131722', # 深色背景
+        plot_bgcolor='#131722',
+        font=dict(color='#d1d4dc', family="Roboto"), # 淺灰文字
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        hovermode='x unified', # 十字準星
+        
+        xaxis=dict(
+            showgrid=True, gridcolor='#2a2e39', # 網格線
+            rangeslider=dict(visible=False), # 隱藏下方 Slider
+            showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot" # 十字線效果
+        ),
+        yaxis=dict(
+            showgrid=True, gridcolor='#2a2e39',
+            showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"
+        ),
+        xaxis2=dict(showgrid=True, gridcolor='#2a2e39'),
+        yaxis2=dict(showgrid=True, gridcolor='#2a2e39')
+    )
+
+    # --- 6. 時間選擇器 (Range Selector) ---
+    fig.update_xaxes(
+        rangeselector=dict(
+            buttons=list([
+                dict(count=1, label="1M", step="month", stepmode="backward"),
+                dict(count=3, label="3M", step="month", stepmode="backward"),
+                dict(count=6, label="6M", step="month", stepmode="backward"),
+                dict(count=1, label="YTD", step="year", stepmode="todate"),
+                dict(step="all", label="All")
+            ]),
+            bgcolor="#2a2e39",
+            activecolor="#2962ff",
+            font=dict(color="white")
+        )
+    )
+
     return fig
 
 def quick_backtest(df, config):
@@ -457,7 +549,7 @@ def display_card(placeholder, row, config):
             st.caption(f"FinBERT/Info: {row['LLM_Analysis']}")
 
         if row['Raw_DF'] is not None:
-            with st.expander("📊 K線與回測", expanded=False):
+            with st.expander("📊 K線與回測 (Pro Charts)", expanded=False):
                 sig, perf = quick_backtest(row['Raw_DF'], config)
                 st.plotly_chart(plot_chart(row['Raw_DF'], config, sig), use_container_width=True)
                 if perf: st.caption(f"模擬績效: 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
