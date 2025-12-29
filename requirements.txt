@@ -4,8 +4,7 @@ pandas
 numpy
 pandas_ta
 plotly
-groq
 transformers
 torch
 scipy
-
+groq
