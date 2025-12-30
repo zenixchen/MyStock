@@ -59,8 +59,12 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 2025 全明星量化戰情室 (Pro Charts)")
-st.caption("即時報價修正版 + 趨勢過濾邏輯 + AI 推演")
+st.title("💎 量化交易 (Pro Charts)")
+
+# 新增這個按鈕
+if st.button('🔄 強制刷新行情 (Clear Cache)'):
+    st.cache_data.clear() # 清除所有快取
+    st.rerun()            # 重新執行
 
 if not HAS_TRANSFORMERS:
     st.warning("⚠️ 系統提示：FinBERT 模組未載入 (資源限制)，將優先使用 Groq AI 或顯示 N/A。")
@@ -69,27 +73,33 @@ if not HAS_TRANSFORMERS:
 # 1. 核心函數 (★價格抓取邏輯大修★)
 # ==========================================
 def get_real_live_price(symbol):
-    """
-    修正版：強制抓取最新 1 分鐘 K 線，解決 fast_info 延遲問題
-    """
     try:
-        ticker = yf.Ticker(symbol)
-        
-        # ★ 方法 A: 嘗試抓取最新 1 分鐘數據 (最準確，含盤前盤後)
-        # prepost=True 對美股很重要，否則盤前盤後會抓不到
-        df_rt = ticker.history(period="1d", interval="1m", prepost=True)
-        
-        if not df_rt.empty:
-            return float(df_rt['Close'].iloc[-1])
+        # 1. 針對不同商品使用最佳策略 (參考 CMD 版邏輯)
+        if symbol.endswith(".TW"):
+             # 台股：抓 5 天 1 分鐘 K 線
+             df_rt = yf.download(symbol, period="5d", interval="1m", progress=False)
+        elif "-USD" in symbol or "=X" in symbol:
+            # 外匯/加密貨幣：抓 1 天 1 分鐘 K 線
+            df_rt = yf.download(symbol, period="1d", interval="1m", progress=False)
+        else:
+            # 美股：抓 5 天 1 分鐘 K 線 (含盤前盤後)
+            df_rt = yf.download(symbol, period="5d", interval="1m", prepost=True, progress=False)
             
-        # ★ 方法 B: 如果 A 失敗 (例如某些指數)，才退回 fast_info
-        price = ticker.fast_info.get('last_price')
-        if price and not np.isnan(price):
-            return float(price)
+        # 2. 檢查數據是否為空
+        if df_rt.empty: return None
+        
+        # 3. 處理 MultiIndex (yfinance 新版問題)
+        if isinstance(df_rt.columns, pd.MultiIndex): 
+            df_rt.columns = df_rt.columns.get_level_values(0)
             
-        return None
+        # 4. 回傳最新一筆收盤價
+        return float(df_rt['Close'].iloc[-1])
     except: 
-        return None
+        # 5. 最後一道防線：Fast Info
+        try:
+            return float(yf.Ticker(symbol).fast_info.get('last_price'))
+        except:
+            return None
 
 def get_safe_data(ticker):
     try:
