@@ -315,19 +315,50 @@ def analyze_ticker(config, groq_client=None):
 
     elif config['mode'] in ["RSI_RSI", "RSI_MA"]:
         rsi = ta.rsi(c, length=config.get('rsi_len', 14)).iloc[-1]
+        
+        # ★★★ 修復：計算均線濾網 ★★★
+        use_trend = config.get('ma_trend', 0) > 0
+        is_trend_ok = True # 預設為 True
+        trend_msg = ""
+        
+        if use_trend:
+            ma_val = ta.ema(c, length=config['ma_trend']).iloc[-1]
+            if lp < ma_val: # 如果價格低於均線 (例如 200MA)
+                is_trend_ok = False
+                trend_msg = f"(逆勢: 破MA{config['ma_trend']})"
+            else:
+                trend_msg = f"(順勢: 上MA{config['ma_trend']})"
+
         buy_at = f"${find_price_for_rsi(df, config['entry_rsi'], config.get('rsi_len', 14))}"
+        
         if config['mode'] == "RSI_RSI":
             strategy_desc = f"RSI區間 (L={config.get('rsi_len',14)}, Buy<{config['entry_rsi']}, Sell>{config['exit_rsi']})"
             sell_at = f"${find_price_for_rsi(df, config['exit_rsi'], config.get('rsi_len', 14))}"
-            if rsi < config['entry_rsi']: sig = "🔥 BUY"; act = f"RSI低檔 ({rsi:.1f})"; sig_type="BUY"
-            elif rsi > config['exit_rsi']: sig = "💰 SELL"; act = f"RSI高檔 ({rsi:.1f})"; sig_type="SELL"
-            else: act = f"區間震盪 (RSI:{rsi:.1f})"
+            
+            if rsi < config['entry_rsi']: 
+                # ★★★ 關鍵判斷：只有趨勢正確才買 ★★★
+                if is_trend_ok:
+                    sig = "🔥 BUY"; act = f"RSI低檔 ({rsi:.1f}) {trend_msg}"; sig_type="BUY"
+                else:
+                    sig = "✋ WAIT"; act = f"RSI低但逆勢 {trend_msg}，不接刀"; sig_type="WAIT"
+            elif rsi > config['exit_rsi']: 
+                sig = "💰 SELL"; act = f"RSI高檔 ({rsi:.1f})"; sig_type="SELL"
+            else: 
+                act = f"區間震盪 (RSI:{rsi:.1f})"
+                
         else:
+            # RSI_MA 邏輯
             s_val = ta.sma(c, length=config['exit_ma']).iloc[-1]
             strategy_desc = f"RSI+MA (RSI<{config['entry_rsi']} 買, 破MA{config['exit_ma']} 賣)"
             sell_at = f"${s_val:.2f}"
-            if rsi < config['entry_rsi']: sig = "🔥 BUY"; act = "短線超賣"; sig_type="BUY"
-            elif lp > s_val: sig = "💰 SELL"; act = "觸及均線壓力"; sig_type="SELL"
+            
+            if rsi < config['entry_rsi']: 
+                if is_trend_ok:
+                    sig = "🔥 BUY"; act = f"短線超賣 {trend_msg}"; sig_type="BUY"
+                else:
+                    sig = "✋ WAIT"; act = f"超賣但逆勢 {trend_msg}"; sig_type="WAIT"
+            elif lp > s_val: 
+                sig = "💰 SELL"; act = "觸及均線壓力"; sig_type="SELL"
 
     elif config['mode'] == "KD":
         k = ta.stoch(h, l, c, k=9, d=3).iloc[-1, 0]
