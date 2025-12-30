@@ -26,7 +26,7 @@ try:
     HAS_TRANSFORMERS = True
 except ImportError:
     HAS_TRANSFORMERS = False
-    print("⚠️ Warning: transformers not found. FinBERT will be disabled.")
+    # print("⚠️ Warning: transformers not found. FinBERT will be disabled.")
 
 try:
     from groq import Groq
@@ -60,30 +60,41 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("💎 2025 全明星量化戰情室 (Pro Charts)")
-st.caption("TradingView 風格圖表 + AI 邏輯推演 (FinBERT 詳細版)")
+st.caption("即時報價修正版 + 趨勢過濾邏輯 + AI 推演")
 
 if not HAS_TRANSFORMERS:
     st.warning("⚠️ 系統提示：FinBERT 模組未載入 (資源限制)，將優先使用 Groq AI 或顯示 N/A。")
 
 # ==========================================
-# 1. 核心函數
+# 1. 核心函數 (★價格抓取邏輯大修★)
 # ==========================================
 def get_real_live_price(symbol):
+    """
+    修正版：強制抓取最新 1 分鐘 K 線，解決 fast_info 延遲問題
+    """
     try:
         ticker = yf.Ticker(symbol)
-        price = ticker.fast_info.get('last_price')
-        if price is None or np.isnan(price):
-            suffix = "1d" if "-USD" in symbol else "5d"
-            df_rt = yf.download(symbol, period=suffix, interval="1m", progress=False, timeout=5)
-            if df_rt.empty: return None
-            if isinstance(df_rt.columns, pd.MultiIndex): df_rt.columns = df_rt.columns.get_level_values(0)
+        
+        # ★ 方法 A: 嘗試抓取最新 1 分鐘數據 (最準確，含盤前盤後)
+        # prepost=True 對美股很重要，否則盤前盤後會抓不到
+        df_rt = ticker.history(period="1d", interval="1m", prepost=True)
+        
+        if not df_rt.empty:
             return float(df_rt['Close'].iloc[-1])
-        return float(price)
-    except: return None
+            
+        # ★ 方法 B: 如果 A 失敗 (例如某些指數)，才退回 fast_info
+        price = ticker.fast_info.get('last_price')
+        if price and not np.isnan(price):
+            return float(price)
+            
+        return None
+    except: 
+        return None
 
 def get_safe_data(ticker):
     try:
-        df = yf.download(ticker, period="5y", interval="1d", progress=False, timeout=10)
+        # 下載 2 年數據 (太長會拖慢速度)
+        df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         if df is None or df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df.index = pd.to_datetime(df.index)
@@ -113,7 +124,7 @@ def get_news_content(symbol):
     except: return []
 
 # ==========================================
-# 2. 基本面與 FinBERT (★修復詳細資訊★)
+# 2. 基本面與 FinBERT
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_fundamentals(symbol):
@@ -149,7 +160,7 @@ def analyze_sentiment_finbert(symbol):
         if not classifier: return 0, "模型載入失敗", []
         
         texts = []
-        raw_titles = [] # 用來顯示原始標題
+        raw_titles = [] 
         for n in news_list[:15]:
             t = n.get('title', '')
             if t: 
@@ -161,16 +172,11 @@ def analyze_sentiment_finbert(symbol):
         results = classifier(texts)
         total_score = 0
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
-        
-        # ★★★ 這裡把詳細列表加回來了 ★★★
         debug_logs = []
         for i, res in enumerate(results):
             val = score_map[res['label']] * res['score']
             total_score += val
-            
-            # 製作詳細日誌
             icon = "🔥" if res['label'] == "positive" else "❄️" if res['label'] == "negative" else "⚪"
-            # 格式: 🔥 POSITIVE (0.95): 新聞標題...
             log_str = f"{icon} {res['label'].upper()} ({res['score']:.2f}): {raw_titles[i][:40]}..."
             debug_logs.append(log_str)
             
@@ -269,7 +275,7 @@ def analyze_chips_volume(df, inst_percent, short_percent):
     except: return "計算錯誤"
 
 # ==========================================
-# 5. 主分析邏輯
+# 5. 主分析邏輯 (★邏輯大修復★)
 # ==========================================
 def analyze_ticker(config, groq_client=None):
     symbol = config['symbol']
@@ -283,15 +289,22 @@ def analyze_ticker(config, groq_client=None):
             "Buy_At": "---", "Sell_At": "---", "Logs": []
         }
 
-    lp = get_real_live_price(symbol) or df['Close'].iloc[-1]
+    # 使用修正後的即時價格函數
+    lp = get_real_live_price(symbol)
+    if lp is None: lp = df['Close'].iloc[-1] # Fallback
+    
     prev_c = df['Close'].iloc[-1]
     
+    # 模擬今日 K 線
     new_row = pd.DataFrame({'Close': [lp], 'High': [max(lp, df['High'].iloc[-1])], 'Low': [min(lp, df['Low'].iloc[-1])], 'Open': [lp], 'Volume': [0]}, index=[pd.Timestamp.now()])
     calc_df = pd.concat([df.copy(), new_row])
     c, h, l = calc_df['Close'], calc_df['High'], calc_df['Low']
     
     sig = "WAIT"; act = "觀望"; buy_at = "---"; sell_at = "---"; sig_type = "WAIT"; strategy_desc = ""
     
+    # ----------------------------------------------------
+    # ★★★ 策略邏輯區 (含 BTC 修正) ★★★
+    # ----------------------------------------------------
     if config['mode'] == "SUPERTREND":
         st_val = ta.supertrend(h, l, c, length=config['period'], multiplier=config['multiplier'])
         strategy_desc = f"SuperTrend (P={config['period']}, M={config['multiplier']})"
@@ -316,14 +329,13 @@ def analyze_ticker(config, groq_client=None):
     elif config['mode'] in ["RSI_RSI", "RSI_MA"]:
         rsi = ta.rsi(c, length=config.get('rsi_len', 14)).iloc[-1]
         
-        # ★★★ 修復：計算均線濾網 ★★★
+        # ★★★ 新增：計算均線濾網 (Trend Filter) ★★★
         use_trend = config.get('ma_trend', 0) > 0
-        is_trend_ok = True # 預設為 True
+        is_trend_ok = True
         trend_msg = ""
-        
         if use_trend:
             ma_val = ta.ema(c, length=config['ma_trend']).iloc[-1]
-            if lp < ma_val: # 如果價格低於均線 (例如 200MA)
+            if lp < ma_val: # 價格在均線下 (空頭)
                 is_trend_ok = False
                 trend_msg = f"(逆勢: 破MA{config['ma_trend']})"
             else:
@@ -336,22 +348,20 @@ def analyze_ticker(config, groq_client=None):
             sell_at = f"${find_price_for_rsi(df, config['exit_rsi'], config.get('rsi_len', 14))}"
             
             if rsi < config['entry_rsi']: 
-                # ★★★ 關鍵判斷：只有趨勢正確才買 ★★★
+                # ★ 關鍵：空頭不接刀
                 if is_trend_ok:
                     sig = "🔥 BUY"; act = f"RSI低檔 ({rsi:.1f}) {trend_msg}"; sig_type="BUY"
                 else:
-                    sig = "✋ WAIT"; act = f"RSI低但逆勢 {trend_msg}，不接刀"; sig_type="WAIT"
+                    sig = "✋ WAIT"; act = f"RSI低但逆勢 {trend_msg} 不接刀"; sig_type="WAIT"
             elif rsi > config['exit_rsi']: 
                 sig = "💰 SELL"; act = f"RSI高檔 ({rsi:.1f})"; sig_type="SELL"
             else: 
                 act = f"區間震盪 (RSI:{rsi:.1f})"
-                
         else:
-            # RSI_MA 邏輯
+            # RSI_MA
             s_val = ta.sma(c, length=config['exit_ma']).iloc[-1]
             strategy_desc = f"RSI+MA (RSI<{config['entry_rsi']} 買, 破MA{config['exit_ma']} 賣)"
             sell_at = f"${s_val:.2f}"
-            
             if rsi < config['entry_rsi']: 
                 if is_trend_ok:
                     sig = "🔥 BUY"; act = f"短線超賣 {trend_msg}"; sig_type="BUY"
@@ -390,24 +400,17 @@ def analyze_ticker(config, groq_client=None):
     fund = get_fundamentals(symbol)
     fund_msg = f"PE: {fund['pe']:.1f}" if fund and fund['pe'] else "N/A"
     
-    # ★★★ 智慧切換邏輯 ★★★
     llm_res = "Init"; is_llm = False
-    logs = [] # FinBERT 日誌
+    logs = [] 
     news = get_news_content(symbol)
     
-    # 1. 嘗試 LLM
     if groq_client:
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
         llm_res, icon, success = analyze_logic_llm(groq_client, symbol, news, tech_ctx)
-        
-        if success:
-            is_llm = True
-        else:
-            is_llm = False 
+        if success: is_llm = True
+        else: is_llm = False 
             
-    # 2. 如果 is_llm 為 False，執行 FinBERT 備案
     if not is_llm:
-        # 這裡會回傳 logs 列表
         score, _, logs = analyze_sentiment_finbert(symbol)
         llm_res = f"情緒分: {score:.2f} (無 Groq Key 或連線失敗)"
 
@@ -420,7 +423,7 @@ def analyze_ticker(config, groq_client=None):
         "Signal": sig, "Action": act, "Type": sig_type, "Buy_At": buy_at, "Sell_At": sell_at,
         "Fund": fund_msg, "LLM_Analysis": llm_res, "Is_LLM": is_llm, 
         "Raw_DF": df, "Pred": pred_msg, "Chip": chip_msg, "Strat_Desc": strategy_desc,
-        "Logs": logs # 傳回 logs 供顯示
+        "Logs": logs
     }
 
 # ==========================================
@@ -433,6 +436,11 @@ def plot_chart(df, config, signals=None):
     
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#f23645', decreasing_fillcolor='#f23645'), row=1, col=1)
     
+    # ★ 繪製 200 EMA 供趨勢參考
+    if config.get('ma_trend', 0) > 0:
+        ma_trend = ta.ema(df['Close'], length=config['ma_trend'])
+        fig.add_trace(go.Scatter(x=df.index, y=ma_trend, name=f"EMA {config['ma_trend']}", line=dict(color='purple', width=2)), row=1, col=1)
+
     if config['mode'] == "SUPERTREND":
         st = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
         if st is not None: fig.add_trace(go.Scatter(x=df.index, y=st[st.columns[0]], name='SuperTrend', mode='lines', line=dict(color='#2962ff', width=2)), row=1, col=1)
@@ -504,14 +512,11 @@ def display_card(placeholder, row, config):
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
-        # ★★★ 顯示 AI 分析結果 ★★★
         if row['Is_LLM']:
             with st.expander("🧠 AI 觀點 (LLM)", expanded=True):
                 st.markdown(row['LLM_Analysis'])
         else:
-            # 沒用 LLM 時，顯示 FinBERT 分數
             st.caption(f"FinBERT: {row['LLM_Analysis']}")
-            # 如果有 FinBERT 詳細日誌，顯示在下方 Expander
             if row.get('Logs'):
                 with st.expander("📊 FinBERT 詳細情緒列表", expanded=False):
                     for log in row['Logs']:
