@@ -312,7 +312,7 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         if curr_mfi > 80: details.append(f"⚠️量價過熱({curr_mfi:.0f})")
         elif curr_mfi < 20: details.append(f"💎量縮築底({curr_mfi:.0f})")
         
-        # 籌碼結構
+        # ★★★ 關鍵修正：把這段加回來，TSM 才會顯示法人重倉 ★★★
         if inst_percent > 0.4: details.append(f"法人重倉({inst_percent*100:.0f}%)")
         if short_percent > 0.2: details.append(f"⚠️軋空警戒({short_percent*100:.1f}%)")
         
