@@ -470,21 +470,27 @@ def analyze_ticker(config, groq_client=None):
     }
 
 # ==========================================
-# 6. 視覺化 (新增 CMF 繪圖)
+# 6. 視覺化 (升級版：強制顯示 CMF)
 # ==========================================
 def plot_chart(df, config, signals=None):
     if df is None: return None
     
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.75, 0.25], specs=[[{"secondary_y": False}], [{"secondary_y": False}]])
+    # ★ 改為 3 個子圖：主圖(K線) / 副圖(RSI,KD) / 籌碼(CMF)
+    fig = make_subplots(
+        rows=3, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.02, 
+        row_heights=[0.6, 0.2, 0.2], # 調整高度比例
+        specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]]
+    )
     
-    # 主圖 K 線
+    # 1. 主圖 K 線 (Row 1)
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#f23645', decreasing_fillcolor='#f23645'), row=1, col=1)
     
     if config.get('ma_trend', 0) > 0:
         ma_trend = ta.ema(df['Close'], length=config['ma_trend'])
         fig.add_trace(go.Scatter(x=df.index, y=ma_trend, name=f"EMA {config['ma_trend']}", line=dict(color='purple', width=2)), row=1, col=1)
 
-    # 策略主圖線條
     if config['mode'] == "SUPERTREND":
         st = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
         if st is not None: fig.add_trace(go.Scatter(x=df.index, y=st[st.columns[0]], name='SuperTrend', mode='lines', line=dict(color='#2962ff', width=2)), row=1, col=1)
@@ -494,7 +500,7 @@ def plot_chart(df, config, signals=None):
         fig.add_trace(go.Scatter(x=df.index, y=f, name=f'MA{config["fast_ma"]}', line=dict(color='#ff9800', width=1.5)), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=s, name=f'MA{config["slow_ma"]}', line=dict(color='#2962ff', width=2)), row=1, col=1)
         
-    # 副圖指標 (RSI, KD, 或 新增的 CMF)
+    # 2. 副圖指標 (Row 2)
     if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
         fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb', width=2)), row=2, col=1)
@@ -510,12 +516,13 @@ def plot_chart(df, config, signals=None):
             fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", line_color='#089981', row=2, col=1)
             fig.add_hline(y=config.get('exit_k', 80), line_dash="dash", line_color='#f23645', row=2, col=1)
 
-    # ★★★ 新增：CMF 視覺化 ★★★
-    elif config['mode'] == "CHIPS":
-        cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
+    # ★★★ 3. 新增：CMF 籌碼副圖 (Row 3) ★★★
+    # 無論什麼模式，都強制顯示 CMF
+    cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
+    if cmf is not None:
         colors = ['#089981' if v >= 0 else '#f23645' for v in cmf] # 綠漲紅跌
-        fig.add_trace(go.Bar(x=df.index, y=cmf, name='Chaikin Money Flow', marker_color=colors), row=2, col=1)
-        fig.add_hline(y=0, line_color='gray', row=2, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF (主力籌碼)', marker_color=colors), row=3, col=1)
+        fig.add_hline(y=0, line_color='gray', row=3, col=1)
 
     # 買賣點標記
     if signals is not None:
@@ -523,7 +530,7 @@ def plot_chart(df, config, signals=None):
         if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
         if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
 
-    fig.update_layout(height=500, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc', family="Roboto"), showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), hovermode='x unified', xaxis=dict(showgrid=True, gridcolor='#2a2e39', rangeslider=dict(visible=False), showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), yaxis=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), xaxis2=dict(showgrid=True, gridcolor='#2a2e39'), yaxis2=dict(showgrid=True, gridcolor='#2a2e39'))
+    fig.update_layout(height=600, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc', family="Roboto"), showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), hovermode='x unified', xaxis=dict(showgrid=True, gridcolor='#2a2e39', rangeslider=dict(visible=False), showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), yaxis=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), xaxis2=dict(showgrid=True, gridcolor='#2a2e39'), yaxis2=dict(showgrid=True, gridcolor='#2a2e39'), xaxis3=dict(showgrid=True, gridcolor='#2a2e39'), yaxis3=dict(showgrid=True, gridcolor='#2a2e39'))
     fig.update_xaxes(rangeselector=dict(buttons=list([dict(count=1, label="1M", step="month", stepmode="backward"), dict(count=3, label="3M", step="month", stepmode="backward"), dict(count=6, label="6M", step="month", stepmode="backward"), dict(count=1, label="YTD", step="year", stepmode="todate"), dict(step="all", label="All")]), bgcolor="#2a2e39", activecolor="#2962ff", font=dict(color="white")))
     return fig
 
