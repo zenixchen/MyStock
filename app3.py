@@ -11,11 +11,11 @@ import re
 import importlib.util
 
 # ==========================================
-# ★ 0. 系統優化設定
+# ★ 0. 系統設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化交易",
-    page_icon="📈",
+    page_title="2026 量化戰情室 (AI 委員會版)",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -43,10 +43,12 @@ st.markdown("""
         .stTabs [aria-selected="true"] { background-color: #2962ff; color: white; }
         div[data-testid="stMetricValue"] { font-size: 20px; color: #e0e0e0; }
         h4 { color: #8b949e; font-weight: 300; font-size: 14px; margin-bottom: 5px; }
+        /* 讓 AI 分析報告更好看 */
+        .ai-report { background-color: #161b22; padding: 15px; border-radius: 5px; border-left: 3px solid #2962ff; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("2026 量化交易")
+st.title("🧠 2026 量化戰情室 (AI 委員會版)")
 
 if st.button('🔄 更新行情'):
     st.cache_data.clear()
@@ -96,7 +98,7 @@ def get_safe_data(ticker):
         return None
 
 # ==========================================
-# 2. 輔助功能
+# 2. 輔助功能 & AI 核心 (升級版)
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_fundamentals(symbol):
@@ -119,23 +121,55 @@ def get_news(symbol):
         return [clean_text(n.get('title','')) for n in news[:5]] if news else []
     except: return []
 
-def analyze_ai_logic(client, symbol, news_list, signal, action):
+# ★★★ 升級：AI 投資委員會邏輯 ★★★
+def analyze_deep_logic_2026(client, symbol, news_list, signal, action, price_context):
     if not client or not news_list: return None
+
+    # 組合新聞
+    news_text = "\n".join([f"- {n}" for n in news_list[:5]])
+    
+    prompt = f"""
+    You are a sophisticated AI Investment Committee for a top-tier Hedge Fund.
+    Target Asset: {symbol}
+    Current Tech Signal: {signal} ({action})
+    Price Context: {price_context}
+
+    Latest News Headlines:
+    {news_text}
+
+    Task: Conduct a debate to determine the trading strategy.
+    
+    Step 1 [The Bull Case]: Identify catalyst, growth potential, or positive momentum.
+    Step 2 [The Bear Case]: Identify risks, overvaluation, "sell the news" scenarios, or macro headwinds.
+    Step 3 [The Risk Manager]: Assess if the news is noise/clickbait or substantial.
+    Step 4 [Final Verdict]: Synthesize all views.
+
+    Output Format (in Traditional Chinese ONLY, use Markdown):
+    
+    ### 🏛️ AI 投資委員會決策 ({symbol})
+    
+    **🐂 多頭觀點**: ...
+    **🐻 空頭警示**: ...
+    **⚖️ 風險評估**: ...
+    
+    ---
+    **🎯 最終指令**: [Strong Buy / Buy / Wait / Sell / Strong Sell]
+    **💡 關鍵洞察**: [One sentence "Second-Order" thought]
+    """
+
     try:
-        prompt = f"""
-        分析 {symbol}。技術訊號: {signal} ({action})。
-        最新新聞: {news_list}
-        請用繁體中文，簡潔給出 3 點分析 (包含技術面與消息面的衝突或驗證)。
-        """
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile", temperature=0.3
+            model="llama-3.3-70b-versatile", # 使用 Llama 3.3
+            temperature=0.4,
+            max_tokens=1000
         )
         return resp.choices[0].message.content
-    except: return None
+    except Exception as e:
+        return f"AI 連線失敗: {str(e)}"
 
 # ==========================================
-# 3. 策略運算核心 (★ 修復 KeyError 問題)
+# 3. 策略運算核心 (防呆修復版)
 # ==========================================
 def find_rsi_price(df, target_rsi, rsi_len):
     if df is None or len(df)<20: return 0
@@ -157,12 +191,10 @@ def run_strategy(df, cfg):
     
     mode = cfg['mode']
     
-    # ★★★ 1. 純 RSI 或 FUSION (有 exit_rsi 的) ★★★
+    # 1. 純 RSI 或 FUSION (有 exit_rsi 的)
     if mode == "RSI_RSI" or mode == "FUSION":
         rsi_len = cfg.get('rsi_len', 14)
         rsi = ta.rsi(c, length=rsi_len).iloc[-1]
-        
-        # 安全取得參數
         entry_rsi = cfg.get('entry_rsi', 30)
         exit_rsi = cfg.get('exit_rsi', 70)
         
@@ -170,7 +202,6 @@ def run_strategy(df, cfg):
         s_price = find_rsi_price(df, exit_rsi, rsi_len)
         b_at = f"${b_price:.2f}"; s_at = f"${s_price:.2f}"
         
-        # 趨勢過濾
         trend_ok = True
         if cfg.get('ma_trend', 0) > 0:
             ma = ta.ema(c, length=cfg['ma_trend']).iloc[-1]
@@ -178,34 +209,29 @@ def run_strategy(df, cfg):
         
         if rsi < entry_rsi:
             if trend_ok: sig="🔥 BUY"; act="低檔順勢"; s_type="BUY"
-            else: sig="✋ WAIT"; act="低檔逆勢 (破均線)"; s_type="WAIT"
+            else: sig="✋ WAIT"; act="低檔逆勢"; s_type="WAIT"
         elif rsi > exit_rsi:
             sig="💰 SELL"; act="高檔過熱"; s_type="SELL"
         else:
             act = f"震盪中 (RSI:{rsi:.1f})"
 
-    # ★★★ 2. RSI + MA (QQQ, QLD 專用) ★★★
+    # 2. RSI + MA (QQQ 專用)
     elif mode == "RSI_MA":
         rsi_len = cfg.get('rsi_len', 14)
         rsi = ta.rsi(c, length=rsi_len).iloc[-1]
-        
-        # 這裡不需要 exit_rsi，改用 exit_ma
         exit_ma_val = ta.sma(c, length=cfg.get('exit_ma', 20)).iloc[-1]
         entry_rsi = cfg.get('entry_rsi', 30)
         
         b_price = find_rsi_price(df, entry_rsi, rsi_len)
         b_at = f"${b_price:.2f}"; s_at = f"${exit_ma_val:.2f} (MA)"
         
-        if rsi < entry_rsi:
-            sig="🔥 BUY"; act="RSI低檔佈局"; s_type="BUY"
+        if rsi < entry_rsi: sig="🔥 BUY"; act="RSI低檔佈局"; s_type="BUY"
         elif lp > exit_ma_val:
-            # RSI過熱保護 (預設80)
             if rsi > 80: sig="💰 SELL"; act="突破均線且過熱"; s_type="SELL"
             else: act="持有 (均線之上)"
-        else:
-            act = f"等待機會 (RSI:{rsi:.1f})"
+        else: act = f"等待 (RSI:{rsi:.1f})"
 
-    # --- 3. SUPERTREND ---
+    # 3. SUPERTREND
     elif mode == "SUPERTREND":
         st_val = ta.supertrend(h, l, c, length=cfg['period'], multiplier=cfg['multiplier'])
         if st_val is not None:
@@ -218,7 +244,7 @@ def run_strategy(df, cfg):
             elif curr_dir == 1: sig="✊ HOLD"; act="多頭續抱"; s_type="HOLD"
             else: sig="☁️ EMPTY"; act="空頭觀望"; s_type="EMPTY"
 
-    # --- 4. KD ---
+    # 4. KD
     elif mode == "KD":
         k = ta.stoch(h, l, c, k=9, d=3).iloc[-1, 0]
         b_at = f"K<{cfg['entry_k']}"; s_at = f"K>{cfg['exit_k']}"
@@ -226,7 +252,7 @@ def run_strategy(df, cfg):
         elif k > cfg['exit_k']: sig="💀 SELL"; act=f"KD高檔({k:.1f})"; s_type="SELL"
         else: act = f"K值 {k:.1f}"
 
-    # --- 5. MA_CROSS ---
+    # 5. MA_CROSS
     elif mode == "MA_CROSS":
         f = ta.sma(c, cfg['fast_ma']); s = ta.sma(c, cfg['slow_ma'])
         cf, pf = f.iloc[-1], f.iloc[-2]; cs, ps = s.iloc[-1], s.iloc[-2]
@@ -235,7 +261,7 @@ def run_strategy(df, cfg):
         elif cf>cs: sig="✊ HOLD"; act="多頭排列"; s_type="HOLD"
         else: sig="☁️ EMPTY"; act="空頭排列"; s_type="EMPTY"
         
-    # --- 6. BOLL_RSI ---
+    # 6. BOLL_RSI
     elif mode == "BOLL_RSI":
         rsi = ta.rsi(c, length=cfg.get('rsi_len', 14)).iloc[-1]
         bb = ta.bbands(c, length=20, std=2)
@@ -248,7 +274,7 @@ def run_strategy(df, cfg):
     return sig, act, s_type, b_at, s_at
 
 # ==========================================
-# 4. 視覺化
+# 4. 視覺化 (★ 巨鯨成交量)
 # ==========================================
 def plot_chart(df, cfg, signals=None):
     if df is None: return None
@@ -260,8 +286,8 @@ def plot_chart(df, cfg, signals=None):
     for i in range(len(df)):
         val = cmf_vals.iloc[i]
         is_up = df['Close'].iloc[i] >= df['Open'].iloc[i]
-        if val > 0.20: c = '#ffd700' 
-        elif val < -0.20: c = '#9c27b0'
+        if val > 0.20: c = '#ffd700' # 金色巨鯨
+        elif val < -0.20: c = '#9c27b0' # 紫色拋售
         else: c = '#089981' if is_up else '#f23645'
         vol_colors.append(c)
 
@@ -271,6 +297,7 @@ def plot_chart(df, cfg, signals=None):
         specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]]
     )
 
+    # K線
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         name='Price', increasing_line_color='#089981', decreasing_line_color='#f23645'
@@ -280,11 +307,10 @@ def plot_chart(df, cfg, signals=None):
         ma = ta.ema(df['Close'], length=cfg['ma_trend'])
         fig.add_trace(go.Scatter(x=df.index, y=ma, name=f'EMA{cfg["ma_trend"]}', line=dict(color='orange', width=1)), row=1, col=1)
 
-    # 副圖指標判斷
+    # 指標
     if "RSI" in cfg['mode'] or "FUSION" in cfg['mode'] or "BOLL" in cfg['mode']:
         rsi = ta.rsi(df['Close'], length=cfg.get('rsi_len', 14))
         fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb')), row=2, col=1)
-        # 針對 RSI_MA 等沒有 exit_rsi 的情況做安全處理
         fig.add_hline(y=cfg.get('entry_rsi',30), line_dash="dash", line_color='green', row=2, col=1)
         fig.add_hline(y=cfg.get('exit_rsi',70), line_dash="dash", line_color='red', row=2, col=1)
     elif cfg['mode'] == "KD":
@@ -292,6 +318,7 @@ def plot_chart(df, cfg, signals=None):
         fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:,0], name='K', line=dict(color='yellow')), row=2, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:,1], name='D', line=dict(color='blue')), row=2, col=1)
 
+    # 巨鯨成交量
     fig.add_trace(go.Bar(
         x=df.index, y=df['Volume'], name='Volume (Whale)', marker_color=vol_colors
     ), row=3, col=1)
@@ -304,7 +331,7 @@ def plot_chart(df, cfg, signals=None):
     return fig
 
 # ==========================================
-# 5. 核心持股監控列表
+# 5. 監控名單 (完整保留)
 # ==========================================
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
@@ -363,12 +390,12 @@ for i, key in enumerate(selected_keys):
         st.markdown(f"#### :{sig_color}[{sig}]")
         st.caption(f"策略: {act} | 掛買: {b_at} | 掛賣: {s_at}")
 
-        tab1, tab2, tab3 = st.tabs(["📊 圖表", "🧬 籌碼與財報", "🤖 AI 分析"])
+        tab1, tab2, tab3 = st.tabs(["📊 圖表", "🧬 籌碼與財報", "🤖 AI 委員會"])
         
         with tab1:
             if df is not None:
                 st.plotly_chart(plot_chart(df, cfg), use_container_width=True)
-                st.caption("💡 黃色成交量=巨鯨大買 / 紫色成交量=巨鯨大賣")
+                st.caption("💡 黃色=巨鯨大買 / 紫色=巨鯨大賣")
         
         with tab2:
             if fund:
@@ -391,10 +418,12 @@ for i, key in enumerate(selected_keys):
                 with st.expander("查看新聞標題", expanded=False):
                     for n in news: st.text(f"• {n}")
                 
-                if st.button(f"呼叫 AI 分析 {cfg['symbol']}", key=f"btn_{key}"):
+                if st.button(f"🗳️ 召開 AI 投資委員會 ({cfg['symbol']})", key=f"btn_{key}"):
                     if groq_client:
-                        with st.spinner("AI 思考中..."):
-                            res = analyze_ai_logic(groq_client, cfg['symbol'], news, sig, act)
+                        with st.spinner("委員會辯論中..."):
+                            # 準備上下文
+                            price_ctx = f"Price: {price:.2f}, Signal: {sig}, Act: {act}"
+                            res = analyze_deep_logic_2026(groq_client, cfg['symbol'], news, sig, act, price_ctx)
                             if res: st.markdown(res)
                     else:
                         st.warning("請先輸入 Groq API Key")
