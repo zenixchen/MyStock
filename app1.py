@@ -73,8 +73,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📱 2025 全明星量化戰情室 (旗艦版)")
-st.caption("五維分析: 技術 + 財報 + FinBERT情緒 + ATR波動 + 籌碼(OBV/空單) | RSI 修正版")
+st.title("📱 2026 量化交易 ")
+st.caption("五維分析: 技術 + 財報 + FinBERT情緒 + ATR波動 + 籌碼(OBV/空單) + 掃描自選股")
 
 if st.button('🔄 立即更新行情'):
     st.cache_data.clear()
