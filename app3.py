@@ -14,8 +14,8 @@ import importlib.util
 # ★ 0. 系統設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Z-Score版)",
-    page_icon="🐋",
+    page_title="2026 量化戰情室 (VWAP+MFI版)",
+    page_icon="🦅",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -45,7 +45,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🐋 2026 量化戰情室 (Z-Score 動態偵測)")
+st.title("🦅 2026 量化戰情室 (VWAP 機構操盤版)")
+st.caption("核心指標升級：VWAP (機構成本) + MFI (量能RSI) + NVI (聰明錢)")
 
 if st.button('🔄 更新行情'):
     st.cache_data.clear()
@@ -56,17 +57,22 @@ if st.button('🔄 更新行情'):
 # ==========================================
 def get_safe_data(ticker):
     try:
+        # 下載數據
         df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
+        
         if df is None or df.empty: return None
         
+        # 處理 MultiIndex
         if isinstance(df.columns, pd.MultiIndex): 
             df.columns = df.columns.get_level_values(0)
             
+        # 強制轉型
         cols = ['Open', 'High', 'Low', 'Close', 'Volume']
         for c in cols:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors='coerce').astype(float)
         
+        # 取得即時價格
         try:
             t = yf.Ticker(ticker)
             live_price = t.fast_info.get('last_price')
@@ -115,6 +121,7 @@ def get_news(symbol):
 def analyze_deep_logic_2026(client, symbol, news_list, signal, action, price_context):
     if not client or not news_list: return None
     news_text = "\n".join([f"- {n}" for n in news_list[:5]])
+    
     prompt = f"""
     You are a sophisticated AI Investment Committee.
     Target: {symbol}
@@ -130,18 +137,20 @@ def analyze_deep_logic_2026(client, symbol, news_list, signal, action, price_con
     **⚖️ 風險評估**: ...
     ---
     **🎯 最終指令**: [Strong Buy/Buy/Wait/Sell/Strong Sell]
-    **💡 關鍵洞察**: [Second-Order thought]
+    **💡 關鍵洞察**: [One sentence insight]
     """
     try:
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile", temperature=0.4, max_tokens=1000
+            model="llama-3.3-70b-versatile",
+            temperature=0.4, max_tokens=1000
         )
         return resp.choices[0].message.content
-    except Exception as e: return f"AI Error: {e}"
+    except Exception as e:
+        return f"AI Error: {e}"
 
 # ==========================================
-# 3. 策略運算核心
+# 3. 策略運算核心 (邏輯微調)
 # ==========================================
 def find_rsi_price(df, target_rsi, rsi_len):
     if df is None or len(df)<20: return 0
@@ -160,8 +169,14 @@ def run_strategy(df, cfg):
     c = df['Close']; h = df['High']; l = df['Low']
     lp = c.iloc[-1]
     sig="WAIT"; act="觀望"; s_type="WAIT"; b_at="---"; s_at="---"
+    
     mode = cfg['mode']
     
+    # 計算 VWAP (做為全域參考)
+    # 使用 Pandas TA 的 VWMA (Volume Weighted Moving Average) 來模擬日線級別的 VWAP 概念
+    vwap_val = ta.vwma(c, df['Volume'], length=20).iloc[-1]
+    vwap_status = "多方控盤" if lp > vwap_val else "空方控盤"
+
     # 1. RSI / FUSION
     if mode == "RSI_RSI" or mode == "FUSION":
         rsi_len = cfg.get('rsi_len', 14)
@@ -186,12 +201,13 @@ def run_strategy(df, cfg):
         else:
             act = f"震盪中 (RSI:{rsi:.1f})"
 
-    # 2. RSI + MA
+    # 2. RSI_MA
     elif mode == "RSI_MA":
         rsi_len = cfg.get('rsi_len', 14)
         rsi = ta.rsi(c, length=rsi_len).iloc[-1]
         exit_ma_val = ta.sma(c, length=cfg.get('exit_ma', 20)).iloc[-1]
         entry_rsi = cfg.get('entry_rsi', 30)
+        
         b_price = find_rsi_price(df, entry_rsi, rsi_len)
         b_at = f"${b_price:.2f}"; s_at = f"${exit_ma_val:.2f} (MA)"
         
@@ -229,7 +245,7 @@ def run_strategy(df, cfg):
         elif pf>=ps and cf<cs: sig="📉 SELL"; act="死亡交叉"; s_type="SELL"
         elif cf>cs: sig="✊ HOLD"; act="多頭排列"; s_type="HOLD"
         else: sig="☁️ EMPTY"; act="空頭排列"; s_type="EMPTY"
-
+        
     # 6. BOLL_RSI
     elif mode == "BOLL_RSI":
         rsi = ta.rsi(c, length=cfg.get('rsi_len', 14)).iloc[-1]
@@ -240,41 +256,39 @@ def run_strategy(df, cfg):
         elif lp >= up_b: sig="💀 SELL"; act="觸頂回調"; s_type="SELL"
         else: act="通道震盪"
 
+    # 補充 VWAP 狀態
+    act += f" | {vwap_status}"
+
     return sig, act, s_type, b_at, s_at
 
 # ==========================================
-# 4. 視覺化 (★ Z-Score 巨鯨偵測)
+# 4. 視覺化 (★ 新增 VWAP & MFI & NVI)
 # ==========================================
 def plot_chart(df, cfg, signals=None):
     if df is None: return None
     
-    # 1. 計算 CMF
-    cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
-    cmf = cmf.fillna(0)
+    # 1. 計算 VWAP (日線級別使用 VWMA 代替，或計算 Anchor VWAP)
+    # 這裡使用 20日 VWMA 作為月線級別的機構成本參考
+    df['VWAP'] = ta.vwma(df['Close'], df['Volume'], length=20)
     
-    # 2. 計算 Z-Score (動態標準差)
-    # 視窗取 60 天 (一季) 來計算平均與標準差
+    # 2. 計算 MFI (Money Flow Index)
+    # MFI 是 "量化的 RSI"，0-100，比 CMF 更直觀
+    df['MFI'] = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
+    
+    # 3. 巨鯨成交量配色 (維持 Z-Score 邏輯)
+    cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20).fillna(0)
     rolling_mean = cmf.rolling(window=60).mean()
     rolling_std = cmf.rolling(window=60).std()
-    
-    # Z-Score 公式: (當前值 - 平均) / 標準差
-    # 避免分母為 0
-    z_score = (cmf - rolling_mean) / (rolling_std + 0.0001)
+    z_score = (cmf - rolling_mean) / (rolling_std + 1e-9)
     
     vol_colors = []
     for i in range(len(df)):
         z = z_score.iloc[i]
         val = cmf.iloc[i]
         is_up = df['Close'].iloc[i] >= df['Open'].iloc[i]
-        
-        # 條件 1: 異常強 (Z > 2) 且 CMF 是正的 -> 金色巨鯨
-        # 條件 2: 異常弱 (Z < -2) 且 CMF 是負的 -> 紫色拋售
-        if z > 2.0 and val > 0: 
-            c = '#ffd700' # 金色 (突發性買盤)
-        elif z < -2.0 and val < 0: 
-            c = '#9c27b0' # 紫色 (突發性賣壓)
-        else: 
-            c = '#089981' if is_up else '#f23645' # 正常波動
+        if z > 2.0 and val > 0: c = '#ffd700' # 金色巨鯨
+        elif z < -2.0 and val < 0: c = '#9c27b0' # 紫色拋售
+        else: c = '#089981' if is_up else '#f23645'
         vol_colors.append(c)
 
     fig = make_subplots(
@@ -283,34 +297,43 @@ def plot_chart(df, cfg, signals=None):
         specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]]
     )
 
+    # Row 1: K線 + VWAP
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
         name='Price', increasing_line_color='#089981', decreasing_line_color='#f23645'
     ), row=1, col=1)
     
+    # 繪製 VWAP (機構成本線) - 黃色粗線
+    if 'VWAP' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name='VWAP (機構成本)', line=dict(color='#FFD700', width=2)), row=1, col=1)
+    
     if cfg.get('ma_trend', 0) > 0:
         ma = ta.ema(df['Close'], length=cfg['ma_trend'])
         fig.add_trace(go.Scatter(x=df.index, y=ma, name=f'EMA{cfg["ma_trend"]}', line=dict(color='orange', width=1)), row=1, col=1)
 
-    if "RSI" in cfg['mode'] or "FUSION" in cfg['mode'] or "BOLL" in cfg['mode']:
+    # Row 2: MFI (取代原本的 RSI/KD)
+    # MFI 比 RSI 多了成交量資訊，更難鈍化
+    if 'MFI' in df.columns:
+        fig.add_trace(go.Scatter(x=df.index, y=df['MFI'], name='MFI (資金流)', line=dict(color='#00e676', width=1.5)), row=2, col=1)
+        fig.add_hline(y=20, line_dash="dash", line_color='green', annotation_text="超賣 (吸籌)", row=2, col=1)
+        fig.add_hline(y=80, line_dash="dash", line_color='red', annotation_text="過熱 (倒貨)", row=2, col=1)
+    
+    # 輔助顯示 RSI (淡色) 供參考
+    if "RSI" in cfg['mode']:
         rsi = ta.rsi(df['Close'], length=cfg.get('rsi_len', 14))
-        fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb')), row=2, col=1)
-        fig.add_hline(y=cfg.get('entry_rsi',30), line_dash="dash", line_color='green', row=2, col=1)
-        fig.add_hline(y=cfg.get('exit_rsi',70), line_dash="dash", line_color='red', row=2, col=1)
-    elif cfg['mode'] == "KD":
-        k = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
-        fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:,0], name='K', line=dict(color='yellow')), row=2, col=1)
-        fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:,1], name='D', line=dict(color='blue')), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='rgba(255, 255, 255, 0.3)', width=1)), row=2, col=1)
 
-    # 顯示巨鯨成交量
+    # Row 3: 巨鯨成交量
     fig.add_trace(go.Bar(
         x=df.index, y=df['Volume'], name='Volume (Whale)', marker_color=vol_colors
     ), row=3, col=1)
 
     fig.update_layout(
-        height=500, margin=dict(t=10, b=0, l=0, r=0),
+        height=600, margin=dict(t=10, b=0, l=0, r=0),
         paper_bgcolor='#161b22', plot_bgcolor='#161b22',
-        font=dict(color='#d1d4dc'), showlegend=False, xaxis_rangeslider_visible=False
+        font=dict(color='#d1d4dc'), showlegend=True, 
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis_rangeslider_visible=False
     )
     return fig
 
@@ -370,24 +393,37 @@ for i, key in enumerate(selected_keys):
         st.markdown(f"#### :{sig_color}[{sig}]")
         st.caption(f"策略: {act} | 掛買: {b_at} | 掛賣: {s_at}")
 
-        tab1, tab2, tab3 = st.tabs(["📊 圖表", "🧬 籌碼與財報", "🤖 AI 委員會"])
+        tab1, tab2, tab3 = st.tabs(["📊 圖表 (VWAP+MFI)", "🧬 聰明錢 NVI", "🤖 AI 委員會"])
         
         with tab1:
             if df is not None:
                 st.plotly_chart(plot_chart(df, cfg), use_container_width=True)
-                st.caption("💡 Z-Score > 2 (突發巨量) 才會亮燈：金色=大買 / 紫色=大賣")
+                st.caption("🟡 黃線 = VWAP (機構成本) | 🟢 綠線 = MFI (資金流 RSI)")
         
         with tab2:
+            # 計算 NVI (聰明錢指標)
+            if df is not None:
+                nvi = ta.nvi(df['Close'], df['Volume'])
+                nvi_ema = ta.ema(nvi, length=255) # NVI 年線
+                
+                # 簡單繪圖
+                nvi_df = pd.DataFrame({'NVI': nvi, 'NVI_EMA': nvi_ema}).dropna()
+                st.line_chart(nvi_df.tail(100))
+                
+                curr_nvi = nvi.iloc[-1]
+                curr_ema = nvi_ema.iloc[-1] if not nvi_ema.isna().all() else 0
+                
+                if curr_nvi > curr_ema:
+                    st.success(f"✅ 聰明錢 (NVI) 趨勢向上：主力吸籌中")
+                else:
+                    st.error(f"⚠️ 聰明錢 (NVI) 趨勢向下：主力觀望或出貨")
+
             if fund:
+                st.divider()
                 f1, f2, f3 = st.columns(3)
                 f1.metric("PE", f"{fund['pe']:.1f}" if fund['pe'] else "-")
                 f2.metric("機構持股", f"{fund['inst']*100:.0f}%")
                 f3.metric("空單比", f"{fund['short']*100:.1f}%")
-                if fund['short'] > 0.2: st.error("⚠️ 軋空警戒")
-            
-            if df is not None:
-                cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20).iloc[-1]
-                st.write(f"資金流向 (CMF): {cmf:.2f}")
         
         with tab3:
             news = get_news(cfg['symbol'])
@@ -403,4 +439,4 @@ for i, key in enumerate(selected_keys):
             else:
                 st.info("無近期新聞")
 
-st.caption("Auto-generated by 2026 Quant (Z-Score Enhanced)")
+st.caption("Auto-generated by 2026 Quant (VWAP+MFI Enhanced)")
