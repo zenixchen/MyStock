@@ -14,8 +14,8 @@ import importlib.util
 # ★ 0. 系統設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (WRE獨家發明版)",
-    page_icon="🧪",
+    page_title="2026 量化戰情室 (WT發明版)",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -45,8 +45,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🧪 2026 量化戰情室 (WRE 獨家發明)")
-st.caption("AI 原創指標：WRE (Whale-Retail Efficiency) 巨鯨效率值")
+st.title("🚀 2026 量化戰情室 (WT 獨家發明)")
+st.caption("AI 原創指標：WT (Whale Thrust) 巨鯨推力 = (價差/波動) × 資金流")
 
 if st.button('🔄 更新行情'):
     st.cache_data.clear()
@@ -137,7 +137,7 @@ def analyze_deep_logic_2026(client, symbol, news_list, signal, action, price_con
     except Exception as e: return f"AI Error: {e}"
 
 # ==========================================
-# 3. 策略運算核心 (WRE 邏輯植入)
+# 3. 策略運算核心 (WT 邏輯植入)
 # ==========================================
 def find_rsi_price(df, target_rsi, rsi_len):
     if df is None or len(df)<20: return 0
@@ -158,21 +158,31 @@ def run_strategy(df, cfg):
     sig="WAIT"; act="觀望"; s_type="WAIT"; b_at="---"; s_at="---"
     mode = cfg['mode']
     
-    # ★★★ 計算 WRE 獨家指標 ★★★
-    # 公式：WRE = MFI(14) - RSI(14)
+    # ★★★ 計算 WT 巨鯨推力 ★★★
+    # 1. 機構成本 (VWAP)
+    vwap = ta.vwma(c, df['Volume'], length=20)
+    # 2. 真實波動 (ATR)
+    atr = ta.atr(h, l, c, length=14)
+    # 3. 資金流 (MFI)
     mfi = ta.mfi(h, l, c, df['Volume'], length=14)
-    rsi = ta.rsi(c, length=14)
-    wre = mfi - rsi
-    curr_wre = wre.iloc[-1]
+    
+    # 4. WT 公式 = ((Close - VWAP) / ATR) * (MFI / 50)
+    # 防止 ATR 為 0 或 NaN
+    atr_safe = atr.replace(0, 1).fillna(1)
+    wt = ((c - vwap) / atr_safe) * (mfi / 50)
+    curr_wt = wt.iloc[-1]
 
-    # WRE 輔助判斷
-    wre_status = ""
-    if curr_wre > 10: wre_status = " | 🐳潛伏吸籌(實)"
-    elif curr_wre < -15: wre_status = " | ⚠️虛漲背離(虛)"
+    # WT 輔助判斷
+    wt_status = ""
+    if curr_wt > 2.0: wt_status = " | 🚀WT噴射(強多)"
+    elif curr_wt < -2.0: wt_status = " | 💀WT墜毀(強空)"
+    elif curr_wt > 0: wt_status = " | 🟢WT多方控盤"
+    else: wt_status = " | 🔴WT空方控盤"
 
     # 1. RSI / FUSION
     if mode == "RSI_RSI" or mode == "FUSION":
         rsi_len = cfg.get('rsi_len', 14)
+        rsi = ta.rsi(c, length=rsi_len)
         curr_rsi = rsi.iloc[-1]
         entry_rsi = cfg.get('entry_rsi', 30)
         exit_rsi = cfg.get('exit_rsi', 70)
@@ -194,6 +204,7 @@ def run_strategy(df, cfg):
 
     # 2. RSI_MA
     elif mode == "RSI_MA":
+        rsi = ta.rsi(c, length=cfg.get('rsi_len', 14))
         curr_rsi = rsi.iloc[-1]
         exit_ma_val = ta.sma(c, length=cfg.get('exit_ma', 20)).iloc[-1]
         entry_rsi = cfg.get('entry_rsi', 30)
@@ -236,6 +247,7 @@ def run_strategy(df, cfg):
 
     # 6. BOLL_RSI
     elif mode == "BOLL_RSI":
+        rsi = ta.rsi(c, length=cfg.get('rsi_len', 14))
         curr_rsi = rsi.iloc[-1]
         bb = ta.bbands(c, length=20, std=2)
         low_b = bb.iloc[-1, 0]; up_b = bb.iloc[-1, 2]
@@ -244,27 +256,31 @@ def run_strategy(df, cfg):
         elif lp >= up_b: sig="💀 SELL"; act="觸頂回調"; s_type="SELL"
         else: act="通道震盪"
 
-    # 加入 WRE 診斷
-    act += wre_status
+    # 加入 WT 診斷
+    act += wt_status
     return sig, act, s_type, b_at, s_at
 
 # ==========================================
-# 4. 視覺化 (★ WRE 獨家指標可視化)
+# 4. 視覺化 (★ WT 獨家指標可視化)
 # ==========================================
 def plot_chart(df, cfg, signals=None):
     if df is None: return None
     
-    # 計算 WRE (MFI - RSI)
-    mfi = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
-    rsi = ta.rsi(df['Close'], length=14)
-    df['WRE'] = mfi - rsi # 巨鯨效率值
+    # 計算 WT
+    df['VWAP'] = ta.vwma(df['Close'], df['Volume'], length=20)
+    df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14).fillna(1)
+    df['MFI'] = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14).fillna(50)
+    
+    # WT = ((Close - VWAP) / ATR) * (MFI / 50)
+    df['WT'] = ((df['Close'] - df['VWAP']) / df['ATR']) * (df['MFI'] / 50)
     
     # 顏色判斷
-    wre_colors = []
-    for val in df['WRE']:
-        if val > 10: wre_colors.append('#00e676') # 綠色 (實漲/吸籌)
-        elif val < -15: wre_colors.append('#ff1744') # 紅色 (虛漲/背離)
-        else: wre_colors.append('#424242') # 灰色 (正常)
+    wt_colors = []
+    for val in df['WT']:
+        if val > 2.0: wt_colors.append('#ff1744') # 紅色 (噴出/過熱)
+        elif val < -2.0: wt_colors.append('#00e676') # 綠色 (超跌/機會)
+        elif val > 0: wt_colors.append('#ef5350') # 淺紅 (多方)
+        else: wt_colors.append('#66bb6a') # 淺綠 (空方)
 
     fig = make_subplots(
         rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
@@ -272,28 +288,38 @@ def plot_chart(df, cfg, signals=None):
         specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]]
     )
 
-    # Row 1: K線
+    # Row 1: K線 + VWAP
     fig.add_trace(go.Candlestick(
         x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
-        name='Price', increasing_line_color='#089981', decreasing_line_color='#f23645'
+        name='Price', increasing_line_color='#ef5350', decreasing_line_color='#00e676'
     ), row=1, col=1)
     
+    # VWAP 線 (機構成本)
+    fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name='VWAP (成本)', line=dict(color='#FFD700', width=2)), row=1, col=1)
+
     if cfg.get('ma_trend', 0) > 0:
         ma = ta.ema(df['Close'], length=cfg['ma_trend'])
         fig.add_trace(go.Scatter(x=df.index, y=ma, name=f'EMA{cfg["ma_trend"]}', line=dict(color='orange', width=1)), row=1, col=1)
 
-    # Row 2: RSI vs MFI (讓用戶比較)
-    fig.add_trace(go.Scatter(x=df.index, y=mfi, name='MFI (資金)', line=dict(color='#00e676', width=1)), row=2, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI (價格)', line=dict(color='#b39ddb', width=1)), row=2, col=1)
+    # Row 2: RSI
+    if "RSI" in cfg['mode'] or cfg['mode'] in ["FUSION", "BOLL_RSI"]:
+        rsi = ta.rsi(df['Close'], length=cfg.get('rsi_len', 14))
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb', width=2)), row=2, col=1)
+        fig.add_hline(y=cfg.get('entry_rsi', 30), line_dash="dash", line_color='green', row=2, col=1)
+        fig.add_hline(y=cfg.get('exit_rsi', 70), line_dash="dash", line_color='red', row=2, col=1)
+    elif cfg['mode'] == "KD":
+        k = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
+        fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:,0], name='K', line=dict(color='yellow')), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:,1], name='D', line=dict(color='blue')), row=2, col=1)
 
-    # Row 3: WRE 獨家指標 (柱狀圖)
+    # Row 3: WT 獨家指標 (能量柱)
     fig.add_trace(go.Bar(
-        x=df.index, y=df['WRE'], name='WRE (巨鯨效率)', marker_color=wre_colors
+        x=df.index, y=df['WT'], name='Whale Thrust', marker_color=wt_colors
     ), row=3, col=1)
     
     # 畫 0 軸和警戒線
-    fig.add_hline(y=10, line_dash="dash", line_color='green', row=3, col=1)
-    fig.add_hline(y=-15, line_dash="dash", line_color='red', row=3, col=1)
+    fig.add_hline(y=2.0, line_dash="dot", line_color='red', annotation_text="噴出區", row=3, col=1)
+    fig.add_hline(y=-2.0, line_dash="dot", line_color='green', annotation_text="超跌區", row=3, col=1)
 
     fig.update_layout(
         height=600, margin=dict(t=10, b=0, l=0, r=0),
@@ -360,12 +386,12 @@ for i, key in enumerate(selected_keys):
         st.markdown(f"#### :{sig_color}[{sig}]")
         st.caption(f"策略: {act} | 掛買: {b_at} | 掛賣: {s_at}")
 
-        tab1, tab2, tab3 = st.tabs(["🧪 WRE 獨家發明", "🧬 基本面", "🤖 AI 委員會"])
+        tab1, tab2, tab3 = st.tabs(["🧪 WT 獨家發明", "🧬 基本面", "🤖 AI 委員會"])
         
         with tab1:
             if df is not None:
                 st.plotly_chart(plot_chart(df, cfg), use_container_width=True)
-                st.info("💡 WRE = MFI (資金) - RSI (價格)。 正值(綠)=資金強於價格(吸籌)；負值(紅)=價格強於資金(背離)。")
+                st.info("💡 WT (巨鯨推力)：>2 噴出(紅) / <-2 超跌(綠)。柱狀越高代表脫離成本越遠+資金越強。")
         
         with tab2:
             if fund:
@@ -388,4 +414,4 @@ for i, key in enumerate(selected_keys):
             else:
                 st.info("無近期新聞")
 
-st.caption("Auto-generated by 2026 Quant (WRE Exclusive Edition)")
+st.caption("Auto-generated by 2026 Quant (WT Invention)")
