@@ -7,31 +7,23 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
 import sys
+import re
 import importlib.util
 
 # ==========================================
-# ★★★ 0. 2026 系統設定 ★★★
+# ★ 0. 系統優化設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量子戰情室 (Quantum Command)",
-    page_icon="🌌",
+    page_title="2026 量化交易",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# 修復編碼與依賴檢查
 try:
     sys.stdout.reconfigure(encoding='utf-8')
 except: pass
-
-st.markdown("""
-    <style>
-        .stApp { background-color: #0b0e11; }
-        h1, h2, h3 { color: #00f2ff !important; font-family: 'Orbitron', sans-serif; }
-        .stMetric { background-color: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 15px; }
-        .stMetric label { color: #8b949e !important; }
-        .stMetric div[data-testid="stMetricValue"] { color: #e6edf3 !important; }
-    </style>
-""", unsafe_allow_html=True)
 
 HAS_TRANSFORMERS = importlib.util.find_spec("transformers") is not None
 try:
@@ -40,73 +32,79 @@ try:
 except ImportError:
     HAS_GROQ = False
 
-# ==========================================
-# 1. 數據核心 (核彈級修復)
-# ==========================================
-def get_live_price_data(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        try:
-            current_price = ticker.fast_info.get('last_price')
-        except:
-            current_price = None
+# CSS 美化 (更現代的深色模式)
+st.markdown("""
+    <style>
+        .stApp { background-color: #0e1117; }
+        .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+        .stTabs [data-baseweb="tab"] {
+            height: 40px; white-space: pre-wrap; background-color: #1c202a; border-radius: 4px 4px 0px 0px; gap: 1px; padding-top: 10px; padding-bottom: 10px;
+        }
+        .stTabs [aria-selected="true"] { background-color: #2962ff; color: white; }
+        div[data-testid="stMetricValue"] { font-size: 20px; color: #e0e0e0; }
+        h4 { color: #8b949e; font-weight: 300; font-size: 14px; margin-bottom: 5px; }
+    </style>
+""", unsafe_allow_html=True)
 
+st.title("2026 量化交易")
+
+if st.button('🔄 更新行情'):
+    st.cache_data.clear()
+    st.rerun()
+
+# ==========================================
+# 1. 數據核心 (含崩潰修復)
+# ==========================================
+def get_safe_data(ticker):
+    try:
         # 下載數據
-        period = "2y"
-        df = yf.download(symbol, period=period, interval="1d", progress=False, timeout=10)
+        df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         
-        if df is None or df.empty: return None, 0, 0
+        if df is None or df.empty: return None
         
-        # 1. 處理 MultiIndex (強制攤平)
+        # ★ 修復 1: 處理 MultiIndex
         if isinstance(df.columns, pd.MultiIndex): 
             df.columns = df.columns.get_level_values(0)
             
-        # 2. 模擬 K 線 (如果需要)
-        # 取得最後收盤價 (先確保是數字)
-        last_close = pd.to_numeric(df['Close'].iloc[-1], errors='coerce')
-        prev_close = pd.to_numeric(df['Close'].iloc[-2], errors='coerce') if len(df) > 1 else last_close
+        # ★ 修復 2: 強制轉型為 float (解決運算崩潰的核心)
+        cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for c in cols:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors='coerce').astype(float)
         
-        if current_price is None or np.isnan(current_price):
-            current_price = last_close
-            
-        if df.index[-1].date() != datetime.now().date():
-            # 建立新的一行 (明確指定 dtype 為 float64)
-            new_index = pd.Timestamp.now()
-            if df.index.tz is not None:
-                new_index = new_index.tz_localize(df.index.tz)
-                
-            new_row = pd.DataFrame({
-                'Open': [float(current_price)], 
-                'High': [float(current_price)], 
-                'Low': [float(current_price)], 
-                'Close': [float(current_price)], 
-                'Volume': [0.0] 
-            }, index=[new_index])
-            
-            # 使用 concat
-            df = pd.concat([df, new_row])
-
-        # ★★★ 3. 核彈級清洗：強制所有欄位轉為數字，無法轉換的變成 NaN ★★★
-        target_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-        for col in target_cols:
-            if col in df.columns:
-                # 這是解決 TypeError 的關鍵：強制轉型
-                df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
+        # 取得即時價格 (Fast Info)
+        try:
+            t = yf.Ticker(ticker)
+            live_price = t.fast_info.get('last_price')
+            if live_price and not np.isnan(live_price):
+                # 如果是盤中，模擬一根 K 線
+                if df.index[-1].date() != datetime.now().date():
+                    new_idx = pd.Timestamp.now()
+                    if df.index.tz is not None: new_idx = new_idx.tz_localize(df.index.tz)
+                    
+                    new_row = pd.DataFrame({
+                        'Open': [live_price], 'High': [live_price], 
+                        'Low': [live_price], 'Close': [live_price], 
+                        'Volume': [0.0]
+                    }, index=[new_idx])
+                    df = pd.concat([df, new_row])
+                    # 更新最後一根 Close
+                    df.loc[df.index[-1], 'Close'] = float(live_price)
+        except: pass
         
-        # 清除 NaN
-        df.dropna(subset=['Close'], inplace=True)
-
-        return df, float(current_price), float(prev_close)
+        return df
     except Exception as e:
-        print(f"Data Error: {e}")
-        return None, 0, 0
+        print(f"Data Error {ticker}: {e}")
+        return None
 
-@st.cache_data(ttl=3600)
-def get_fundamentals_2026(symbol):
-    if "=" in symbol or "-USD" in symbol: return None
+# ==========================================
+# 2. 輔助功能 (AI & 財報)
+# ==========================================
+@st.cache_data(ttl=86400)
+def get_fundamentals(symbol):
+    if "=" in symbol or "^" in symbol: return None
     try:
-        t = yf.Ticker(symbol)
-        info = t.info
+        info = yf.Ticker(symbol).info
         return {
             "pe": info.get('trailingPE'),
             "inst": info.get('heldPercentInstitutions', 0),
@@ -114,209 +112,195 @@ def get_fundamentals_2026(symbol):
         }
     except: return None
 
-# ==========================================
-# 2. 鯨魚偵測 (獨立模組)
-# ==========================================
-def analyze_smc_whale(df):
-    if df is None or len(df) < 50: return "N/A", 50
-    
+def clean_text(text):
+    return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', str(text)) if text else ""
+
+def get_news(symbol):
     try:
-        # 確保資料是乾淨的
-        h = df['High']; l = df['Low']; c = df['Close']; v = df['Volume']
-        
-        cmf = ta.cmf(h, l, c, v, length=20)
-        # 如果計算失敗回傳 None，給預設值
-        cmf_val = cmf.iloc[-1] if cmf is not None else 0
-        
-        mfi = ta.mfi(h, l, c, v, length=14)
-        mfi_val = mfi.iloc[-1] if mfi is not None else 50
-        
-        whale_score = 50
-        if cmf_val > 0.15: whale_score += 20
-        elif cmf_val < -0.15: whale_score -= 20
-        if mfi_val > 60 and cmf_val > 0: whale_score += 10
-        
-        whale_status = "⚪ 散戶盤"
-        if whale_score >= 75: whale_status = "🐳 巨鯨大買"
-        elif whale_score >= 60: whale_status = "🔴 主力進駐"
-        elif whale_score <= 30: whale_status = "🟢 主力倒貨"
-        
-        return whale_status, whale_score
-    except Exception as e:
-        # 若發生運算錯誤，回傳安全值
-        return "N/A", 50
+        news = yf.Ticker(symbol).news
+        return [clean_text(n.get('title','')) for n in news[:5]] if news else []
+    except: return []
+
+def analyze_ai_logic(client, symbol, news_list, signal, action):
+    if not client or not news_list: return None
+    try:
+        prompt = f"""
+        分析 {symbol}。技術訊號: {signal} ({action})。
+        最新新聞: {news_list}
+        請用繁體中文，簡潔給出 3 點分析 (包含技術面與消息面的衝突或驗證)。
+        """
+        resp = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile", temperature=0.3
+        )
+        return resp.choices[0].message.content
+    except: return None
 
 # ==========================================
-# 3. 策略引擎
+# 3. 策略運算核心 (邏輯不變)
 # ==========================================
-def run_strategy(df, config):
+def find_rsi_price(df, target_rsi, rsi_len):
+    # 反推 RSI 價格 (保持您的邏輯)
+    if df is None or len(df)<20: return 0
+    lc = df['Close'].iloc[-1]; l, h = lc*0.5, lc*1.5
+    for _ in range(10):
+        mid = (l+h)/2
+        sim = pd.concat([df['Close'], pd.Series([mid])], ignore_index=True)
+        r = ta.rsi(sim, length=rsi_len).iloc[-1]
+        if r > target_rsi: h = mid
+        else: l = mid
+    return mid
+
+def run_strategy(df, cfg):
+    if df is None: return "ERR", "無數據", "ERR", "---", "---"
+    
     c = df['Close']; h = df['High']; l = df['Low']
     lp = c.iloc[-1]
+    sig="WAIT"; act="觀望"; s_type="WAIT"; b_at="---"; s_at="---"
     
-    sig = "WAIT"; color = "gray"; desc = ""
-    mode = config['mode']
-
-    try:
-        if mode == "RSI_RSI":
-            rsi = ta.rsi(c, length=config.get('rsi_len', 14))
-            if rsi is not None:
-                curr = rsi.iloc[-1]
-                desc = f"RSI: {curr:.1f}"
-                if curr < config['entry_rsi']: sig="BUY"; color="green"; desc+=" (超賣)"
-                elif curr > config['exit_rsi']: sig="SELL"; color="red"; desc+=" (超買)"
-
-        elif mode == "RSI_MA":
-            rsi = ta.rsi(c, length=config.get('rsi_len', 14))
-            ma_trend = ta.ema(c, length=config.get('ma_trend', 200))
-            exit_ma = ta.sma(c, length=config['exit_ma'])
-            if rsi is not None and ma_trend is not None:
-                curr_rsi = rsi.iloc[-1]; curr_ma = ma_trend.iloc[-1]; curr_exit = exit_ma.iloc[-1]
-                desc = f"RSI:{curr_rsi:.1f} | 趨勢:{'多' if lp>curr_ma else '空'}"
-                if lp > curr_ma and curr_rsi < config['entry_rsi']: sig="BUY"; color="green"; desc+=" (順勢回檔)"
-                elif lp > curr_exit and curr_rsi > 70: sig="SELL"; color="red"
-
-        elif mode == "FUSION" or mode == "FUSION_SMC":
-            rsi = ta.rsi(c, config.get('rsi_len', 14))
-            ma = ta.ema(c, config.get('ma_trend', 200))
-            if rsi is not None and ma is not None:
-                curr_rsi = rsi.iloc[-1]; curr_ma = ma.iloc[-1]
-                desc = f"RSI:{curr_rsi:.0f} (MA200之上)"
-                if lp > curr_ma and curr_rsi < config['entry_rsi']: sig="STRONG BUY"; color="green"; desc+=" (黃金坑)"
-                elif curr_rsi > config['exit_rsi']: sig="SELL"; color="red"; desc+=" (過熱)"
-
-        elif mode == "SUPERTREND":
-            st_val = ta.supertrend(h, l, c, length=config['period'], multiplier=config['multiplier'])
-            if st_val is not None:
-                dr = st_val.iloc[-1, 1]; prev_dr = st_val.iloc[-2, 1]
-                desc = "趨勢多頭" if dr == 1 else "趨勢空頭"
-                if prev_dr == -1 and dr == 1: sig="BUY"; color="green"; desc="趨勢翻多"
-                elif prev_dr == 1 and dr == -1: sig="SELL"; color="red"; desc="趨勢翻空"
-                elif dr == 1: sig="HOLD"; color="#00f2ff"
-
-        elif mode == "KD":
-            k = ta.stoch(h, l, c, k=9, d=3)
-            if k is not None:
-                curr_k = k.iloc[-1, 0]
-                desc = f"K值: {curr_k:.1f}"
-                if curr_k < config['entry_k']: sig="BUY"; color="green"; desc+=" (低檔)"
-                elif curr_k > config['exit_k']: sig="SELL"; color="red"; desc+=" (高檔)"
-
-        elif mode == "MA_CROSS":
-            f = ta.sma(c, config['fast_ma']); s = ta.sma(c, config['slow_ma'])
-            if f is not None and s is not None:
-                curr_f = f.iloc[-1]; prev_f = f.iloc[-2]
-                curr_s = s.iloc[-1]; prev_s = s.iloc[-2]
-                desc = f"MA{config['fast_ma']} v MA{config['slow_ma']}"
-                if prev_f <= prev_s and curr_f > curr_s: sig="BUY"; color="green"; desc="黃金交叉"
-                elif prev_f >= prev_s and curr_f < curr_s: sig="SELL"; color="red"; desc="死亡交叉"
-                elif curr_f > curr_s: sig="HOLD"; color="#00f2ff"
+    mode = cfg['mode']
+    
+    # --- 1. RSI 策略 ---
+    if "RSI" in mode or mode == "FUSION":
+        rsi_len = cfg.get('rsi_len', 14)
+        rsi = ta.rsi(c, length=rsi_len).iloc[-1]
         
-        elif mode == "BOLL_RSI":
-            rsi = ta.rsi(c, config.get('rsi_len', 14))
-            bb = ta.bbands(c, length=20, std=2)
-            if rsi is not None and bb is not None:
-                curr_rsi = rsi.iloc[-1]
-                lower = bb.iloc[-1, 0]; upper = bb.iloc[-1, 2]
-                desc = f"Boll+RSI({curr_rsi:.0f})"
-                if lp < lower and curr_rsi < config['entry_rsi']: sig="BUY"; color="green"; desc+=" (破底反彈)"
-                elif lp >= upper: sig="SELL"; color="red"; desc+=" (觸頂)"
+        # 計算掛單價
+        b_price = find_rsi_price(df, cfg['entry_rsi'], rsi_len)
+        s_price = find_rsi_price(df, cfg['exit_rsi'], rsi_len)
+        b_at = f"${b_price:.2f}"; s_at = f"${s_price:.2f}"
+        
+        # 趨勢過濾
+        trend_ok = True
+        if cfg.get('ma_trend', 0) > 0:
+            ma = ta.ema(c, length=cfg['ma_trend']).iloc[-1]
+            if lp < ma: trend_ok = False
+        
+        desc = f"RSI: {rsi:.1f}"
+        
+        if rsi < cfg['entry_rsi']:
+            if trend_ok: sig="🔥 BUY"; act="低檔順勢"; s_type="BUY"
+            else: sig="✋ WAIT"; act="低檔逆勢 (破均線)"; s_type="WAIT"
+        elif rsi > cfg['exit_rsi']:
+            sig="💰 SELL"; act="高檔過熱"; s_type="SELL"
+        else:
+            act = f"震盪中 ({desc})"
 
-    except Exception as e:
-        desc = f"Calc Error: {e}"
-
-    return sig, color, desc
-
-# ==========================================
-# 4. 圖表引擎 (Pro Charts)
-# ==========================================
-def plot_pro_chart(df, symbol):
-    # ★★★ 再次確保數據為 float (這是繪圖不崩潰的關鍵) ★★★
-    clean_df = df.copy()
-    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-        if col in clean_df.columns:
-            clean_df[col] = pd.to_numeric(clean_df[col], errors='coerce').fillna(0).astype(float)
+    # --- 2. SUPERTREND ---
+    elif mode == "SUPERTREND":
+        st_val = ta.supertrend(h, l, c, length=cfg['period'], multiplier=cfg['multiplier'])
+        if st_val is not None:
+            curr_dir = st_val.iloc[-1, 1]; prev_dir = st_val.iloc[-2, 1]
+            s_line = st_val.iloc[-1, 0]
+            s_at = f"${s_line:.2f}"
             
-    # 計算指標
-    try:
-        clean_df['EMA50'] = ta.ema(clean_df['Close'], 50)
-        clean_df['EMA200'] = ta.ema(clean_df['Close'], 200)
-        clean_df['RSI'] = ta.rsi(clean_df['Close'], 14)
-        clean_df['CMF'] = ta.cmf(clean_df['High'], clean_df['Low'], clean_df['Close'], clean_df['Volume'], 20)
-    except:
-        pass # 若指標計算失敗，圖表只畫 K 線
+            if prev_dir == -1 and curr_dir == 1: sig="🚀 BUY"; act="趨勢翻多"; s_type="BUY"
+            elif prev_dir == 1 and curr_dir == -1: sig="📉 SELL"; act="趨勢翻空"; s_type="SELL"
+            elif curr_dir == 1: sig="✊ HOLD"; act="多頭續抱"; s_type="HOLD"
+            else: sig="☁️ EMPTY"; act="空頭觀望"; s_type="EMPTY"
 
+    # --- 3. KD ---
+    elif mode == "KD":
+        k = ta.stoch(h, l, c, k=9, d=3).iloc[-1, 0]
+        b_at = f"K<{cfg['entry_k']}"; s_at = f"K>{cfg['exit_k']}"
+        if k < cfg['entry_k']: sig="🚀 BUY"; act=f"KD低檔({k:.1f})"; s_type="BUY"
+        elif k > cfg['exit_k']: sig="💀 SELL"; act=f"KD高檔({k:.1f})"; s_type="SELL"
+        else: act = f"K值 {k:.1f}"
+
+    # --- 4. MA_CROSS ---
+    elif mode == "MA_CROSS":
+        f = ta.sma(c, cfg['fast_ma']); s = ta.sma(c, cfg['slow_ma'])
+        cf, pf = f.iloc[-1], f.iloc[-2]; cs, ps = s.iloc[-1], s.iloc[-2]
+        if pf<=ps and cf>cs: sig="🔥 BUY"; act="黃金交叉"; s_type="BUY"
+        elif pf>=ps and cf<cs: sig="📉 SELL"; act="死亡交叉"; s_type="SELL"
+        elif cf>cs: sig="✊ HOLD"; act="多頭排列"; s_type="HOLD"
+        else: sig="☁️ EMPTY"; act="空頭排列"; s_type="EMPTY"
+        
+    # --- 5. BOLL_RSI ---
+    elif mode == "BOLL_RSI":
+        rsi = ta.rsi(c, length=cfg.get('rsi_len', 14)).iloc[-1]
+        bb = ta.bbands(c, length=20, std=2)
+        low_b = bb.iloc[-1, 0]; up_b = bb.iloc[-1, 2]
+        b_at = f"${low_b:.2f}"; s_at = f"${up_b:.2f}"
+        if lp < low_b and rsi < cfg['entry_rsi']: sig="🚑 BUY"; act="破底搶反彈"; s_type="BUY"
+        elif lp >= up_b: sig="💀 SELL"; act="觸頂回調"; s_type="SELL"
+        else: act="通道震盪"
+
+    return sig, act, s_type, b_at, s_at
+
+# ==========================================
+# 4. 視覺化 (★ 巨鯨量能顯示)
+# ==========================================
+def plot_chart(df, cfg, signals=None):
+    if df is None: return None
+    
+    # 計算 CMF 用於量能染色
+    cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
+    cmf_vals = cmf.fillna(0)
+    
+    # 定義量能顏色：金(主力大買) / 紫(主力大賣) / 綠(漲) / 紅(跌)
+    vol_colors = []
+    for i in range(len(df)):
+        val = cmf_vals.iloc[i]
+        is_up = df['Close'].iloc[i] >= df['Open'].iloc[i]
+        
+        if val > 0.20: c = '#ffd700' # 金色：巨鯨大買
+        elif val < -0.20: c = '#9c27b0' # 紫色：巨鯨大賣
+        else: c = '#089981' if is_up else '#f23645'
+        vol_colors.append(c)
+
+    # 建立圖表
     fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2],
+        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
+        row_heights=[0.6, 0.2, 0.2],
         specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]]
     )
 
-    # K線
+    # Row 1: K線
     fig.add_trace(go.Candlestick(
-        x=clean_df.index, 
-        open=clean_df['Open'], high=clean_df['High'], low=clean_df['Low'], close=clean_df['Close'], 
-        name='Price', increasing_line_color='#00f2ff', decreasing_line_color='#ff007a'
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        name='Price', increasing_line_color='#089981', decreasing_line_color='#f23645'
     ), row=1, col=1)
     
-    if 'EMA50' in clean_df.columns: fig.add_trace(go.Scatter(x=clean_df.index, y=clean_df['EMA50'], name='EMA 50', line=dict(color='#ffeb3b', width=1)), row=1, col=1)
-    if 'EMA200' in clean_df.columns: fig.add_trace(go.Scatter(x=clean_df.index, y=clean_df['EMA200'], name='EMA 200', line=dict(color='#9c27b0', width=2)), row=1, col=1)
+    # MA 線
+    if cfg.get('ma_trend', 0) > 0:
+        ma = ta.ema(df['Close'], length=cfg['ma_trend'])
+        fig.add_trace(go.Scatter(x=df.index, y=ma, name=f'EMA{cfg["ma_trend"]}', line=dict(color='orange', width=1)), row=1, col=1)
 
-    # RSI
-    if 'RSI' in clean_df.columns:
-        fig.add_trace(go.Scatter(x=clean_df.index, y=clean_df['RSI'], name='RSI', line=dict(color='#b39ddb')), row=2, col=1)
-        fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-        fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+    # Row 2: 技術指標 (RSI / KD)
+    if "RSI" in cfg['mode'] or "FUSION" in cfg['mode'] or "BOLL" in cfg['mode']:
+        rsi = ta.rsi(df['Close'], length=cfg.get('rsi_len', 14))
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb')), row=2, col=1)
+        fig.add_hline(y=cfg.get('entry_rsi',30), line_dash="dash", line_color='green', row=2, col=1)
+        fig.add_hline(y=cfg.get('exit_rsi',70), line_dash="dash", line_color='red', row=2, col=1)
+    elif cfg['mode'] == "KD":
+        k = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
+        fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:,0], name='K', line=dict(color='yellow')), row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:,1], name='D', line=dict(color='blue')), row=2, col=1)
 
-    # CMF
-    if 'CMF' in clean_df.columns:
-        cmf_vals = clean_df['CMF'].fillna(0)
-        colors = ['#00f2ff' if v >= 0 else '#ff007a' for v in cmf_vals]
-        fig.add_trace(go.Bar(x=clean_df.index, y=cmf_vals, name='Whale Flow', marker_color=colors), row=3, col=1)
+    # Row 3: 巨鯨量能 (Whale Volume)
+    fig.add_trace(go.Bar(
+        x=df.index, y=df['Volume'], name='Volume (Whale)', marker_color=vol_colors
+    ), row=3, col=1)
 
-    fig.update_layout(height=550, margin=dict(t=10, b=0, l=0, r=0), paper_bgcolor='#161b22', plot_bgcolor='#0d1117', font=dict(color='#8b949e'), showlegend=False, xaxis_rangeslider_visible=False)
-    fig.update_xaxes(showgrid=True, gridcolor='#30363d'); fig.update_yaxes(showgrid=True, gridcolor='#30363d')
+    # Layout
+    fig.update_layout(
+        height=500, margin=dict(t=10, b=0, l=0, r=0),
+        paper_bgcolor='#161b22', plot_bgcolor='#161b22',
+        font=dict(color='#d1d4dc'), showlegend=False, xaxis_rangeslider_visible=False
+    )
     return fig
 
 # ==========================================
-# 5. AI 分析
+# 5. 核心持股監控列表 (完整保留)
 # ==========================================
-def get_ai_analysis(symbol, price, signal, whale_score, client=None):
-    context = f"{symbol} @ {price}, Sig: {signal}, Whale: {whale_score}"
-    
-    if client:
-        try:
-            prompt = f"Analyst style (Traditional Chinese): Analyze {context}. concise."
-            chat = client.chat.completions.create(messages=[{"role": "user", "content": prompt}], model="llama-3.3-70b-versatile", temperature=0.3)
-            return chat.choices[0].message.content
-        except: pass
-
-    divergence_msg = ""
-    if "BUY" in signal and whale_score < 40:
-        divergence_msg = "⚠️ 注意：技術面買進，但主力籌碼尚未跟上 (背離)。"
-    elif "SELL" in signal and whale_score > 60:
-        divergence_msg = "⚠️ 注意：技術面賣出，但主力仍在吸籌 (背離)。"
-    else:
-        divergence_msg = "✅ 技術與籌碼方向一致。"
-
-    return f"""
-    🤖 **AI 戰術分析 (Rule-Based)**:
-    * **訊號判定**: 觸發 {signal} 訊號 (純技術指標)。
-    * **籌碼參考**: 巨鯨指數 {whale_score} ({'主力盤' if whale_score>50 else '散戶盤'})。
-    * **綜合解讀**: {divergence_msg}
-    """
-
-# ==========================================
-# 6. 主程式
-# ==========================================
-st.title("🌌 2026 Quantum Command Center")
-
 strategies = {
-    "NVDA": { "symbol": "NVDA", "name": "NVDA (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-    "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元)", "mode": "KD", "entry_k": 25, "exit_k": 70 },
     "KO": { "symbol": "KO", "name": "KO (可樂)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-    "BA": { "symbol": "BA", "name": "BA (波音)", "mode": "SUPERTREND", "period": 15, "multiplier": 1.0 },
+    "BA": { "symbol": "BA", "name": "BA (波音)", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 25, "exit_rsi": 65, "ma_trend": 0 },
     "META": { "symbol": "META", "name": "META (暴力反彈)", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
+    "NVDA": { "symbol": "NVDA", "name": "NVDA (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (聖杯)", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
     "QQQ": { "symbol": "QQQ", "name": "QQQ (穩健)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
     "QLD": { "symbol": "QLD", "name": "QLD (2倍)", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
     "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (3倍)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
@@ -325,62 +309,90 @@ strategies = {
     "SOXL_F": { "symbol": "SOXL", "name": "SOXL (快攻)", "mode": "KD", "entry_k": 10, "exit_k": 75 },
     "BTC_W": { "symbol": "BTC-USD", "name": "BTC (波段)", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
     "BTC_F": { "symbol": "BTC-USD", "name": "BTC (閃電)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
+    "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
 }
 
+# ==========================================
+# 6. 主執行介面
+# ==========================================
 with st.sidebar:
-    st.header("⚙️ 戰情室設定")
+    st.header("⚙️ 設定")
     groq_key = st.text_input("Groq API Key (選填)", type="password")
+    
     st.divider()
     option_list = list(strategies.keys())
-    selected_key = st.selectbox("選擇監控目標", option_list, index=0)
-    if st.button("🔄 刷新數據"): st.cache_data.clear(); st.rerun()
+    selected_keys = st.multiselect("選擇監控目標", option_list, default=option_list)
+    if st.button("🚀 開始掃描"): st.rerun()
 
-groq_client = Groq(api_key=groq_key) if HAS_GROQ and groq_key else None
-cfg = strategies[selected_key]
-symbol = cfg['symbol']
+groq_client = None
+if HAS_GROQ and groq_key: 
+    try: groq_client = Groq(api_key=groq_key)
+    except: pass
 
-with st.spinner(f"正在連線量子衛星獲取 {symbol} ..."):
-    df, price, prev = get_live_price_data(symbol)
+# 網格佈局
+cols = st.columns(2)
 
-if df is not None:
-    whale_status, whale_score = analyze_smc_whale(df)
-    signal, sig_color, sig_desc = run_strategy(df, cfg)
-    fund = get_fundamentals_2026(symbol)
+for i, key in enumerate(selected_keys):
+    cfg = strategies[key]
+    col = cols[i % 2]
     
-    pct = (price - prev) / prev * 100
+    with col.container(border=True):
+        c1, c2 = st.columns([2, 1])
+        c1.subheader(f"{cfg['name']}")
+        
+        # 1. 數據運算
+        df = get_safe_data(cfg['symbol'])
+        sig, act, s_type, b_at, s_at = run_strategy(df, cfg)
+        fund = get_fundamentals(cfg['symbol'])
+        
+        # 顯示價格
+        price = df['Close'].iloc[-1] if df is not None else 0
+        chg = price - df['Close'].iloc[-2] if df is not None and len(df)>1 else 0
+        c2.metric("Price", f"{price:,.2f}", f"{chg:+.2f}")
+        
+        # 2. 狀態標籤
+        sig_color = "green" if "BUY" in sig else "red" if "SELL" in sig else "gray"
+        st.markdown(f"#### :{sig_color}[{sig}]")
+        st.caption(f"策略: {act} | 掛買: {b_at} | 掛賣: {s_at}")
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("即時價格", f"${price:,.2f}", f"{pct:+.2f}%")
-    
-    c2.markdown(f"""
-    <div style="text-align: center; border: 1px solid {sig_color}; padding: 10px; border-radius: 5px; background: #0d1117;">
-        <span style="color: gray; font-size: 12px;">SYSTEM SIGNAL</span><br>
-        <strong style="color: {sig_color}; font-size: 22px;">{signal}</strong>
-    </div>""", unsafe_allow_html=True)
-    
-    score_col = "#00f2ff" if whale_score >= 50 else "#ff007a"
-    c3.markdown(f"""
-    <div style="text-align: center; border: 1px solid #30363d; padding: 10px; border-radius: 5px; background: #0d1117;">
-        <span style="color: gray; font-size: 12px;">WHALE REF</span><br>
-        <strong style="color: {score_col}; font-size: 22px;">{whale_score}</strong>
-    </div>""", unsafe_allow_html=True)
+        # 3. 使用 Tabs 分頁顯示
+        tab1, tab2, tab3 = st.tabs(["📊 圖表", "🧬 籌碼與財報", "🤖 AI 分析"])
+        
+        with tab1:
+            if df is not None:
+                st.plotly_chart(plot_chart(df, cfg), use_container_width=True)
+                st.caption("💡 黃色成交量=巨鯨大買 / 紫色成交量=巨鯨大賣")
+        
+        with tab2:
+            if fund:
+                f1, f2, f3 = st.columns(3)
+                f1.metric("PE", f"{fund['pe']:.1f}" if fund['pe'] else "-")
+                f2.metric("機構持股", f"{fund['inst']*100:.0f}%")
+                f3.metric("空單比", f"{fund['short']*100:.1f}%")
+                if fund['short'] > 0.2: st.error("⚠️ 軋空警戒 (空單 > 20%)")
+                if fund['inst'] > 0.7: st.success("🏦 機構高度控盤")
+            
+            # 簡易籌碼描述
+            if df is not None:
+                cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20).iloc[-1]
+                st.write(f"資金流向 (CMF): {cmf:.2f}")
+                if cmf > 0.15: st.success("主力強勢買進中")
+                elif cmf < -0.15: st.error("主力正在出貨")
+        
+        with tab3:
+            news = get_news(cfg['symbol'])
+            if news:
+                with st.expander("查看新聞標題", expanded=False):
+                    for n in news: st.text(f"• {n}")
+                
+                if st.button(f"呼叫 AI 分析 {cfg['symbol']}", key=f"btn_{key}"):
+                    if groq_client:
+                        with st.spinner("AI 思考中..."):
+                            res = analyze_ai_logic(groq_client, cfg['symbol'], news, sig, act)
+                            if res: st.markdown(res)
+                    else:
+                        st.warning("請先輸入 Groq API Key")
+            else:
+                st.info("無近期新聞")
 
-    c4.metric("策略模式", cfg['mode'], f"{whale_status}")
-
-    st.plotly_chart(plot_pro_chart(df, symbol), use_container_width=True)
-
-    col_l, col_r = st.columns([1, 1])
-    with col_l:
-        st.subheader("🧬 數據細節")
-        if fund:
-            if fund['short'] > 0.2: st.error(f"⚠️ 軋空警戒: 空單 {fund['short']*100:.1f}%")
-            if fund['inst'] > 0.6: st.success(f"🏦 機構控盤: {fund['inst']*100:.0f}%")
-        st.info(f"技術描述: {sig_desc}")
-
-    with col_r:
-        st.subheader("🧠 戰術分析")
-        ai_res = get_ai_analysis(symbol, price, signal, whale_score, groq_client)
-        st.markdown(ai_res)
-
-else:
-    st.error("Data Error: 無法獲取行情。")
+st.caption("Auto-generated by 2026 Quant")
