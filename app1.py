@@ -13,7 +13,7 @@ from transformers import pipeline
 # 0. 頁面設定 & UI 優化 (TradingView 風格)
 # ==========================================
 st.set_page_config(
-    page_title="2025 量化戰情室 (旗艦版)",
+    page_title="2026 量化戰情室 (2版)",
     page_icon="🔥",
     layout="wide",
     initial_sidebar_state="expanded"
