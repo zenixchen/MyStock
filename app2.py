@@ -37,7 +37,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2025 量化戰情室 (Pro Charts)",
+    page_title="2026 量化戰情室 (3版)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
