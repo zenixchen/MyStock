@@ -9,7 +9,6 @@ from datetime import datetime
 import sys
 import re
 import importlib.util
-import requests 
 
 # ==========================================
 # ★★★ 1. 強制編碼修復 ★★★
@@ -35,7 +34,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Pro Charts v3.3)",
+    page_title="2026 量化戰情室 (v3.4 穩定版)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +54,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Pro Charts v3.3)")
-st.caption("新增功能：圖表垂直對齊線 | AI 自動法說會分析 | 市場一鍵篩選")
+st.title("💎 量化交易 (Pro Charts v3.4)")
+st.caption("功能：垂直十字線圖表 | AI 法說會工具箱 (文字/語音) | 市場篩選")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -66,7 +65,7 @@ if not HAS_TRANSFORMERS:
     st.warning("⚠️ 系統提示：FinBERT 模組未安裝，將僅使用技術指標或 Groq AI。")
 
 # ==========================================
-# 1. 核心函數 (價格與資料處理)
+# 1. 核心函數
 # ==========================================
 def get_real_live_price(symbol):
     try:
@@ -120,43 +119,7 @@ def get_news_content(symbol):
     except: return []
 
 # ==========================================
-# ★ 修改處：改用 v4 接口自動抓「最新」一份，不指定年份季度
-# ==========================================
-@st.cache_data(ttl=86400)
-def get_earnings_transcript(symbol, api_key):
-    if not api_key: return None, "請輸入 API Key"
-    try:
-        # 1. 針對台股做過濾 (FMP 只有美股)
-        if ".TW" in symbol: return None, "FMP 暫不支援台股 (請用錄音檔功能)"
-        
-        # 2. 使用 v4 接口 (不指定 quarter/year，它會回傳列表)
-        url = f"https://financialmodelingprep.com/api/v4/earning_call_transcript?symbol={symbol}&apikey={api_key}"
-        
-        headers = {'User-Agent': 'Mozilla/5.0'} # 加上 header 避免被擋
-        res = requests.get(url, headers=headers, timeout=10)
-        
-        # 3. 錯誤處理
-        if res.status_code != 200:
-            return None, f"API 連線失敗 (Code: {res.status_code})"
-            
-        data = res.json()
-        
-        # 4. 檢查是否因為額度不足被擋 (FMP 會回傳 Error Message)
-        if isinstance(data, dict) and "Error Message" in data:
-            return None, "API Key 無效或額度不足 (Free版一天限250次)"
-            
-        # 5. 抓取第一筆 (最新的)
-        if isinstance(data, list) and len(data) > 0:
-            latest = data[0] # 列表第0個就是最新的
-            return latest.get('content'), f"成功獲取: {latest.get('year')} Q{latest.get('quarter')} ({latest.get('date')})"
-            
-        return None, "資料庫中找不到此股票的逐字稿"
-        
-    except Exception as e: 
-        return None, f"系統錯誤: {str(e)}"
-
-# ==========================================
-# 2. 基本面與 FinBERT (懶惰載入)
+# 2. 基本面與 FinBERT
 # ==========================================
 @st.cache_data(ttl=86400)
 def get_fundamentals(symbol):
@@ -224,7 +187,7 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. LLM 邏輯分析
+# 3. LLM 邏輯分析 (含手動法說會分析)
 # ==========================================
 def analyze_logic_llm(client, symbol, news_titles, tech_signal):
     if not client: return None, None, False
@@ -251,18 +214,19 @@ def analyze_logic_llm(client, symbol, news_titles, tech_signal):
 
 def analyze_earnings_text(client, symbol, text):
     if not client: return "請先設定 Groq Key"
-    short_text = text[:6000]
+    short_text = text[:7000] # 截取重點
     prompt = f"""
-    你是華爾街分析師。分析 {symbol} 法說會逐字稿。
-    重點：
+    你是華爾街分析師。以下是 {symbol} 的法說會或財經文章內容。
+    
+    【內容】：
     {short_text}...
     
-    請用繁體中文 Markdown 輸出：
-    1. **情緒評分** (0-10)
-    2. **關鍵亮點** (營收/技術/AI)
-    3. **風險警示** (庫存/宏觀)
-    4. **財測指引** (Guidance)
-    5. **投資結論** (Bullish/Neutral/Bearish)
+    請用繁體中文 Markdown 輸出專業報告：
+    1. **情緒評分** (0-10，並說明理由)
+    2. **關鍵亮點 (Bullish)**：營收、AI、新產品等。
+    3. **風險警示 (Bearish)**：庫存、宏觀、競爭等。
+    4. **財測指引 (Guidance)**：如果有提到未來展望。
+    5. **投資結論**：[Bullish / Neutral / Bearish]
     """
     try:
         resp = client.chat.completions.create(
@@ -272,8 +236,21 @@ def analyze_earnings_text(client, symbol, text):
         return resp.choices[0].message.content
     except Exception as e: return f"AI Error: {e}"
 
+def analyze_earnings_audio(client, uploaded_file):
+    try:
+        st.info("👂 正在將語音轉為文字 (Whisper-v3)...")
+        transcription = client.audio.transcriptions.create(
+            file=(uploaded_file.name, uploaded_file.read()),
+            model="whisper-large-v3",
+            response_format="text"
+        )
+        # 轉錄完成後，直接呼叫文字分析
+        return analyze_earnings_text(client, "Audio File", transcription), transcription
+    except Exception as e:
+        return f"語音分析失敗: {str(e)}", ""
+
 # ==========================================
-# 4. 技術指標 (含 CMF/MFI 運算)
+# 4. 技術指標
 # ==========================================
 def optimize_rsi_strategy(df, symbol):
     if df is None or df.empty: return None
@@ -563,7 +540,6 @@ def plot_chart(df, config, signals=None):
         if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
         if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
 
-    # ★★★ 關鍵修改：開啟垂直對齊線 (Spike Line) 與 Hover Mode ★★★
     fig.update_layout(
         height=600, 
         margin=dict(t=30, b=0, l=0, r=0), 
@@ -573,15 +549,8 @@ def plot_chart(df, config, signals=None):
         showlegend=True, 
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), 
         hovermode='x unified', # 開啟垂直同步顯示
-        xaxis=dict(
-            showgrid=True, gridcolor='#2a2e39', 
-            rangeslider=dict(visible=False), 
-            showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot" # X軸十字線
-        ), 
-        yaxis=dict(
-            showgrid=True, gridcolor='#2a2e39', 
-            showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot" # Y軸十字線
-        ), 
+        xaxis=dict(showgrid=True, gridcolor='#2a2e39', rangeslider=dict(visible=False), showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
+        yaxis=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
         xaxis2=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
         yaxis2=dict(showgrid=True, gridcolor='#2a2e39'), 
         xaxis3=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
@@ -632,23 +601,28 @@ def display_card(placeholder, row, config, unique_id):
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
-        with st.expander("🎙️ AI 法說會分析 (FMP)", expanded=False):
-            fmp_key = st.session_state.get('fmp_key_input', '')
+        with st.expander("🎙️ AI 法說會工具箱 (手動版)", expanded=False):
+            # 選項：貼文字或上傳
+            mode = st.radio("輸入模式", ["貼上逐字稿", "上傳錄音檔(mp3)"], horizontal=True, key=f"mode_{unique_id}")
             groq_client = st.session_state.get('groq_client_obj', None)
             
-            if st.button("🚀 自動抓取並分析", key=f"btn_fmp_{unique_id}"):
-                if fmp_key and groq_client:
-                    with st.spinner("連線 FMP 資料庫 & AI 研讀中..."):
-                        txt, status = get_earnings_transcript(row['Symbol'], fmp_key)
-                        if txt:
-                            st.success(status)
-                            analysis = analyze_earnings_text(groq_client, row['Symbol'], txt)
+            if mode == "貼上逐字稿":
+                txt_input = st.text_area("請貼上法說會內容...", height=150, key=f"txt_{unique_id}")
+                if st.button("🧠 AI 分析文字", key=f"btn_txt_{unique_id}"):
+                    if groq_client and txt_input:
+                        with st.spinner("AI 正在研讀..."):
+                            analysis = analyze_earnings_text(groq_client, row['Symbol'], txt_input)
                             st.markdown(analysis)
-                            st.text_area("原始逐字稿 (前 1000 字)", txt[:1000], height=150)
-                        else:
-                            st.warning(status)
-                else:
-                    st.error("請在左側輸入 Groq API Key 和 FMP API Key")
+                    else: st.warning("請輸入內容並設定 Groq Key")
+            else:
+                aud_file = st.file_uploader("上傳錄音檔 (25MB內)", type=['mp3', 'wav', 'm4a'], key=f"aud_{unique_id}")
+                if st.button("👂 AI 聽音辨位", key=f"btn_aud_{unique_id}"):
+                    if groq_client and aud_file:
+                        with st.spinner("AI 正在聆聽..."):
+                            analysis, trans = analyze_earnings_audio(groq_client, aud_file)
+                            st.markdown(analysis)
+                            with st.expander("原始逐字稿"): st.text(trans[:1000]+"...")
+                    else: st.warning("請上傳檔案並設定 Groq Key")
 
         if row['Is_LLM']:
             with st.expander("🧠 AI 觀點 (LLM)", expanded=True):
@@ -674,9 +648,6 @@ def display_card(placeholder, row, config, unique_id):
 with st.sidebar:
     st.header("⚙️ 設定")
     user_key_input = st.text_input("Groq API Key (選填)", value="", type="password")
-    user_fmp_input = st.text_input("FMP API Key (法說會用)", value="", type="password")
-    
-    st.session_state['fmp_key_input'] = user_fmp_input
     
     st.divider()
     st.header("🕵️‍♀️ 隱藏寶石掃描")
