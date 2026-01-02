@@ -35,7 +35,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Pro Charts v3.5)",
+    page_title="2026 量化戰情室 (v3.7)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +55,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Pro Charts v3.5)")
-st.caption("新增功能：VWAP 機構成本線 | 量價籌碼邏輯判斷 | 垂直十字線 | AI 法說會工具")
+st.title("💎 量化交易 (Pro Charts v3.7)")
+st.caption("新增功能：訊號顯示開關 | 自訂滑價 | VWAP 機構成本 | AI 法說會")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -343,7 +343,7 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         return f"籌碼錯誤: {str(e)}"
 
 # ==========================================
-# 5. 主分析邏輯 (含 VWAP 判讀)
+# 5. 主分析邏輯
 # ==========================================
 def analyze_ticker(config, groq_client=None):
     symbol = config['symbol']
@@ -456,7 +456,6 @@ def analyze_ticker(config, groq_client=None):
         elif curr_cmf < -0.15: sig="💀 SELL"; act="主力高檔出貨"; sig_type="SELL"
         else: sig="WAIT"; act="籌碼觀察中"; sig_type="WAIT"
     
-    # ★★★ 新增：VWAP 與 CMF 綜合研判 ★★★
     try:
         cmf_seq = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
         curr_cmf = cmf_seq.iloc[-1] if cmf_seq is not None else 0
@@ -503,9 +502,9 @@ def analyze_ticker(config, groq_client=None):
     }
 
 # ==========================================
-# 6. 視覺化 (含 VWAP 繪圖)
+# 6. 視覺化 (含訊號開關)
 # ==========================================
-def plot_chart(df, config, signals=None):
+def plot_chart(df, config, signals=None, show_signals=True):
     if df is None: return None
     
     fig = make_subplots(
@@ -518,7 +517,6 @@ def plot_chart(df, config, signals=None):
     
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#f23645', decreasing_fillcolor='#f23645'), row=1, col=1)
     
-    # ★★★ 新增：VWAP 黃色成本線 ★★★
     vwap_line = ta.vwma(df['Close'], df['Volume'], length=20)
     if vwap_line is not None:
         fig.add_trace(go.Scatter(x=df.index, y=vwap_line, name='VWAP (機構成本)', line=dict(color='#FFD700', width=1.5)), row=1, col=1)
@@ -557,7 +555,8 @@ def plot_chart(df, config, signals=None):
         fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF (主力籌碼)', marker_color=colors), row=3, col=1)
         fig.add_hline(y=0, line_color='gray', row=3, col=1)
 
-    if signals is not None:
+    # ★ 訊號顯示邏輯：只有當 show_signals 為 True 時才畫三角形
+    if show_signals and signals is not None:
         buy_pts = df.loc[signals == 1]; sell_pts = df.loc[signals == -1]
         if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
         if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
@@ -582,7 +581,7 @@ def plot_chart(df, config, signals=None):
     fig.update_xaxes(rangeselector=dict(buttons=list([dict(count=1, label="1M", step="month", stepmode="backward"), dict(count=3, label="3M", step="month", stepmode="backward"), dict(count=6, label="6M", step="month", stepmode="backward"), dict(count=1, label="YTD", step="year", stepmode="todate"), dict(step="all", label="All")]), bgcolor="#2a2e39", activecolor="#2962ff", font=dict(color="white")))
     return fig
 
-def quick_backtest(df, config):
+def quick_backtest(df, config, fee=0.0005):
     if df is None or len(df) < 50: return None, None
     close = df['Close']; signals = pd.Series(0, index=df.index)
     try:
@@ -605,14 +604,17 @@ def quick_backtest(df, config):
             
         pos = 0; ent = 0; trd = 0; wins = 0; rets = []
         for i in range(len(df)):
-            if pos == 0 and signals.iloc[i] == 1: pos = 1; ent = close.iloc[i]
+            if pos == 0 and signals.iloc[i] == 1: 
+                pos = 1; ent = close.iloc[i]
             elif pos == 1 and signals.iloc[i] == -1:
-                pos = 0; r = (close.iloc[i] - ent) / ent; rets.append(r); trd += 1
-                if r > 0: wins += 1
+                pos = 0; raw_r = (close.iloc[i] - ent) / ent
+                net_r = raw_r - (fee * 2)
+                rets.append(net_r); trd += 1
+                if net_r > 0: wins += 1
         return signals, {"Total_Return": sum(rets)*100, "Win_Rate": (wins/trd*100) if trd else 0, "Trades": trd}
     except: return None, None
 
-def display_card(placeholder, row, config, unique_id):
+def display_card(placeholder, row, config, unique_id, show_signals):
     with placeholder.container(border=True):
         st.subheader(f"{row['Name']}")
         c1, c2 = st.columns(2)
@@ -657,9 +659,12 @@ def display_card(placeholder, row, config, unique_id):
 
         if row['Raw_DF'] is not None:
             with st.expander("📊 K線與回測 (Pro Charts)", expanded=False):
-                sig, perf = quick_backtest(row['Raw_DF'], config)
-                st.plotly_chart(plot_chart(row['Raw_DF'], config, sig), use_container_width=True)
-                if perf: st.caption(f"模擬績效: 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
+                # 取得側邊欄手續費
+                fee_rate = st.session_state.get('tx_fee', 0.0005)
+                sig, perf = quick_backtest(row['Raw_DF'], config, fee_rate)
+                # 傳入 show_signals
+                st.plotly_chart(plot_chart(row['Raw_DF'], config, sig, show_signals), use_container_width=True)
+                if perf: st.caption(f"模擬績效 (成本{fee_rate*100}%): 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
         
         st.text(f"籌碼: {row['Chip']} | 波動: {row['Pred']}")
 
@@ -679,6 +684,11 @@ with st.sidebar:
     st.divider()
     st.header("🎛️ 顯示設定")
     market_filter = st.radio("只顯示：", ["全部", "美股", "台股"], horizontal=True)
+    # ★ 訊號顯示開關
+    show_signals = st.checkbox("顯示買賣訊號 (Buy/Sell)", value=True)
+    # ★ 交易成本設定
+    tx_fee = st.number_input("單邊交易成本 (%)", min_value=0.0, max_value=5.0, value=0.05, step=0.01) / 100
+    st.session_state['tx_fee'] = tx_fee
 
 groq_client = None
 if HAS_GROQ and user_key_input and len(user_key_input) > 10:
@@ -698,7 +708,7 @@ if run_scan and custom_input:
             st.text(f"⏳ 分析 {sym}...")
             def_cfg = {"symbol": sym, "name": sym, "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70}
             row = analyze_ticker(def_cfg, groq_client)
-            display_card(st.empty(), row, def_cfg, f"scan_{sym}")
+            display_card(st.empty(), row, def_cfg, f"scan_{sym}", show_signals)
             
             if enable_opt and row['Raw_DF'] is not None:
                 with st.expander(f"🧪 {sym} 最佳參數"):
@@ -742,6 +752,6 @@ for i, (k, cfg) in enumerate(visible_strategies):
     with holders[i].container(): st.caption(f"Analyzing {cfg['name']}...")
     row = analyze_ticker(cfg, groq_client)
     holders[i].empty()
-    display_card(holders[i], row, cfg, k)
+    display_card(holders[i], row, cfg, k, show_signals)
 
 st.success("✅ 全市場掃描完成")
