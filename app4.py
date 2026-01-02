@@ -169,39 +169,69 @@ def calculate_wt(df):
     wt = ((df['Close'] - vwap) / atr) * (mfi / 50)
     return wt
 
+# ==========================================
+# ★★★ v2.1 改良版回測系統 ★★★
+# ==========================================
 def backtest_wt_strategy(df):
     """
-    回測邏輯：WT 穿越 0 軸策略
-    買進：WT 黃金交叉 0 (多頭控盤)
-    賣出：WT 死亡交叉 0 (空頭控盤)
+    改良策略：
+    1. 進場：WT > 0 且 股價站上 20MA (趨勢確認)
+    2. 出場：股價跌破 20MA (趨勢反轉) 或 WT < -1 (動能衰退)
     """
     if df is None or len(df) < 50: return None
     
+    # 計算指標
     wt = calculate_wt(df)
     close = df['Close']
+    ma20 = ta.sma(close, length=20)
     
     signals = pd.Series(0, index=df.index)
-    # WT > 0 買進持有，WT < 0 空手或賣出
-    signals[wt > 0] = 1
-    signals[wt <= 0] = -1
     
-    # 計算進出點
+    # 進場條件：WT翻正 + 站上均線 (雙重確認，過濾假訊號)
+    buy_cond = (wt > 0) & (close > ma20)
+    
+    # 出場條件：跌破均線 (趨勢結束)
+    sell_cond = (close < ma20)
+    
+    # 生成訊號
+    signals[buy_cond] = 1
+    signals[sell_cond] = -1
+    
+    # 執行回測 (向量化邏輯轉為逐日模擬)
     pos = 0; ent = 0; wins = 0; trds = 0; rets = []
     
-    # 簡單向量化回測迴圈
     for i in range(1, len(df)):
-        # 金叉買進
-        if pos == 0 and signals.iloc[i] == 1 and signals.iloc[i-1] == -1:
+        # 空手 -> 買進
+        if pos == 0 and signals.iloc[i] == 1:
             pos = 1; ent = close.iloc[i]
-        # 死叉賣出
-        elif pos == 1 and signals.iloc[i] == -1 and signals.iloc[i-1] == 1:
-            pos = 0; r = (close.iloc[i] - ent) / ent
+        
+        # 持倉 -> 賣出
+        elif pos == 1 and signals.iloc[i] == -1:
+            pos = 0
+            r = (close.iloc[i] - ent) / ent
+            # 扣除手續費滑價成本 (假設單邊 0.1%)
+            r = r - 0.002 
             rets.append(r); trds += 1
             if r > 0: wins += 1
             
+    # 如果最後還持有，以最後一根收盤價結算
+    if pos == 1:
+        r = (close.iloc[-1] - ent) / ent
+        rets.append(r); trds += 1
+        if r > 0: wins += 1
+
     total_ret = sum(rets) * 100
     win_rate = (wins / trds * 100) if trds > 0 else 0
-    return {"Return": total_ret, "WinRate": win_rate, "Trades": trds}
+    
+    # 計算最大回撤 (MDD) - 加分題
+    cum_ret = np.cumsum(rets)
+    try:
+        peak = np.maximum.accumulate(cum_ret)
+        drawdown = peak - cum_ret
+        mdd = drawdown.max() if len(drawdown) > 0 else 0
+    except: mdd = 0
+
+    return {"Return": total_ret, "WinRate": win_rate, "Trades": trds, "MDD": mdd}
 
 def find_rsi_price(df, target_rsi, rsi_len):
     if df is None or len(df)<20: return 0
@@ -395,14 +425,15 @@ for i, key in enumerate(selected_keys):
                 elif curr_wt < -2: st.success("💎 WT < -2：恐慌殺盤區，注意反彈機會。")
         
         with tab2:
-            if st.button("執行回測 (WT 0軸策略)", key=f"bt_{key}"):
+            if st.button("執行回測 (v2.1 改良版)", key=f"bt_{key}"):
                 res = backtest_wt_strategy(df)
                 if res:
-                    b1, b2, b3 = st.columns(3)
+                    b1, b2, b3, b4 = st.columns(4)
                     b1.metric("總報酬", f"{res['Return']:.1f}%", delta_color="normal")
                     b2.metric("勝率", f"{res['WinRate']:.0f}%")
-                    b3.metric("交易次數", res['Trades'])
-                    st.caption("策略邏輯：WT > 0 買進持有，WT < 0 賣出空手。")
+                    b3.metric("最大回撤", f"{res['MDD']:.1f}%", delta_color="inverse") # 越小越好
+                    b4.metric("交易次數", res['Trades'])
+                    st.caption("策略邏輯：WT > 0 且 站上20MA 買進；跌破 20MA 賣出 (含手續費模擬)。")
                 else: st.error("數據不足無法回測")
         
         with tab3:
