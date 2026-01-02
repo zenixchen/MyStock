@@ -119,18 +119,41 @@ def get_news_content(symbol):
         return clean_news
     except: return []
 
+# ==========================================
+# ★ 修改處：改用 v4 接口自動抓「最新」一份，不指定年份季度
+# ==========================================
 @st.cache_data(ttl=86400)
 def get_earnings_transcript(symbol, api_key):
     if not api_key: return None, "請輸入 API Key"
     try:
-        if ".TW" in symbol: return None, "FMP 暫不支援台股逐字稿 (請用錄音檔分析)"
-        url = f"https://financialmodelingprep.com/api/v3/earning_call_transcript/{symbol}?quarter=3&year=2024&apikey={api_key}"
-        res = requests.get(url)
+        # 1. 針對台股做過濾 (FMP 只有美股)
+        if ".TW" in symbol: return None, "FMP 暫不支援台股 (請用錄音檔功能)"
+        
+        # 2. 使用 v4 接口 (不指定 quarter/year，它會回傳列表)
+        url = f"https://financialmodelingprep.com/api/v4/earning_call_transcript?symbol={symbol}&apikey={api_key}"
+        
+        headers = {'User-Agent': 'Mozilla/5.0'} # 加上 header 避免被擋
+        res = requests.get(url, headers=headers, timeout=10)
+        
+        # 3. 錯誤處理
+        if res.status_code != 200:
+            return None, f"API 連線失敗 (Code: {res.status_code})"
+            
         data = res.json()
+        
+        # 4. 檢查是否因為額度不足被擋 (FMP 會回傳 Error Message)
+        if isinstance(data, dict) and "Error Message" in data:
+            return None, "API Key 無效或額度不足 (Free版一天限250次)"
+            
+        # 5. 抓取第一筆 (最新的)
         if isinstance(data, list) and len(data) > 0:
-            return data[0].get('content'), f"獲取成功 ({data[0].get('date')})"
-        return None, "無近期資料 (或 API 額度不足)"
-    except Exception as e: return None, str(e)
+            latest = data[0] # 列表第0個就是最新的
+            return latest.get('content'), f"成功獲取: {latest.get('year')} Q{latest.get('quarter')} ({latest.get('date')})"
+            
+        return None, "資料庫中找不到此股票的逐字稿"
+        
+    except Exception as e: 
+        return None, f"系統錯誤: {str(e)}"
 
 # ==========================================
 # 2. 基本面與 FinBERT (懶惰載入)
