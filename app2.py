@@ -9,6 +9,7 @@ from datetime import datetime
 import sys
 import re
 import importlib.util
+import requests 
 
 # ==========================================
 # ★★★ 1. 強制編碼修復 ★★★
@@ -34,7 +35,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (v3.4 穩定版)",
+    page_title="2026 量化戰情室 (Pro Charts v3.5)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -54,8 +55,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Pro Charts v3.4)")
-st.caption("功能：垂直十字線圖表 | AI 法說會工具箱 (文字/語音) | 市場篩選")
+st.title("💎 量化交易 (Pro Charts v3.5)")
+st.caption("新增功能：VWAP 機構成本線 | 量價籌碼邏輯判斷 | 垂直十字線 | AI 法說會工具")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -187,7 +188,7 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. LLM 邏輯分析 (含手動法說會分析)
+# 3. LLM 邏輯分析
 # ==========================================
 def analyze_logic_llm(client, symbol, news_titles, tech_signal):
     if not client: return None, None, False
@@ -244,7 +245,6 @@ def analyze_earnings_audio(client, uploaded_file):
             model="whisper-large-v3",
             response_format="text"
         )
-        # 轉錄完成後，直接呼叫文字分析
         return analyze_earnings_text(client, "Audio File", transcription), transcription
     except Exception as e:
         return f"語音分析失敗: {str(e)}", ""
@@ -343,7 +343,7 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         return f"籌碼錯誤: {str(e)}"
 
 # ==========================================
-# 5. 主分析邏輯
+# 5. 主分析邏輯 (含 VWAP 判讀)
 # ==========================================
 def analyze_ticker(config, groq_client=None):
     symbol = config['symbol']
@@ -455,6 +455,23 @@ def analyze_ticker(config, groq_client=None):
         if curr_cmf > 0.15: sig="🔥 BUY"; act="主力強勢吃貨"; sig_type="BUY"
         elif curr_cmf < -0.15: sig="💀 SELL"; act="主力高檔出貨"; sig_type="SELL"
         else: sig="WAIT"; act="籌碼觀察中"; sig_type="WAIT"
+    
+    # ★★★ 新增：VWAP 與 CMF 綜合研判 ★★★
+    try:
+        cmf_seq = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
+        curr_cmf = cmf_seq.iloc[-1] if cmf_seq is not None else 0
+        
+        vwap = ta.vwma(df['Close'], df['Volume'], length=20).iloc[-1]
+        
+        if lp > vwap and curr_cmf > 0.05:
+            act += " | 🚀量價齊揚"
+        elif lp < vwap and curr_cmf > 0.05:
+            act += " | 💎主力低接"
+        elif lp > vwap and curr_cmf < -0.05:
+            act += " | ⚠️高檔虛漲"
+        elif lp < vwap and curr_cmf < -0.05:
+            act += " | 🔻空頭確認"
+    except: pass
 
     fund = get_fundamentals(symbol)
     fund_msg = f"PE: {fund['pe']:.1f}" if fund and fund['pe'] else "N/A"
@@ -486,7 +503,7 @@ def analyze_ticker(config, groq_client=None):
     }
 
 # ==========================================
-# 6. 視覺化 (強制顯示 CMF + 垂直對齊)
+# 6. 視覺化 (含 VWAP 繪圖)
 # ==========================================
 def plot_chart(df, config, signals=None):
     if df is None: return None
@@ -500,16 +517,12 @@ def plot_chart(df, config, signals=None):
     )
     
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#f23645', decreasing_fillcolor='#f23645'), row=1, col=1)
+    
+    # ★★★ 新增：VWAP 黃色成本線 ★★★
+    vwap_line = ta.vwma(df['Close'], df['Volume'], length=20)
+    if vwap_line is not None:
+        fig.add_trace(go.Scatter(x=df.index, y=vwap_line, name='VWAP (機構成本)', line=dict(color='#FFD700', width=1.5)), row=1, col=1)
 
-    vwap = ta.vwma(df['Close'], df['Volume'], length=20)
-    if vwap is not None:
-        fig.add_trace(go.Scatter(
-            x=df.index, 
-            y=vwap, 
-            name='VWAP (機構成本)', 
-            line=dict(color='#FFD700', width=1.5, dash='solid') # 金色線
-        ), row=1, col=1)
-        
     if config.get('ma_trend', 0) > 0:
         ma_trend = ta.ema(df['Close'], length=config['ma_trend'])
         fig.add_trace(go.Scatter(x=df.index, y=ma_trend, name=f"EMA {config['ma_trend']}", line=dict(color='purple', width=2)), row=1, col=1)
@@ -557,7 +570,7 @@ def plot_chart(df, config, signals=None):
         font=dict(color='#d1d4dc', family="Roboto"), 
         showlegend=True, 
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), 
-        hovermode='x unified', # 開啟垂直同步顯示
+        hovermode='x unified', 
         xaxis=dict(showgrid=True, gridcolor='#2a2e39', rangeslider=dict(visible=False), showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
         yaxis=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
         xaxis2=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
@@ -611,7 +624,6 @@ def display_card(placeholder, row, config, unique_id):
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
         with st.expander("🎙️ AI 法說會工具箱 (手動版)", expanded=False):
-            # 選項：貼文字或上傳
             mode = st.radio("輸入模式", ["貼上逐字稿", "上傳錄音檔(mp3)"], horizontal=True, key=f"mode_{unique_id}")
             groq_client = st.session_state.get('groq_client_obj', None)
             
