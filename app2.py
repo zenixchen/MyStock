@@ -35,7 +35,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Pro Charts v3.2)",
+    page_title="2026 量化戰情室 (Pro Charts v3.3)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +55,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Pro Charts v3.2)")
-st.caption("修復按鈕重複錯誤 | 新增功能：AI 自動法說會分析 (FMP) | 市場一鍵篩選")
+st.title("💎 量化交易 (Pro Charts v3.3)")
+st.caption("新增功能：圖表垂直對齊線 | AI 自動法說會分析 | 市場一鍵篩選")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -486,7 +486,7 @@ def analyze_ticker(config, groq_client=None):
     }
 
 # ==========================================
-# 6. 視覺化
+# 6. 視覺化 (強制顯示 CMF + 垂直對齊)
 # ==========================================
 def plot_chart(df, config, signals=None):
     if df is None: return None
@@ -540,7 +540,31 @@ def plot_chart(df, config, signals=None):
         if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
         if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
 
-    fig.update_layout(height=600, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc', family="Roboto"), showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), hovermode='x unified', xaxis=dict(showgrid=True, gridcolor='#2a2e39', rangeslider=dict(visible=False), showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), yaxis=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), xaxis2=dict(showgrid=True, gridcolor='#2a2e39'), yaxis2=dict(showgrid=True, gridcolor='#2a2e39'), xaxis3=dict(showgrid=True, gridcolor='#2a2e39'), yaxis3=dict(showgrid=True, gridcolor='#2a2e39'))
+    # ★★★ 關鍵修改：開啟垂直對齊線 (Spike Line) 與 Hover Mode ★★★
+    fig.update_layout(
+        height=600, 
+        margin=dict(t=30, b=0, l=0, r=0), 
+        paper_bgcolor='#131722', 
+        plot_bgcolor='#131722', 
+        font=dict(color='#d1d4dc', family="Roboto"), 
+        showlegend=True, 
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), 
+        hovermode='x unified', # 開啟垂直同步顯示
+        xaxis=dict(
+            showgrid=True, gridcolor='#2a2e39', 
+            rangeslider=dict(visible=False), 
+            showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot" # X軸十字線
+        ), 
+        yaxis=dict(
+            showgrid=True, gridcolor='#2a2e39', 
+            showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot" # Y軸十字線
+        ), 
+        xaxis2=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
+        yaxis2=dict(showgrid=True, gridcolor='#2a2e39'), 
+        xaxis3=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
+        yaxis3=dict(showgrid=True, gridcolor='#2a2e39')
+    )
+    
     fig.update_xaxes(rangeselector=dict(buttons=list([dict(count=1, label="1M", step="month", stepmode="backward"), dict(count=3, label="3M", step="month", stepmode="backward"), dict(count=6, label="6M", step="month", stepmode="backward"), dict(count=1, label="YTD", step="year", stepmode="todate"), dict(step="all", label="All")]), bgcolor="#2a2e39", activecolor="#2962ff", font=dict(color="white")))
     return fig
 
@@ -574,7 +598,6 @@ def quick_backtest(df, config):
         return signals, {"Total_Return": sum(rets)*100, "Win_Rate": (wins/trd*100) if trd else 0, "Trades": trd}
     except: return None, None
 
-# ★★★ 修改處：傳入 unique_id 以避免按鈕重複錯誤 ★★★
 def display_card(placeholder, row, config, unique_id):
     with placeholder.container(border=True):
         st.subheader(f"{row['Name']}")
@@ -590,7 +613,6 @@ def display_card(placeholder, row, config, unique_id):
             fmp_key = st.session_state.get('fmp_key_input', '')
             groq_client = st.session_state.get('groq_client_obj', None)
             
-            # 使用 unique_id 確保 key 唯一
             if st.button("🚀 自動抓取並分析", key=f"btn_fmp_{unique_id}"):
                 if fmp_key and groq_client:
                     with st.spinner("連線 FMP 資料庫 & AI 研讀中..."):
@@ -705,7 +727,6 @@ for i, (k, cfg) in enumerate(visible_strategies):
     with holders[i].container(): st.caption(f"Analyzing {cfg['name']}...")
     row = analyze_ticker(cfg, groq_client)
     holders[i].empty()
-    # 傳入 k 作為 unique_id
     display_card(holders[i], row, cfg, k)
 
 st.success("✅ 全市場掃描完成")
