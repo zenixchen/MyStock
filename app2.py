@@ -500,7 +500,16 @@ def plot_chart(df, config, signals=None):
     )
     
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#f23645', decreasing_fillcolor='#f23645'), row=1, col=1)
-    
+
+    vwap = ta.vwma(df['Close'], df['Volume'], length=20)
+    if vwap is not None:
+        fig.add_trace(go.Scatter(
+            x=df.index, 
+            y=vwap, 
+            name='VWAP (機構成本)', 
+            line=dict(color='#FFD700', width=1.5, dash='solid') # 金色線
+        ), row=1, col=1)
+        
     if config.get('ma_trend', 0) > 0:
         ma_trend = ta.ema(df['Close'], length=config['ma_trend'])
         fig.add_trace(go.Scatter(x=df.index, y=ma_trend, name=f"EMA {config['ma_trend']}", line=dict(color='purple', width=2)), row=1, col=1)
