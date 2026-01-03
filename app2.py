@@ -35,7 +35,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (v3.8)",
+    page_title="2026 量化戰情室 (v3.9)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +55,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Pro Charts v3.8)")
-st.caption("更新：整合 GLW/AVGO/MRVL 最佳化參數 | 訊號顯示開關 | 自訂滑價 | VWAP 機構成本")
+st.title("💎 量化交易 (Pro Charts v3.9)")
+st.caption("更新：新增 ONTO 高頻刷單策略 | 整合 QCOM/GLW/AVGO/MRVL 最佳參數")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -734,7 +734,7 @@ strategies = {
     "BTC_F": { "symbol": "BTC-USD", "name": "BTC (閃電)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
     "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
     
-    # ★★★ 新增：AI 硬體潛力股 (回測優化參數) ★★★
+    # ★★★ AI 硬體潛力股 (更新版) ★★★
     "GLW": { 
         "symbol": "GLW", 
         "name": "GLW (玻璃基板)", 
@@ -761,6 +761,24 @@ strategies = {
         "entry_rsi": 20,   # 深跌(20)才接
         "exit_rsi": 90,    # 暴力反彈才賣
         "ma_trend": 100    # 半年線保護
+    },
+    "QCOM": { 
+        "symbol": "QCOM", 
+        "name": "QCOM (AI PC)", 
+        "mode": "RSI_RSI", 
+        "rsi_len": 8,      # 波段策略 (8日RSI)
+        "entry_rsi": 30,   # 跌破 30 進場
+        "exit_rsi": 70,    # 漲破 70 出場
+        "ma_trend": 100    # 100MA 保護
+    },
+    "ONTO": {
+        "symbol": "ONTO",
+        "name": "ONTO (先進封裝)",
+        "mode": "RSI_RSI",
+        "rsi_len": 2,      # 高頻刷單模式
+        "entry_rsi": 50,   # 回檔至 50 即視為買點 (極積極)
+        "exit_rsi": 65,    # 稍微反彈 65 就賣
+        "ma_trend": 100    # 加上趨勢濾網，只在多頭時刷單
     }
 }
 
