@@ -35,7 +35,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (v4.1)",
+    page_title="2026 量化戰情室 (Ultimate v5.1)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +55,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Pro Charts v4.1)")
-st.caption("更新：整合 JNJ/PG/中華電 100%勝率參數 | 全天候防禦佈局 | 訊號自動排序")
+st.title("💎 量化交易 (Ultimate v5.1)")
+st.caption("集大成版：核能雙妖神參數 (248%回報) | AI硬體 | 電力散熱 | 防禦堡壘 | 訊號排序")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -745,34 +745,30 @@ strategies = {
     "ETN": { "symbol": "ETN", "name": "ETN (電網龍頭)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
     "VRT": { "symbol": "VRT", "name": "VRT (液冷飆股)", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
 
-    # ★★★ 防守型避風港 (100% 勝率參數) ★★★
-    "JNJ": { 
-        "symbol": "JNJ", 
-        "name": "JNJ (醫療避險)", 
+    # ★★★ 核能雙妖 (神參數) ★★★
+    "OKLO": { 
+        "symbol": "OKLO", 
+        "name": "OKLO (核能新星)", 
         "mode": "RSI_RSI", 
-        "rsi_len": 6,      # 短線靈活
-        "entry_rsi": 25,   # 深跌反彈
-        "exit_rsi": 90,    # 過熱出
-        "ma_trend": 200 
-    },
-    "PG": { 
-        "symbol": "PG", 
-        "name": "PG (寶僑消費)", 
-        "mode": "RSI_RSI", 
-        "rsi_len": 6,      # 短線靈活
-        "entry_rsi": 20,   # 極端恐慌時買
-        "exit_rsi": 80,    # 反彈就跑
+        "rsi_len": 3,      # 極速反應
+        "entry_rsi": 50,   # 回檔一半就接 (強勢)
+        "exit_rsi": 95,    # 抱到過熱
         "ma_trend": 0 
     },
-    "CHT": { 
-        "symbol": "2412.TW", 
-        "name": "中華電 (防禦)", 
+    "SMR": { 
+        "symbol": "SMR", 
+        "name": "SMR (模組化核能)", 
         "mode": "RSI_RSI", 
-        "rsi_len": 14,     # 慢牛標準
-        "entry_rsi": 45,   # 微幅回檔就是買點 (<45)
-        "exit_rsi": 70,    # 乖離過大就賣
+        "rsi_len": 3, 
+        "entry_rsi": 45,   # 微幅回檔就接
+        "exit_rsi": 90, 
         "ma_trend": 0 
-    }
+    },
+
+    # ★★★ 防守型避風港 (100% 勝率) ★★★
+    "JNJ": { "symbol": "JNJ", "name": "JNJ (醫療避險)", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200 },
+    "PG": { "symbol": "PG", "name": "PG (寶僑消費)", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0 },
+    "CHT": { "symbol": "2412.TW", "name": "中華電 (防禦)", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70, "ma_trend": 0 }
 }
 
 st.divider()
