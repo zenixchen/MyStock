@@ -35,7 +35,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (v3.9)",
+    page_title="2026 量化戰情室 (v4.0)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +55,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Pro Charts v3.9)")
-st.caption("更新：新增 ONTO 高頻刷單策略 | 整合 QCOM/GLW/AVGO/MRVL 最佳參數")
+st.title("💎 量化交易 (Pro Charts v4.0)")
+st.caption("更新：新增 ETN/VRT 電力雙雄策略 | 整合 QCOM/ONTO | 訊號自動排序 | VWAP 機構成本")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -779,6 +779,26 @@ strategies = {
         "entry_rsi": 50,   # 回檔至 50 即視為買點 (極積極)
         "exit_rsi": 65,    # 稍微反彈 65 就賣
         "ma_trend": 100    # 加上趨勢濾網，只在多頭時刷單
+    },
+    
+    # ★★★ 新增：AI 電力雙雄 (回測優化) ★★★
+    "ETN": {
+        "symbol": "ETN",
+        "name": "ETN (電網龍頭)",
+        "mode": "RSI_RSI",
+        "rsi_len": 2,      # 極短線策略
+        "entry_rsi": 40,   # 穩健股，回檔至 40 就買 (不用太深)
+        "exit_rsi": 95,    # 抱到極致過熱再賣 (勝率 70%)
+        "ma_trend": 200    # 年線保護
+    },
+    "VRT": {
+        "symbol": "VRT",
+        "name": "VRT (液冷飆股)",
+        "mode": "RSI_RSI",
+        "rsi_len": 2,      # 暴力飆股模式
+        "entry_rsi": 35,   # 稍微回檔(35)就是買點
+        "exit_rsi": 95,    # 噴到過熱(95)才出 (報酬率 221%)
+        "ma_trend": 100    # 加上濾網
     }
 }
 
