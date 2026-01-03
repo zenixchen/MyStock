@@ -35,7 +35,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (v3.7)",
+    page_title="2026 量化戰情室 (v3.8)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +55,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Pro Charts v3.7)")
-st.caption("新增功能：訊號顯示開關 | 自訂滑價 | VWAP 機構成本 | AI 法說會")
+st.title("💎 量化交易 (Pro Charts v3.8)")
+st.caption("更新：整合 GLW/AVGO/MRVL 最佳化參數 | 訊號顯示開關 | 自訂滑價 | VWAP 機構成本")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -733,6 +733,35 @@ strategies = {
     "BTC_W": { "symbol": "BTC-USD", "name": "BTC (波段)", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
     "BTC_F": { "symbol": "BTC-USD", "name": "BTC (閃電)", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
     "TSM": { "symbol": "TSM", "name": "TSM (趨勢)", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
+    
+    # ★★★ 新增：AI 硬體潛力股 (回測優化參數) ★★★
+    "GLW": { 
+        "symbol": "GLW", 
+        "name": "GLW (玻璃基板)", 
+        "mode": "RSI_RSI", 
+        "rsi_len": 3,      # 極短線狙擊
+        "entry_rsi": 30,   # 不跌深不買
+        "exit_rsi": 90,    # 漲過頭才賣
+        "ma_trend": 0      # 區間震盪股，不看均線
+    },
+    "AVGO": { 
+        "symbol": "AVGO", 
+        "name": "AVGO (AI光通訊)", 
+        "mode": "RSI_RSI", 
+        "rsi_len": 5,      # 短線反應
+        "entry_rsi": 55,   # 強勢股，稍微回檔(55)就買，不等低點
+        "exit_rsi": 85,    # 85就跑，確保獲利
+        "ma_trend": 200    # 加上年線保護，確保長多趨勢
+    },
+    "MRVL": { 
+        "symbol": "MRVL", 
+        "name": "MRVL (ASIC)", 
+        "mode": "RSI_RSI", 
+        "rsi_len": 2,      # 超極短線 (接刀模式)
+        "entry_rsi": 20,   # 深跌(20)才接
+        "exit_rsi": 90,    # 暴力反彈才賣
+        "ma_trend": 100    # 半年線保護
+    }
 }
 
 st.divider()
