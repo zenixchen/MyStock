@@ -669,7 +669,7 @@ def display_card(placeholder, row, config, unique_id, show_signals):
         st.text(f"籌碼: {row['Chip']} | 波動: {row['Pred']}")
 
 # ==========================================
-# 7. 執行區
+# 7. 執行區 (修改版：自動排序)
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 設定")
@@ -783,22 +783,56 @@ strategies = {
 }
 
 st.divider()
-st.subheader("📋 核心持股監控")
+st.subheader("📋 核心持股監控 (依訊號排序)")
 if st.button("🔄 刷新全市場"): st.cache_data.clear(); st.rerun()
 
+# 1. 篩選可見策略
 visible_strategies = strategies.items()
 if market_filter == "美股":
     visible_strategies = [(k, v) for k, v in strategies.items() if ".TW" not in v['symbol'] and "TWD" not in v['symbol']]
 elif market_filter == "台股":
     visible_strategies = [(k, v) for k, v in strategies.items() if ".TW" in v['symbol'] or "TWD" in v['symbol']]
+visible_strategies = list(visible_strategies)
 
-col1, col2 = st.columns(2)
-holders = [col1.empty() if i % 2 == 0 else col2.empty() for i in range(len(visible_strategies))]
+# 2. 收集數據並分析 (為了排序，必須先全部跑完)
+analysis_results = []
+prog_bar = st.progress(0, text="正在分析全市場與排序中...")
 
 for i, (k, cfg) in enumerate(visible_strategies):
-    with holders[i].container(): st.caption(f"Analyzing {cfg['name']}...")
+    prog_bar.progress((i + 1) / len(visible_strategies))
     row = analyze_ticker(cfg, groq_client)
-    holders[i].empty()
-    display_card(holders[i], row, cfg, k, show_signals)
+    analysis_results.append((k, cfg, row))
+    
+prog_bar.empty()
 
-st.success("✅ 全市場掃描完成")
+# 3. 定義排序邏輯函數
+def get_sort_priority(data):
+    key, cfg, row = data
+    
+    # 優先級 0: 美元/TWD 永遠置頂
+    if "TWD=X" in cfg['symbol'] or "USD" in cfg['name']:
+        return 0
+        
+    # 優先級 1: 買進訊號 (BUY)
+    if "BUY" in row['Signal']:
+        return 1
+        
+    # 優先級 2: 賣出訊號 (SELL)
+    if "SELL" in row['Signal']:
+        return 2
+        
+    # 優先級 3: 其他 (WAIT, HOLD, EMPTY)
+    return 3
+
+# 4. 執行排序
+sorted_results = sorted(analysis_results, key=get_sort_priority)
+
+# 5. 顯示結果
+col1, col2 = st.columns(2)
+holders = [col1.container() if i % 2 == 0 else col2.container() for i in range(len(sorted_results))]
+
+for i, (k, cfg, row) in enumerate(sorted_results):
+    with holders[i]:
+        display_card(st.empty(), row, cfg, k, show_signals)
+
+st.success("✅ 全市場掃描與排序完成")
