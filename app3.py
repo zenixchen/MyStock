@@ -9,6 +9,8 @@ from datetime import datetime
 import sys
 import re
 import importlib.util
+import requests  # ★ 核心關鍵：改用 requests 直接連線
+import json
 
 # ==========================================
 # ★★★ 1. 強制編碼修復 ★★★
@@ -20,7 +22,7 @@ except Exception:
     pass
 
 # ==========================================
-# ★★★ 2. 套件安全匯入 (Groq + Gemini) ★★★
+# ★★★ 2. 套件安全匯入 ★★★
 # ==========================================
 HAS_TRANSFORMERS = importlib.util.find_spec("transformers") is not None
 
@@ -31,20 +33,12 @@ try:
 except ImportError:
     HAS_GROQ = False
 
-# 匯入 Google Gemini (防呆修正版)
-try:
-    import google.generativeai as genai
-    HAS_GEMINI = True
-except ImportError:
-    genai = None
-    HAS_GEMINI = False
-
 # ==========================================
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v5.5)",
-    page_icon="🛠️",
+    page_title="2026 量化戰情室 (Ultimate v5.6)",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -63,8 +57,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Ultimate v5.5)")
-st.caption("診斷版：API 模型檢測器 | Pandas 修復 | 雙核心 AI")
+st.title("💎 量化交易 (Ultimate v5.6)")
+st.caption("終極修復版：REST API 直連 (繞過套件版本問題) | Pandas 修復 | 雙核心 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -206,20 +200,12 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯大腦 (Gemini 診斷版)
+# 3. AI 邏輯大腦 (REST API 直連版 - 解決套件過舊問題)
 # ==========================================
 
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
-    if not HAS_GEMINI or genai is None:
-        return "系統錯誤：未安裝 google-generativeai，請檢查 requirements.txt", "⚠️", False
-        
     if not api_key: return None, None, False
     if not news_titles: return "無新聞可分析", "⚪", False
-    
-    try:
-        genai.configure(api_key=api_key)
-    except Exception as e:
-        return f"Key 設定失敗: {str(e)}", "⚠️", False
     
     news_text = "\n".join([f"- {t}" for t in news_titles])
     
@@ -236,28 +222,33 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     4. 輸出簡短、犀利的操作建議 (繁體中文)。
     """
     
-    # 自動嘗試模型清單
-    model_candidates = [
-        'gemini-1.5-flash',       # 首選：最穩定
-        'gemini-1.5-pro',         # 次選：最強
-        'gemini-2.0-flash-exp',   # 實驗版
-        'models/gemini-1.5-flash',# 完整路徑名
-        'gemini-pro'              # 舊版保底
-    ]
+    # ★★★ 關鍵修改：使用 requests 直接呼叫 API，不依賴套件 ★★★
+    # 使用目前最穩定的 gemini-1.5-flash
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     
-    last_error = ""
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
     
-    for model_name in model_candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            icon = "⚡" if "flash" in model_name else "💎"
-            return f"{response.text}\n\n(使用模型: {model_name})", icon, True
-        except Exception as e:
-            last_error = str(e)
-            continue
+    try:
+        response = requests.post(api_url, headers=headers, json=data)
+        
+        if response.status_code == 200:
+            result = response.json()
+            # 解析回傳的 JSON
+            try:
+                analysis_text = result['candidates'][0]['content']['parts'][0]['text']
+                return f"{analysis_text}\n\n(API直連: 1.5-flash)", "⚡", True
+            except:
+                return f"解析失敗: {str(result)}", "💀", False
+        else:
+            return f"API 請求失敗 ({response.status_code}): {response.text}", "💀", False
             
-    return f"Gemini Error: 所有模型皆失敗。最後錯誤: {last_error}", "💀", False
+    except Exception as e:
+        return f"連線錯誤: {str(e)}", "💀", False
 
 def analyze_logic_groq(client, symbol, news_titles, tech_signal):
     if not client: return None, None, False
@@ -282,10 +273,23 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal):
     except Exception as e:
         return f"Groq Error: {str(e)}", "⚠️", False
 
+# --- C. 法說會與財報工具 ---
 def analyze_earnings_text(client, symbol, text):
     if not client: return "請先設定 Groq Key"
-    short_text = text[:7000]
-    prompt = f"分析 {symbol} 法說會重點：{short_text}..."
+    short_text = text[:7000] # 截取重點
+    prompt = f"""
+    你是華爾街分析師。以下是 {symbol} 的法說會或財經文章內容。
+    
+    【內容】：
+    {short_text}...
+    
+    請用繁體中文 Markdown 輸出專業報告：
+    1. **情緒評分** (0-10，並說明理由)
+    2. **關鍵亮點 (Bullish)**：營收、AI、新產品等。
+    3. **風險警示 (Bearish)**：庫存、宏觀、競爭等。
+    4. **財測指引 (Guidance)**：如果有提到未來展望。
+    5. **投資結論**：[Bullish / Neutral / Bearish]
+    """
     try:
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -296,7 +300,7 @@ def analyze_earnings_text(client, symbol, text):
 
 def analyze_earnings_audio(client, uploaded_file):
     try:
-        st.info("👂 正在將語音轉為文字...")
+        st.info("👂 正在將語音轉為文字 (Whisper-v3)...")
         transcription = client.audio.transcriptions.create(
             file=(uploaded_file.name, uploaded_file.read()),
             model="whisper-large-v3",
@@ -559,19 +563,24 @@ def analyze_ticker(config, groq_client=None):
     logs = [] 
     news = get_news_content(symbol)
     
+    # --- AI 分析邏輯 ---
     gemini_key = st.session_state.get('gemini_api_key', None)
     
+    # 1. 優先嘗試 Gemini (REST API 直連)
     if gemini_key:
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
+        # 呼叫直連版函式
         llm_res, icon, success = analyze_logic_gemini(gemini_key, symbol, news, tech_ctx, f"${lp:.2f}")
         if success: is_llm = True
         
+    # 2. 如果 Gemini 沒過，嘗試 Groq
     if not is_llm and groq_client:
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
         llm_res, icon, success = analyze_logic_groq(groq_client, symbol, news, tech_ctx)
         if success: is_llm = True
             
-    if not is_llm and "Error" not in llm_res and "系統錯誤" not in llm_res:
+    # 3. 錯誤揭露模式
+    if not is_llm and "Error" not in llm_res and "系統錯誤" not in llm_res and "API" not in llm_res:
         score, _, logs = analyze_sentiment_finbert(symbol)
         llm_res = f"情緒分: {score:.2f} (未設定 AI Key 或 呼叫失敗)"
 
@@ -588,18 +597,24 @@ def analyze_ticker(config, groq_client=None):
     }
 
 # ==========================================
-# 6. 視覺化
+# 6. 視覺化 (含訊號開關)
 # ==========================================
 def plot_chart(df, config, signals=None, show_signals=True):
     if df is None: return None
     
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.6, 0.2, 0.2])
+    fig = make_subplots(
+        rows=3, cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.02, 
+        row_heights=[0.6, 0.2, 0.2], 
+        specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]]
+    )
     
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#f23645', decreasing_fillcolor='#f23645'), row=1, col=1)
     
     vwap_line = ta.vwma(df['Close'], df['Volume'], length=20)
     if vwap_line is not None:
-        fig.add_trace(go.Scatter(x=df.index, y=vwap_line, name='VWAP', line=dict(color='#FFD700', width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=vwap_line, name='VWAP (機構成本)', line=dict(color='#FFD700', width=1.5)), row=1, col=1)
 
     if config.get('ma_trend', 0) > 0:
         ma_trend = ta.ema(df['Close'], length=config['ma_trend'])
@@ -617,6 +632,7 @@ def plot_chart(df, config, signals=None, show_signals=True):
     if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
         fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb', width=2)), row=2, col=1)
+        fig.add_hrect(y0=config.get('entry_rsi', 30), y1=config.get('exit_rsi', 70), fillcolor="rgba(255, 255, 255, 0.05)", line_width=0, row=2, col=1)
         fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color='#089981', row=2, col=1)
         fig.add_hline(y=config.get('exit_rsi', 70), line_dash="dash", line_color='#f23645', row=2, col=1)
 
@@ -631,14 +647,32 @@ def plot_chart(df, config, signals=None, show_signals=True):
     cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
     if cmf is not None:
         colors = ['#089981' if v >= 0 else '#f23645' for v in cmf] 
-        fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF', marker_color=colors), row=3, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF (主力籌碼)', marker_color=colors), row=3, col=1)
+        fig.add_hline(y=0, line_color='gray', row=3, col=1)
 
     if show_signals and signals is not None:
         buy_pts = df.loc[signals == 1]; sell_pts = df.loc[signals == -1]
         if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
         if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
 
-    fig.update_layout(height=600, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc', family="Roboto"), showlegend=False, xaxis=dict(showgrid=True, gridcolor='#2a2e39'), yaxis=dict(showgrid=True, gridcolor='#2a2e39'))
+    fig.update_layout(
+        height=600, 
+        margin=dict(t=30, b=0, l=0, r=0), 
+        paper_bgcolor='#131722', 
+        plot_bgcolor='#131722', 
+        font=dict(color='#d1d4dc', family="Roboto"), 
+        showlegend=True, 
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), 
+        hovermode='x unified', 
+        xaxis=dict(showgrid=True, gridcolor='#2a2e39', rangeslider=dict(visible=False), showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
+        yaxis=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
+        xaxis2=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
+        yaxis2=dict(showgrid=True, gridcolor='#2a2e39'), 
+        xaxis3=dict(showgrid=True, gridcolor='#2a2e39', showspikes=True, spikecolor="#d1d4dc", spikethickness=1, spikedash="dot"), 
+        yaxis3=dict(showgrid=True, gridcolor='#2a2e39')
+    )
+    
+    fig.update_xaxes(rangeselector=dict(buttons=list([dict(count=1, label="1M", step="month", stepmode="backward"), dict(count=3, label="3M", step="month", stepmode="backward"), dict(count=6, label="6M", step="month", stepmode="backward"), dict(count=1, label="YTD", step="year", stepmode="todate"), dict(step="all", label="All")]), bgcolor="#2a2e39", activecolor="#2962ff", font=dict(color="white")))
     return fig
 
 def quick_backtest(df, config, fee=0.0005):
@@ -685,110 +719,215 @@ def display_card(placeholder, row, config, unique_id, show_signals):
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
-        with st.expander("🎙️ AI 法說會工具箱", expanded=False):
-            mode = st.radio("輸入模式", ["貼上逐字稿", "上傳錄音檔"], horizontal=True, key=f"mode_{unique_id}")
+        with st.expander("🎙️ AI 法說會工具箱 (Groq 強力驅動)", expanded=False):
+            mode = st.radio("輸入模式", ["貼上逐字稿", "上傳錄音檔(mp3)"], horizontal=True, key=f"mode_{unique_id}")
             groq_client = st.session_state.get('groq_client_obj', None)
+            
             if mode == "貼上逐字稿":
-                txt = st.text_area("內容", key=f"txt_{unique_id}")
-                if st.button("AI 分析", key=f"btn_{unique_id}") and groq_client:
-                    st.markdown(analyze_earnings_text(groq_client, row['Symbol'], txt))
+                txt_input = st.text_area("請貼上法說會內容...", height=150, key=f"txt_{unique_id}")
+                if st.button("🧠 AI 分析文字", key=f"btn_txt_{unique_id}"):
+                    if groq_client and txt_input:
+                        with st.spinner("Groq 正在研讀..."):
+                            analysis = analyze_earnings_text(groq_client, row['Symbol'], txt_input)
+                            st.markdown(analysis)
+                    else: st.warning("請輸入內容並設定 Groq Key")
             else:
-                aud = st.file_uploader("上傳", key=f"aud_{unique_id}")
-                if st.button("AI 聽音", key=f"btn_a_{unique_id}") and groq_client and aud:
-                    res, raw = analyze_earnings_audio(groq_client, aud)
-                    st.markdown(res)
+                aud_file = st.file_uploader("上傳錄音檔 (25MB內)", type=['mp3', 'wav', 'm4a'], key=f"aud_{unique_id}")
+                if st.button("👂 AI 聽音辨位", key=f"btn_aud_{unique_id}"):
+                    if groq_client and aud_file:
+                        with st.spinner("Groq 正在聆聽..."):
+                            analysis, trans = analyze_earnings_audio(groq_client, aud_file)
+                            st.markdown(analysis)
+                            with st.expander("原始逐字稿"): st.text(trans[:1000]+"...")
+                    else: st.warning("請上傳檔案並設定 Groq Key")
 
         if row['Is_LLM']:
             with st.expander("🧠 AI 觀點 (Gemini/Groq)", expanded=True):
                 st.markdown(row['LLM_Analysis'])
         else:
             st.caption(f"FinBERT: {row['LLM_Analysis']}")
+            if row.get('Logs'):
+                with st.expander("📊 FinBERT 詳細情緒列表", expanded=False):
+                    for log in row['Logs']:
+                        st.text(log)
 
         if row['Raw_DF'] is not None:
-            with st.expander("📊 K線與回測", expanded=False):
+            with st.expander("📊 K線與回測 (Pro Charts)", expanded=False):
+                # 取得側邊欄手續費
                 fee_rate = st.session_state.get('tx_fee', 0.0005)
                 sig, perf = quick_backtest(row['Raw_DF'], config, fee_rate)
+                # 傳入 show_signals
                 st.plotly_chart(plot_chart(row['Raw_DF'], config, sig, show_signals), use_container_width=True)
-                if perf: st.caption(f"模擬績效: {perf['Total_Return']:.1f}%")
+                if perf: st.caption(f"模擬績效 (成本{fee_rate*100}%): 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
         
         st.text(f"籌碼: {row['Chip']} | 波動: {row['Pred']}")
 
 # ==========================================
-# 7. 執行區 (診斷功能)
+# 7. 策略與個股清單 (含分類與業務描述)
+# ==========================================
+strategies = {
+    # === 1. 指數與外匯 ===
+    "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
+    "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+    "QLD": { "symbol": "QLD", "name": "QLD (那斯達克 2倍做多)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+    "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (那斯達克 3倍做多)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
+    "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 狙擊)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
+    "SOXL_F": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 快攻)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 10, "exit_k": 75 },
+    "EDZ": { "symbol": "EDZ", "name": "EDZ (新興市場 3倍做空 - 避險)", "category": "📊 指數/外匯", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
+
+    # === 2. 數位資產 ===
+    "BTC_W": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 波段)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
+    "BTC_F": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 閃電)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
+
+    # === 3. AI 核心硬體/晶片 ===
+    "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
+    "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200 },
+    "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100 },
+    "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100 },
+    "GLW": { "symbol": "GLW", "name": "GLW (康寧 - 玻璃基板/光通訊)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
+    "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖 - CoWoS 檢測設備)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
+
+    # === 4. 大型科技/軟體 ===
+    "META": { "symbol": "META", "name": "META (臉書 - 廣告與元宇宙)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
+    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (谷歌 - 搜尋與 Gemini)", "category": "💻 軟體/巨頭", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+
+    # === 5. 電力/能源/散熱 ===
+    "ETN": { "symbol": "ETN", "name": "ETN (伊頓 - 電網與電力管理)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
+    "VRT": { "symbol": "VRT", "name": "VRT (維諦 - AI 伺服器液冷)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
+    "OKLO": { "symbol": "OKLO", "name": "OKLO (核能 - 微型反應堆)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 50, "exit_rsi": 95, "ma_trend": 0 },
+    "SMR": { "symbol": "SMR", "name": "SMR (NuScale - 模組化核能)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 45, "exit_rsi": 90, "ma_trend": 0 },
+
+    # === 6. 防禦/消費/傳統 ===
+    "KO": { "symbol": "KO", "name": "KO (可口可樂 - 消費必需品)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
+    "JNJ": { "symbol": "JNJ", "name": "JNJ (嬌生 - 醫療與製藥)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200 },
+    "PG": { "symbol": "PG", "name": "PG (寶僑 - 日用品龍頭)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0 },
+    "BA": { "symbol": "BA", "name": "BA (波音 - 航太製造)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 15, "exit_rsi": 60, "ma_trend": 0 },
+    
+    # === 7. 台股 ===
+    "CHT": { "symbol": "2412.TW", "name": "中華電 (台灣電信龍頭)", "category": "🇹🇼 台股", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70, "ma_trend": 0 }
+}
+
+# ==========================================
+# 8. 執行區 (UI 與 邏輯)
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 雙核心 AI 設定")
-    groq_key_input = st.text_input("Groq API Key", value="", type="password")
-    gemini_key_input = st.text_input("Gemini API Key", value="", type="password")
+    
+    # 雙 Key 輸入
+    groq_key_input = st.text_input("Groq API Key (快速分析)", value="", type="password")
+    gemini_key_input = st.text_input("Gemini API Key (深度推理)", value="", type="password")
     
     if gemini_key_input:
         st.session_state['gemini_api_key'] = gemini_key_input
-        # ★★★ 新增：API 聽診器 ★★★
-        if st.button("🔍 診斷可用模型"):
-            if not HAS_GEMINI:
-                st.error("套件未安裝！請更新 requirements.txt")
-            else:
-                try:
-                    genai.configure(api_key=gemini_key_input)
-                    models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                    st.success(f"連線成功！可用模型：\n\n" + "\n".join(models))
-                except Exception as e:
-                    st.error(f"連線失敗：{str(e)}")
+    
+    st.divider()
+    st.header("🕵️‍♀️ 隱藏寶石掃描")
+    custom_input = st.text_area("代碼 (逗號分隔)", placeholder="PLTR, AMD, SOFI, 2603.TW")
+    enable_opt = st.checkbox("🧪 執行 Grid Search 優化 (慢)", value=False)
+    run_scan = st.button("🚀 掃描自選股")
 
     st.divider()
     st.header("🎛️ 顯示設定")
+    
+    # 1. 市場篩選
     market_filter = st.radio("市場區域：", ["全部", "美股", "台股"], horizontal=True)
-    selected_category = st.selectbox("分類篩選：", ["📂 全部產業", "🤖 AI 硬體/晶片", "⚡ 電力/能源", "🛡️ 防禦/傳產", "📊 指數/外匯", "🪙 數位資產"])
-    show_signals = st.checkbox("顯示訊號", value=True)
-    tx_fee = st.number_input("成本 (%)", value=0.05) / 100
+    
+    # 2. 自動取得所有分類類別
+    all_categories = sorted(list(set(s.get('category', '未分類') for s in strategies.values())))
+    # 加入 "全部顯示" 選項
+    category_options = ["📂 全部產業"] + all_categories
+    
+    # 3. 產業分類選單
+    selected_category = st.selectbox("產業分類篩選：", category_options)
+
+    # 其他設定
+    show_signals = st.checkbox("顯示買賣訊號 (Buy/Sell)", value=True)
+    tx_fee = st.number_input("單邊交易成本 (%)", min_value=0.0, max_value=5.0, value=0.05, step=0.01) / 100
     st.session_state['tx_fee'] = tx_fee
 
+# 初始化 Groq
 groq_client = None
-if HAS_GROQ and groq_key_input:
+if HAS_GROQ and groq_key_input and len(groq_key_input) > 10:
     try: 
         from groq import Groq
         groq_client = Groq(api_key=groq_key_input)
         st.session_state['groq_client_obj'] = groq_client
-    except: pass
+    except Exception as e: pass
 
-strategies = {
-    "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
-    "QQQ": { "symbol": "QQQ", "name": "QQQ", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
-    "BTC_W": { "symbol": "BTC-USD", "name": "BTC", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
-    "NVDA": { "symbol": "NVDA", "name": "NVDA", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-    "TSM": { "symbol": "TSM", "name": "TSM", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
-    "ETN": { "symbol": "ETN", "name": "ETN", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
-    "VRT": { "symbol": "VRT", "name": "VRT", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
-    "KO": { "symbol": "KO", "name": "KO", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-    "CHT": { "symbol": "2412.TW", "name": "中華電", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70, "ma_trend": 0 }
-}
+if run_scan and custom_input:
+    st.subheader("🔍 自選股掃描結果")
+    tickers = [t.strip().upper() for t in custom_input.split(",") if t.strip()]
+    cols = st.columns(2) if len(tickers) > 1 else [st.container()]
+    
+    for i, sym in enumerate(tickers):
+        with cols[i % 2]:
+            st.text(f"⏳ 分析 {sym}...")
+            def_cfg = {"symbol": sym, "name": sym, "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70}
+            row = analyze_ticker(def_cfg, groq_client)
+            display_card(st.empty(), row, def_cfg, f"scan_{sym}", show_signals)
+            
+            if enable_opt and row['Raw_DF'] is not None:
+                with st.expander(f"🧪 {sym} 最佳參數"):
+                    opt_res = optimize_rsi_strategy(row['Raw_DF'], sym)
+                    if opt_res is not None and not opt_res.empty:
+                        best = opt_res.sort_values(by="Return", ascending=False).iloc[0]
+                        st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
 
-st.subheader("📋 核心持股監控")
-if st.button("🔄 刷新"): st.cache_data.clear(); st.rerun()
+st.divider()
+st.subheader("📋 核心持股監控 (依訊號排序)")
+if st.button("🔄 刷新全市場"): st.cache_data.clear(); st.rerun()
 
+# 1. 篩選可見策略 (修改版)
 visible_strategies = []
+
 for k, v in strategies.items():
+    # A. 市場區域篩選
     is_tw = ".TW" in v['symbol'] or "TWD" in v['symbol']
     if market_filter == "美股" and is_tw: continue
     if market_filter == "台股" and not is_tw: continue
-    if selected_category != "📂 全部產業" and v.get('category') != selected_category: continue
+    
+    # B. 產業分類篩選
+    if selected_category != "📂 全部產業":
+        if v.get('category') != selected_category:
+            continue
+            
     visible_strategies.append((k, v))
 
+# 2. 收集數據並分析 (為了排序，必須先全部跑完)
 analysis_results = []
-prog_bar = st.progress(0, text="掃描中...")
+prog_bar = st.progress(0, text="正在分析全市場與排序中...")
+
 for i, (k, cfg) in enumerate(visible_strategies):
     prog_bar.progress((i + 1) / len(visible_strategies))
     row = analyze_ticker(cfg, groq_client)
     analysis_results.append((k, cfg, row))
+    
 prog_bar.empty()
 
+# 3. 定義排序邏輯函數
 def get_sort_priority(data):
-    row = data[2]
-    if "BUY" in row['Signal']: return 1
-    if "SELL" in row['Signal']: return 2
+    key, cfg, row = data
+    
+    # 優先級 0: 美元/TWD 永遠置頂
+    if "TWD=X" in cfg['symbol'] or "USD" in cfg['name']:
+        return 0
+        
+    # 優先級 1: 買進訊號 (BUY)
+    if "BUY" in row['Signal']:
+        return 1
+        
+    # 優先級 2: 賣出訊號 (SELL)
+    if "SELL" in row['Signal']:
+        return 2
+        
+    # 優先級 3: 其他 (WAIT, HOLD, EMPTY)
     return 3
 
+# 4. 執行排序
 sorted_results = sorted(analysis_results, key=get_sort_priority)
+
+# 5. 顯示結果
 col1, col2 = st.columns(2)
 holders = [col1.container() if i % 2 == 0 else col2.container() for i in range(len(sorted_results))]
 
@@ -796,4 +935,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 完成 (v5.5 診斷版)")
+st.success("✅ 全市場掃描與排序完成 (REST API直連)")
