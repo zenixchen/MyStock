@@ -11,7 +11,7 @@ import re
 import importlib.util
 import requests
 import json
-import time  # ★ 新增：用於控制速度
+import time
 
 # ==========================================
 # ★★★ 1. 強制編碼修復 ★★★
@@ -36,7 +36,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v5.9)",
+    page_title="2026 量化戰情室 (Ultimate v6.0)",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -56,8 +56,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Ultimate v5.9)")
-st.caption("防護版：API 限速機制 (解決 429 錯誤) | 自動輪詢模型 | 完整修復")
+st.title("💎 量化交易 (Ultimate v6.0)")
+st.caption("暴力輪詢版：同時測試 v1/v1beta 路徑 | 自動限速 | 雙核心 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -188,7 +188,7 @@ def analyze_sentiment_finbert(symbol):
     except Exception as e: return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯大腦 (REST API 直連 + 自動降級)
+# 3. AI 邏輯大腦 (v6.0 暴力輪詢版)
 # ==========================================
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     if not api_key: return None, None, False
@@ -208,13 +208,23 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     4. 輸出簡短、犀利的操作建議 (繁體中文)。
     """
     
-    # 針對 429 錯誤的優化策略：
-    # 優先使用 1.5-flash (速度快/額度高)，如果不行則降級到 gemini-pro (舊版最穩)
-    model_candidates = [
-        'gemini-1.5-flash', 
-        'gemini-1.5-pro',
-        'gemini-2.0-flash-exp',
-        'gemini-pro'
+    # ★★★ 暴力測試清單 (包含 v1beta 和 v1) ★★★
+    # 這是真正的「萬能鑰匙」組合
+    model_configs = [
+        # 組合 1: 1.5-flash (Beta)
+        ("v1beta", "models/gemini-1.5-flash"),
+        # 組合 2: 1.5-flash (正式版)
+        ("v1", "models/gemini-1.5-flash"),
+        # 組合 3: 1.5-pro (Beta)
+        ("v1beta", "models/gemini-1.5-pro"),
+        # 組合 4: 1.5-pro (正式版)
+        ("v1", "models/gemini-1.5-pro"),
+        # 組合 5: 舊版 Pro (Beta)
+        ("v1beta", "models/gemini-pro"),
+        # 組合 6: 舊版 Pro (正式版)
+        ("v1", "models/gemini-pro"),
+        # 組合 7: 1.0-pro (別名)
+        ("v1beta", "models/gemini-1.0-pro")
     ]
     
     headers = {"Content-Type": "application/json"}
@@ -222,11 +232,12 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     
     last_error = ""
     
-    for model_name in model_candidates:
-        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+    for version, model_name in model_configs:
+        # 動態組裝 URL
+        api_url = f"https://generativelanguage.googleapis.com/{version}/{model_name}:generateContent?key={api_key}"
         
         try:
-            # 這裡不加 sleep，因為外層迴圈已經加了，避免雙重延遲
+            # 發送請求 (timeout=10秒)
             response = requests.post(api_url, headers=headers, json=data, timeout=10)
             
             if response.status_code == 200:
@@ -234,13 +245,13 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
                 try:
                     analysis_text = result['candidates'][0]['content']['parts'][0]['text']
                     icon = "⚡" if "flash" in model_name else "🧠"
-                    return f"{analysis_text}\n\n(使用模型: {model_name})", icon, True
+                    # 成功後顯示它是用哪條路徑打通的
+                    return f"{analysis_text}\n\n(連線成功: {version}/{model_name})", icon, True
                 except:
-                    continue # 格式解析失敗，換下一個
+                    last_error = "JSON 解析失敗"
+                    continue
             elif response.status_code == 429:
-                # 如果遇到限速，稍等一下再試下一個模型
-                time.sleep(1)
-                last_error = "429 限速"
+                time.sleep(1) # 被限速就休息一下
                 continue
             else:
                 last_error = f"{response.status_code}: {response.text}"
@@ -250,7 +261,7 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
             last_error = str(e)
             continue
             
-    return f"Gemini 請求失敗。原因: {last_error}", "💀", False
+    return f"Gemini 全路徑失敗。最後錯誤: {last_error}", "💀", False
 
 def analyze_logic_groq(client, symbol, news_titles, tech_signal):
     if not client: return None, None, False
@@ -833,4 +844,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (v5.9)")
+st.success("✅ 全市場掃描與排序完成 (v6.0 暴力輪詢版)")
