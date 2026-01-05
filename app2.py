@@ -9,7 +9,8 @@ from datetime import datetime
 import sys
 import re
 import importlib.util
-import json  # ★ 新增：用於解析 Groq 的 JSON 回傳
+import json
+import time
 
 # ==========================================
 # ★★★ 1. 強制編碼修復 ★★★
@@ -35,8 +36,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v6.4)",
-    page_icon="🛡️",
+    page_title="2026 量化戰情室 (Ultimate v6.5)",
+    page_icon="💰",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -55,8 +56,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ 量化交易 (Ultimate v6.4)")
-st.caption("進化版：內建 AI 風險控管官 (Semantic Filtering) | 訊號自動審查")
+st.title("💰 量化交易 (Ultimate v6.5)")
+st.caption("資金控管版：ATR 部位規模計算機 | AI 風險濾網 | 訊號自動審查")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -191,7 +192,7 @@ def analyze_sentiment_finbert(symbol):
 # 3. LLM 邏輯分析 (含 Groq 風險濾網)
 # ==========================================
 
-# ★★★ 新增：Groq 語意濾網核心函數 ★★★
+# ★★★ Groq 語意濾網核心函數 ★★★
 def check_risk_with_groq(client, symbol, rsi_val, tech_signal):
     """
     Groq 版語意濾網：利用 Llama-3 的極速推理能力來審查風險。
@@ -301,7 +302,7 @@ def analyze_earnings_audio(client, uploaded_file):
         return f"語音分析失敗: {str(e)}", ""
 
 # ==========================================
-# 4. 技術指標
+# 4. 技術指標與倉位計算
 # ==========================================
 def optimize_rsi_strategy(df, symbol):
     if df is None or df.empty: return None
@@ -393,6 +394,36 @@ def analyze_chips_volume(df, inst_percent, short_percent):
     except Exception as e:
         return f"籌碼錯誤: {str(e)}"
 
+# ★★★ 新增：部位規模計算機 ★★★
+def calculate_position_size(price, df, capital, risk_pct):
+    try:
+        if df is None or len(df) < 15: return "N/A"
+        
+        # 1. 計算 ATR (波動率)
+        atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
+        
+        # 2. 設定停損距離 (通常是 2倍 ATR)
+        stop_loss_dist = 2 * atr
+        
+        # 3. 計算每一筆交易願意賠多少錢 (Risk Amount)
+        risk_amount = capital * (risk_pct / 100)
+        
+        # 4. 計算應買股數 = 願意賠的錢 / 每股最大潛在虧損
+        shares = risk_amount / stop_loss_dist
+        
+        # 5. 計算總成本
+        total_cost = shares * price
+        
+        # 如果總成本超過本金，就只能買本金允許的最大量 (不開槓桿)
+        if total_cost > capital:
+            shares = capital / price
+            return f"{int(shares)}股 (滿倉)"
+            
+        return f"{int(shares)}股 (約${total_cost:.0f})"
+        
+    except:
+        return "計算失敗"
+
 # ==========================================
 # 5. 主分析邏輯
 # ==========================================
@@ -405,7 +436,7 @@ def analyze_ticker(config, groq_client=None):
             "Symbol": symbol, "Name": config['name'], "Signal": "ERR", "Action": "資料下載失敗",
             "Price": 0, "Prev_Close": 0, "Raw_DF": None, "Type": "ERR", "Strat_Desc": "無數據",
             "Is_LLM": False, "LLM_Analysis": "無法分析", "Chip": "N/A", "Pred": "N/A",
-            "Buy_At": "---", "Sell_At": "---", "Logs": []
+            "Buy_At": "---", "Sell_At": "---", "Logs": [], "Position": "---"
         }
 
     lp = get_real_live_price(symbol)
@@ -519,26 +550,21 @@ def analyze_ticker(config, groq_client=None):
     except: pass
 
     # ==========================================
-    # ★★★ 新增：Groq 語意濾網攔截機制 ★★★
+    # ★★★ Groq 語意濾網攔截機制 ★★★
     # ==========================================
     ai_decision = "PASS"
     ai_reason = ""
     
     # 只有當 Groq Client 存在，且訊號是 BUY 時才檢查
     if groq_client and "BUY" in sig:
-        # 計算 RSI 數值 (作為給 AI 的參考)
         current_rsi = ta.rsi(c, length=14).iloc[-1] if len(c) > 14 else 50
-        
-        # 呼叫語意濾網
         ai_decision, ai_reason = check_risk_with_groq(groq_client, symbol, current_rsi, sig)
         
-        # 如果 AI 說 BLOCK，就強制把訊號改成 DANGER
         if ai_decision == "BLOCK":
             sig = "⛔ DANGER"
             act = f"AI 攔截: {ai_reason}"
-            sig_type = "WAIT" # 改變顏色為灰色或黃色
+            sig_type = "WAIT"
         else:
-            # 如果通過，可以在 action 加上標記
             act += f" (✅ AI 風控通過)"
 
     fund = get_fundamentals(symbol)
@@ -562,12 +588,17 @@ def analyze_ticker(config, groq_client=None):
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     chip_msg = analyze_chips_volume(df, fund['inst'] if fund else 0, fund['short'] if fund else 0)
 
+    # ★ 計算建議部位
+    user_capital = st.session_state.get('user_capital', 10000)
+    user_risk = st.session_state.get('user_risk', 1.0)
+    pos_msg = calculate_position_size(lp, df, user_capital, user_risk)
+
     return {
         "Symbol": symbol, "Name": config['name'], "Price": lp, "Prev_Close": prev_c,
         "Signal": sig, "Action": act, "Type": sig_type, "Buy_At": buy_at, "Sell_At": sell_at,
         "Fund": fund_msg, "LLM_Analysis": llm_res, "Is_LLM": is_llm, 
         "Raw_DF": df, "Pred": pred_msg, "Chip": chip_msg, "Strat_Desc": strategy_desc,
-        "Logs": logs
+        "Logs": logs, "Position": pos_msg # 傳回部位建議
     }
 
 # ==========================================
@@ -624,7 +655,6 @@ def plot_chart(df, config, signals=None, show_signals=True):
         fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF (主力籌碼)', marker_color=colors), row=3, col=1)
         fig.add_hline(y=0, line_color='gray', row=3, col=1)
 
-    # ★ 訊號顯示邏輯：只有當 show_signals 為 True 時才畫三角形
     if show_signals and signals is not None:
         buy_pts = df.loc[signals == 1]; sell_pts = df.loc[signals == -1]
         if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
@@ -694,6 +724,9 @@ def display_card(placeholder, row, config, unique_id, show_signals):
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
+        # ★★★ 新增：資金管理建議 ★★★
+        st.warning(f"💰 **建議倉位 (Risk 1%)**: {row['Position']}")
+        
         with st.expander("🎙️ AI 法說會工具箱 (手動版)", expanded=False):
             mode = st.radio("輸入模式", ["貼上逐字稿", "上傳錄音檔(mp3)"], horizontal=True, key=f"mode_{unique_id}")
             groq_client = st.session_state.get('groq_client_obj', None)
@@ -738,57 +771,22 @@ def display_card(placeholder, row, config, unique_id, show_signals):
         st.text(f"籌碼: {row['Chip']} | 波動: {row['Pred']}")
 
 # ==========================================
-# 7. 策略與個股清單 (含分類與業務描述)
-# ==========================================
-strategies = {
-    # === 1. 指數與外匯 ===
-    "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
-    "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
-    "QLD": { "symbol": "QLD", "name": "QLD (那斯達克 2倍做多)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
-    "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (那斯達克 3倍做多)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
-    "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 狙擊)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
-    "SOXL_F": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 快攻)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 10, "exit_k": 75 },
-    "EDZ": { "symbol": "EDZ", "name": "EDZ (新興市場 3倍做空 - 避險)", "category": "📊 指數/外匯", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
-
-    # === 2. 數位資產 ===
-    "BTC_W": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 波段)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
-    "BTC_F": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 閃電)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
-
-    # === 3. AI 核心硬體/晶片 ===
-    "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
-    "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
-    "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200 },
-    "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100 },
-    "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100 },
-    "GLW": { "symbol": "GLW", "name": "GLW (康寧 - 玻璃基板/光通訊)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-    "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖 - CoWoS 檢測設備)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
-
-    # === 4. 大型科技/軟體 ===
-    "META": { "symbol": "META", "name": "META (臉書 - 廣告與元宇宙)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (谷歌 - 搜尋與 Gemini)", "category": "💻 軟體/巨頭", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
-
-    # === 5. 電力/能源/散熱 ===
-    "ETN": { "symbol": "ETN", "name": "ETN (伊頓 - 電網與電力管理)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
-    "VRT": { "symbol": "VRT", "name": "VRT (維諦 - AI 伺服器液冷)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
-    "OKLO": { "symbol": "OKLO", "name": "OKLO (核能 - 微型反應堆)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 50, "exit_rsi": 95, "ma_trend": 0 },
-    "SMR": { "symbol": "SMR", "name": "SMR (NuScale - 模組化核能)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 45, "exit_rsi": 90, "ma_trend": 0 },
-
-    # === 6. 防禦/消費/傳統 ===
-    "KO": { "symbol": "KO", "name": "KO (可口可樂 - 消費必需品)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-    "JNJ": { "symbol": "JNJ", "name": "JNJ (嬌生 - 醫療與製藥)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200 },
-    "PG": { "symbol": "PG", "name": "PG (寶僑 - 日用品龍頭)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0 },
-    "BA": { "symbol": "BA", "name": "BA (波音 - 航太製造)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 15, "exit_rsi": 60, "ma_trend": 0 },
-    
-    # === 7. 台股 ===
-    "CHT": { "symbol": "2412.TW", "name": "中華電 (台灣電信龍頭)", "category": "🇹🇼 台股", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70, "ma_trend": 0 }
-}
-
-# ==========================================
 # 8. 執行區 (UI 與 邏輯)
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 設定")
     user_key_input = st.text_input("Groq API Key (選填)", value="", type="password")
+    
+    st.divider()
+    
+    # ★★★ 新增：資金管理輸入框 ★★★
+    st.header("💰 資金管理設定")
+    capital_input = st.number_input("總操作資金 (USD)", min_value=1000, value=10000, step=1000)
+    risk_input = st.number_input("單筆最大風險 (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
+    
+    # 存入 session state 供後面函數呼叫
+    st.session_state['user_capital'] = capital_input
+    st.session_state['user_risk'] = risk_input
     
     st.divider()
     st.header("🕵️‍♀️ 隱藏寶石掃描")
@@ -903,4 +901,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (v6.4 Groq 風控版)")
+st.success("✅ 全市場掃描與排序完成")
