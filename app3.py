@@ -35,7 +35,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v5.7)",
+    page_title="2026 量化戰情室 (Ultimate v5.8)",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +55,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Ultimate v5.7)")
-st.caption("防彈版：指標長度自動檢測 (修復 AttributeError) | REST API 直連 | Pandas 修復")
+st.title("💎 量化交易 (Ultimate v5.8)")
+st.caption("終極相容版：自動輪詢所有 Gemini 模型 (含舊版保底) | Pandas/AttributeError 全修復")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -66,7 +66,7 @@ if not HAS_TRANSFORMERS:
     st.warning("⚠️ 系統提示：FinBERT 模組未安裝，將僅使用技術指標或 AI 模型。")
 
 # ==========================================
-# 1. 核心函數 (資料獲取)
+# 1. 核心函數 (資料獲取 - 穩健版)
 # ==========================================
 def get_real_live_price(symbol):
     try:
@@ -187,7 +187,7 @@ def analyze_sentiment_finbert(symbol):
     except Exception as e: return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯大腦 (REST API 直連版)
+# 3. AI 邏輯大腦 (REST API 輪詢版)
 # ==========================================
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     if not api_key: return None, None, False
@@ -207,20 +207,46 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     4. 輸出簡短、犀利的操作建議 (繁體中文)。
     """
     
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # ★★★ 自動輪詢所有可能的模型名稱 ★★★
+    # 既然 1.5-flash 不行，我們就試 1.5-pro，再不行就試 gemini-pro (舊版)
+    model_candidates = [
+        'gemini-1.5-flash',       # 首選: 快
+        'gemini-1.5-pro',         # 次選: 強
+        'gemini-pro',             # ★ 保底: 舊版 1.0 (相容性最高)
+        'gemini-1.0-pro',         # 舊版別名
+        'gemini-2.0-flash-exp'    # 實驗版
+    ]
+    
     headers = {"Content-Type": "application/json"}
     data = {"contents": [{"parts": [{"text": prompt}]}]}
     
-    try:
-        response = requests.post(api_url, headers=headers, json=data)
-        if response.status_code == 200:
-            result = response.json()
-            try:
-                analysis_text = result['candidates'][0]['content']['parts'][0]['text']
-                return f"{analysis_text}\n\n(API直連: 1.5-flash)", "⚡", True
-            except: return f"解析失敗: {str(result)}", "💀", False
-        else: return f"API 請求失敗 ({response.status_code}): {response.text}", "💀", False
-    except Exception as e: return f"連線錯誤: {str(e)}", "💀", False
+    last_error = ""
+    
+    for model_name in model_candidates:
+        api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        
+        try:
+            response = requests.post(api_url, headers=headers, json=data, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                try:
+                    analysis_text = result['candidates'][0]['content']['parts'][0]['text']
+                    icon = "⚡" if "flash" in model_name else "🧠" if "pro" in model_name else "🤖"
+                    return f"{analysis_text}\n\n(使用模型: {model_name})", icon, True
+                except:
+                    # 如果格式不對，嘗試下一個
+                    continue
+            else:
+                # 記錄錯誤並嘗試下一個
+                last_error = f"{model_name}: {response.status_code}"
+                continue
+                
+        except Exception as e:
+            last_error = str(e)
+            continue
+            
+    return f"Gemini 全失敗。最後錯誤: {last_error}", "💀", False
 
 def analyze_logic_groq(client, symbol, news_titles, tech_signal):
     if not client: return None, None, False
@@ -246,16 +272,7 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal):
 def analyze_earnings_text(client, symbol, text):
     if not client: return "請先設定 Groq Key"
     short_text = text[:7000]
-    prompt = f"""
-    你是華爾街分析師。以下是 {symbol} 的法說會或財經文章內容。
-    【內容】：{short_text}...
-    請用繁體中文 Markdown 輸出專業報告：
-    1. **情緒評分** (0-10，並說明理由)
-    2. **關鍵亮點 (Bullish)**
-    3. **風險警示 (Bearish)**
-    4. **財測指引 (Guidance)**
-    5. **投資結論**
-    """
+    prompt = f"分析 {symbol} 法說會重點：{short_text}..."
     try:
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -393,7 +410,6 @@ def analyze_ticker(config, groq_client=None):
     
     sig = "WAIT"; act = "觀望"; buy_at = "---"; sell_at = "---"; sig_type = "WAIT"; strategy_desc = ""
     
-    # ★★★ 技術指標計算 (防呆區) ★★★
     try:
         if config['mode'] == "SUPERTREND":
             st_val = ta.supertrend(h, l, c, length=config['period'], multiplier=config['multiplier'])
@@ -408,12 +424,10 @@ def analyze_ticker(config, groq_client=None):
 
         elif config['mode'] == "FUSION":
             rsi = ta.rsi(c, length=config['rsi_len']).iloc[-1]
-            # ★ 修正: 確保數據足夠計算 EMA
             if len(c) > config['ma_trend']:
                 ma_res = ta.ema(c, length=config['ma_trend'])
                 ma = ma_res.iloc[-1] if ma_res is not None else lp
-            else:
-                ma = lp # 數據不足降級為現價
+            else: ma = lp 
                 
             buy_at = f"${find_price_for_rsi(df, config['entry_rsi'], config['rsi_len'])}"
             sell_at = f"${find_price_for_rsi(df, config['exit_rsi'], config['rsi_len'])}"
@@ -428,18 +442,15 @@ def analyze_ticker(config, groq_client=None):
             is_trend_ok = True
             trend_msg = ""
             if use_trend:
-                # ★ 修正: 確保 EMA 安全計算
                 if len(c) > config['ma_trend']:
                     ma_res = ta.ema(c, length=config['ma_trend'])
                     ma_val = ma_res.iloc[-1] if ma_res is not None else 0
-                else:
-                    ma_val = 0
+                else: ma_val = 0
                     
                 if ma_val > 0 and lp < ma_val: 
                     is_trend_ok = False
                     trend_msg = f"(逆勢: 破MA{config['ma_trend']})"
-                else:
-                    trend_msg = f"(順勢: 上MA{config['ma_trend']})"
+                else: trend_msg = f"(順勢: 上MA{config['ma_trend']})"
 
             buy_at = f"${find_price_for_rsi(df, config['entry_rsi'], config.get('rsi_len', 14))}"
             
@@ -471,7 +482,6 @@ def analyze_ticker(config, groq_client=None):
         elif config['mode'] == "MA_CROSS":
             f_ma = ta.sma(c, config['fast_ma'])
             s_ma = ta.sma(c, config['slow_ma'])
-            # 確保 MA 計算成功
             if f_ma is not None and s_ma is not None:
                 curr_f, prev_f = f_ma.iloc[-1], f_ma.iloc[-2]
                 curr_s, prev_s = s_ma.iloc[-1], s_ma.iloc[-2]
@@ -480,8 +490,7 @@ def analyze_ticker(config, groq_client=None):
                 elif prev_f >= prev_s and curr_f < curr_s: sig = "📉 SELL"; act = "死亡交叉"; sig_type="SELL"
                 elif curr_f > curr_s: sig = "✊ HOLD"; act = "多頭排列"; sig_type="HOLD"
                 else: sig = "☁️ EMPTY"; act = "空頭排列"; sig_type="EMPTY"
-            else:
-                act = "數據不足計算 MA"
+            else: act = "數據不足計算 MA"
             
         elif config['mode'] == "BOLL_RSI":
             rsi = ta.rsi(c, length=config.get('rsi_len', 2)).iloc[-1]
@@ -525,7 +534,7 @@ def analyze_ticker(config, groq_client=None):
         llm_res, icon, success = analyze_logic_groq(groq_client, symbol, news, tech_ctx)
         if success: is_llm = True
             
-    if not is_llm and "Error" not in llm_res and "系統錯誤" not in llm_res and "API" not in llm_res:
+    if not is_llm and "Error" not in llm_res and "系統錯誤" not in llm_res and "API" not in llm_res and "全失敗" not in llm_res:
         score, _, logs = analyze_sentiment_finbert(symbol)
         llm_res = f"情緒分: {score:.2f} (未設定 AI Key 或 呼叫失敗)"
 
@@ -817,4 +826,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (v5.7 防彈版)")
+st.success("✅ 全市場掃描與排序完成 (終極相容版)")
