@@ -8,4 +8,5 @@ transformers
 torch
 scipy
 groq
-google-generativeai
+# ★★★ 關鍵修改：強制指定 0.7.0 以上版本，舊版不支援 Gemini 1.5 ★★★
+google-generativeai>=0.7.0
