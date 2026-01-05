@@ -31,11 +31,13 @@ try:
 except ImportError:
     HAS_GROQ = False
 
-# 匯入 Google Gemini
+# 匯入 Google Gemini (修改版)
 try:
     import google.generativeai as genai
     HAS_GEMINI = True
 except ImportError:
+    # ★ 關鍵修正：如果失敗，先定義 genai 為 None，避免後面報錯 NameError
+    genai = None  
     HAS_GEMINI = False
 
 # ==========================================
@@ -198,12 +200,20 @@ def analyze_sentiment_finbert(symbol):
 # 3. AI 邏輯大腦 (Gemini 3 Pro + Groq)
 # ==========================================
 
-# --- A. Gemini 深度分析 ---
+# --- A. Gemini 深度分析 (修改版) ---
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
+    # ★ 關鍵修正：先檢查 genai 是否存在
+    if not HAS_GEMINI or genai is None:
+        return "系統錯誤：未安裝 google-generativeai 套件，請檢查 requirements.txt", "⚠️", False
+        
     if not api_key: return None, None, False
     if not news_titles: return "無新聞可分析", "⚪", False
     
-    genai.configure(api_key=api_key)
+    # 這裡才開始設定 Key
+    try:
+        genai.configure(api_key=api_key)
+    except Exception as e:
+        return f"API Key 設定失敗: {str(e)}", "⚠️", False
     
     news_text = "\n".join([f"- {t}" for t in news_titles])
     
