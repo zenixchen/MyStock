@@ -20,31 +20,22 @@ except Exception:
     pass
 
 # ==========================================
-# ★★★ 2. 套件安全匯入 (Groq + Gemini) ★★★
+# ★★★ 2. 套件安全匯入 ★★★
 # ==========================================
 HAS_TRANSFORMERS = importlib.util.find_spec("transformers") is not None
-
-# 匯入 Groq
 try:
     from groq import Groq
     HAS_GROQ = True
 except ImportError:
     HAS_GROQ = False
-
-# 匯入 Google Gemini (防呆修正版)
-try:
-    import google.generativeai as genai
-    HAS_GEMINI = True
-except ImportError:
-    genai = None
-    HAS_GEMINI = False
+    GROQ_API_KEY_DEFAULT = ""
 
 # ==========================================
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v5.4)",
-    page_icon="🔧",
+    page_title="2026 量化戰情室 (Ultimate v5.2)",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -63,18 +54,18 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Ultimate v5.4)")
-st.caption("修復版：解決 Pandas ValueError | 雙核心 AI | 產業分類 | 訊號排序")
+st.title("💎 量化交易 (Ultimate v5.2)")
+st.caption("集大成版：產業分類監控 | 核能雙妖神參數 | AI硬體 | 防禦堡壘 | 訊號排序")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
     st.rerun()
 
 if not HAS_TRANSFORMERS:
-    st.warning("⚠️ 系統提示：FinBERT 模組未安裝，將僅使用技術指標或 AI 模型。")
+    st.warning("⚠️ 系統提示：FinBERT 模組未安裝，將僅使用技術指標或 Groq AI。")
 
 # ==========================================
-# 1. 核心函數 (資料獲取 - 增強穩健性)
+# 1. 核心函數
 # ==========================================
 def get_real_live_price(symbol):
     try:
@@ -86,18 +77,10 @@ def get_real_live_price(symbol):
             df_rt = yf.download(symbol, period="5d", interval="1m", prepost=True, progress=False)
             
         if df_rt.empty: return None
-        
-        # ★★★ 修正點 1: 處理 MultiIndex 並移除重複欄位 ★★★
         if isinstance(df_rt.columns, pd.MultiIndex): 
             df_rt.columns = df_rt.columns.get_level_values(0)
-        
-        # 強制移除重複欄位 (例如有兩個 Close)
-        df_rt = df_rt.loc[:, ~df_rt.columns.duplicated()]
             
-        # 確保取出來的是單一數值
-        val = df_rt['Close'].iloc[-1]
-        if isinstance(val, pd.Series): val = val.iloc[0]
-        return float(val)
+        return float(df_rt['Close'].iloc[-1])
     except: 
         try:
             return float(yf.Ticker(symbol).fast_info.get('last_price'))
@@ -108,14 +91,7 @@ def get_safe_data(ticker):
     try:
         df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         if df is None or df.empty: return None
-        
-        # ★★★ 修正點 2: 處理 MultiIndex 並移除重複欄位 ★★★
-        if isinstance(df.columns, pd.MultiIndex): 
-            df.columns = df.columns.get_level_values(0)
-            
-        # 強制移除重複欄位 (關鍵修復)
-        df = df.loc[:, ~df.columns.duplicated()]
-        
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df.index = pd.to_datetime(df.index)
         return df
     except: return None
@@ -211,68 +187,9 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯大腦 (Gemini 深度分析 - 全自動掃描容錯版)
+# 3. LLM 邏輯分析
 # ==========================================
-
-# --- A. Gemini 深度分析 ---
-def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
-    # 1. 檢查套件是否安裝
-    if not HAS_GEMINI or genai is None:
-        return "系統錯誤：未安裝 google-generativeai，請檢查 requirements.txt", "⚠️", False
-        
-    if not api_key: return None, None, False
-    if not news_titles: return "無新聞可分析", "⚪", False
-    
-    # 2. 設定 API Key
-    try:
-        genai.configure(api_key=api_key)
-    except Exception as e:
-        return f"Key 設定失敗: {str(e)}", "⚠️", False
-    
-    news_text = "\n".join([f"- {t}" for t in news_titles])
-    
-    # 3. 定義 Prompt
-    prompt = f"""
-    分析目標：{symbol}
-    目前數據：{price_data} | 訊號：{tech_signal}
-    新聞摘要：
-    {news_text}
-    
-    請使用「深度推理」能力，扮演頂級避險基金經理人：
-    1. 挖掘數據背後的邏輯漏洞或機會 (不要只看表面利多)。
-    2. 判斷這是否為「主力洗盤」、「誘多」或「真突破」？
-    3. 給出一個 -10 (悲觀) ~ +10 (樂觀) 的信心分數。
-    4. 輸出簡短、犀利的操作建議 (繁體中文)。
-    """
-    
-    # 4. ★★★ 自動嘗試所有可能的模型名稱 ★★★
-    model_candidates = [
-        'gemini-2.0-flash-exp',   # 最新測試版
-        'gemini-1.5-pro',         # 標準 Pro 版
-        'gemini-1.5-flash',       # ★ 最穩定
-        'gemini-1.5-pro-latest',
-        'gemini-pro'              # 舊版保底
-    ]
-    
-    last_error = ""
-    
-    for model_name in model_candidates:
-        try:
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content(prompt)
-            
-            icon = "⚡" if "flash" in model_name else "💎"
-            return f"{response.text}\n\n(使用模型: {model_name})", icon, True
-            
-        except Exception as e:
-            last_error = str(e)
-            continue
-            
-    return f"Gemini Error: 所有模型皆失敗。最後錯誤: {last_error}", "💀", False
-
-
-# --- B. Groq 快速分析 ---
-def analyze_logic_groq(client, symbol, news_titles, tech_signal):
+def analyze_logic_llm(client, symbol, news_titles, tech_signal):
     if not client: return None, None, False
     if not news_titles: return "無新聞可分析", "⚪", False
         
@@ -283,9 +200,9 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal):
         【最新新聞與摘要】：{news_text}
         【技術面訊號】：{tech_signal}
         請用繁體中文回答：
-        1. 一句話總結多空邏輯。
+        1. 一句話總結多空邏輯 (從摘要中找出原因)。
         2. 情緒評分 (-10悲觀 ~ +10樂觀)。
-        3. 操作建議。
+        3. 操作建議 (做多/觀望/做空)。
         """
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -293,9 +210,8 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal):
         )
         return chat_completion.choices[0].message.content, "🤖", True
     except Exception as e:
-        return f"Groq Error: {str(e)}", "⚠️", False
+        return f"LLM Error: {str(e)}", "⚠️", False
 
-# --- C. 法說會與財報工具 ---
 def analyze_earnings_text(client, symbol, text):
     if not client: return "請先設定 Groq Key"
     short_text = text[:7000] # 截取重點
@@ -367,9 +283,6 @@ def optimize_rsi_strategy(df, symbol):
 def find_price_for_rsi(df, target_rsi, length=2):
     if df is None or df.empty: return 0
     last_close = df['Close'].iloc[-1]
-    # Ensure scalar
-    if isinstance(last_close, pd.Series): last_close = float(last_close.iloc[0])
-    
     low, high = last_close * 0.4, last_close * 1.6
     temp_df = df.copy()
     for _ in range(10): 
@@ -385,14 +298,7 @@ def predict_volatility(df):
     try:
         atr = ta.atr(df['High'], df['Low'], df['Close'], length=14)
         if atr is None: return None, None
-        
-        last_close = df['Close'].iloc[-1]
-        if isinstance(last_close, pd.Series): last_close = float(last_close.iloc[0])
-        
-        atr_val = atr.iloc[-1]
-        if isinstance(atr_val, pd.Series): atr_val = float(atr_val.iloc[0])
-        
-        return last_close + atr_val, last_close - atr_val
+        return df['Close'].iloc[-1] + atr.iloc[-1], df['Close'].iloc[-1] - atr.iloc[-1]
     except: return None, None
 
 def analyze_chips_volume(df, inst_percent, short_percent):
@@ -404,11 +310,9 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         
         cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
         curr_cmf = cmf.iloc[-1]
-        if isinstance(curr_cmf, pd.Series): curr_cmf = float(curr_cmf.iloc[0])
         
         mfi = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
         curr_mfi = mfi.iloc[-1]
-        if isinstance(curr_mfi, pd.Series): curr_mfi = float(curr_mfi.iloc[0])
         
         status = "⚪ 中性"
         details = []
@@ -438,7 +342,7 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         return f"籌碼錯誤: {str(e)}"
 
 # ==========================================
-# 5. 主分析邏輯 (強制除錯版)
+# 5. 主分析邏輯
 # ==========================================
 def analyze_ticker(config, groq_client=None):
     symbol = config['symbol']
@@ -453,38 +357,16 @@ def analyze_ticker(config, groq_client=None):
         }
 
     lp = get_real_live_price(symbol)
-    if lp is None: 
-        lp = df['Close'].iloc[-1]
-    
-    # ★★★ 修正點 3: 確保所有數值都是純量 (Scalar) ★★★
-    if isinstance(lp, pd.Series): lp = float(lp.iloc[0])
-    lp = float(lp)
+    if lp is None: lp = df['Close'].iloc[-1]
     
     prev_c = df['Close'].iloc[-1]
-    if isinstance(prev_c, pd.Series): prev_c = float(prev_c.iloc[0])
     
-    # 安全取得 High/Low 的最後一筆，避免 Series ambiguous 錯誤
-    last_high = df['High'].iloc[-1]
-    if isinstance(last_high, pd.Series): last_high = float(last_high.iloc[0])
-    
-    last_low = df['Low'].iloc[-1]
-    if isinstance(last_low, pd.Series): last_low = float(last_low.iloc[0])
-    
-    # 建立新的一行 (確保 max/min 裡面都是數字)
-    new_row = pd.DataFrame({
-        'Close': [lp], 
-        'High': [max(lp, last_high)], 
-        'Low': [min(lp, last_low)], 
-        'Open': [lp], 
-        'Volume': [0]
-    }, index=[pd.Timestamp.now()])
-    
+    new_row = pd.DataFrame({'Close': [lp], 'High': [max(lp, df['High'].iloc[-1])], 'Low': [min(lp, df['Low'].iloc[-1])], 'Open': [lp], 'Volume': [0]}, index=[pd.Timestamp.now()])
     calc_df = pd.concat([df.copy(), new_row])
     c, h, l = calc_df['Close'], calc_df['High'], calc_df['Low']
     
     sig = "WAIT"; act = "觀望"; buy_at = "---"; sell_at = "---"; sig_type = "WAIT"; strategy_desc = ""
     
-    # --- 技術面策略 ---
     if config['mode'] == "SUPERTREND":
         st_val = ta.supertrend(h, l, c, length=config['period'], multiplier=config['multiplier'])
         strategy_desc = f"SuperTrend (P={config['period']}, M={config['multiplier']})"
@@ -576,12 +458,17 @@ def analyze_ticker(config, groq_client=None):
     try:
         cmf_seq = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
         curr_cmf = cmf_seq.iloc[-1] if cmf_seq is not None else 0
+        
         vwap = ta.vwma(df['Close'], df['Volume'], length=20).iloc[-1]
         
-        if lp > vwap and curr_cmf > 0.05: act += " | 🚀量價齊揚"
-        elif lp < vwap and curr_cmf > 0.05: act += " | 💎主力低接"
-        elif lp > vwap and curr_cmf < -0.05: act += " | ⚠️高檔虛漲"
-        elif lp < vwap and curr_cmf < -0.05: act += " | 🔻空頭確認"
+        if lp > vwap and curr_cmf > 0.05:
+            act += " | 🚀量價齊揚"
+        elif lp < vwap and curr_cmf > 0.05:
+            act += " | 💎主力低接"
+        elif lp > vwap and curr_cmf < -0.05:
+            act += " | ⚠️高檔虛漲"
+        elif lp < vwap and curr_cmf < -0.05:
+            act += " | 🔻空頭確認"
     except: pass
 
     fund = get_fundamentals(symbol)
@@ -591,26 +478,15 @@ def analyze_ticker(config, groq_client=None):
     logs = [] 
     news = get_news_content(symbol)
     
-    # --- AI 分析邏輯 ---
-    gemini_key = st.session_state.get('gemini_api_key', None)
-    
-    # 1. 優先嘗試 Gemini
-    if gemini_key:
+    if groq_client:
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
-        llm_res, icon, success = analyze_logic_gemini(gemini_key, symbol, news, tech_ctx, f"${lp:.2f}")
+        llm_res, icon, success = analyze_logic_llm(groq_client, symbol, news, tech_ctx)
         if success: is_llm = True
-        
-    # 2. 如果 Gemini 沒過，嘗試 Groq
-    if not is_llm and groq_client:
-        tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
-        llm_res, icon, success = analyze_logic_groq(groq_client, symbol, news, tech_ctx)
-        if success: is_llm = True
+        else: is_llm = False 
             
-    # 3. 錯誤揭露模式：只有在沒設定Key時才切換 FinBERT
-    # 如果有 Error，就顯示 Error
-    if not is_llm and "Error" not in llm_res and "系統錯誤" not in llm_res:
+    if not is_llm:
         score, _, logs = analyze_sentiment_finbert(symbol)
-        llm_res = f"情緒分: {score:.2f} (未設定 AI Key 或 呼叫失敗)"
+        llm_res = f"情緒分: {score:.2f} (無 Groq Key 或連線失敗)"
 
     p_high, p_low = predict_volatility(df)
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
@@ -678,6 +554,7 @@ def plot_chart(df, config, signals=None, show_signals=True):
         fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF (主力籌碼)', marker_color=colors), row=3, col=1)
         fig.add_hline(y=0, line_color='gray', row=3, col=1)
 
+    # ★ 訊號顯示邏輯：只有當 show_signals 為 True 時才畫三角形
     if show_signals and signals is not None:
         buy_pts = df.loc[signals == 1]; sell_pts = df.loc[signals == -1]
         if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
@@ -747,7 +624,7 @@ def display_card(placeholder, row, config, unique_id, show_signals):
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
-        with st.expander("🎙️ AI 法說會工具箱 (Groq 強力驅動)", expanded=False):
+        with st.expander("🎙️ AI 法說會工具箱 (手動版)", expanded=False):
             mode = st.radio("輸入模式", ["貼上逐字稿", "上傳錄音檔(mp3)"], horizontal=True, key=f"mode_{unique_id}")
             groq_client = st.session_state.get('groq_client_obj', None)
             
@@ -755,7 +632,7 @@ def display_card(placeholder, row, config, unique_id, show_signals):
                 txt_input = st.text_area("請貼上法說會內容...", height=150, key=f"txt_{unique_id}")
                 if st.button("🧠 AI 分析文字", key=f"btn_txt_{unique_id}"):
                     if groq_client and txt_input:
-                        with st.spinner("Groq 正在研讀..."):
+                        with st.spinner("AI 正在研讀..."):
                             analysis = analyze_earnings_text(groq_client, row['Symbol'], txt_input)
                             st.markdown(analysis)
                     else: st.warning("請輸入內容並設定 Groq Key")
@@ -763,14 +640,14 @@ def display_card(placeholder, row, config, unique_id, show_signals):
                 aud_file = st.file_uploader("上傳錄音檔 (25MB內)", type=['mp3', 'wav', 'm4a'], key=f"aud_{unique_id}")
                 if st.button("👂 AI 聽音辨位", key=f"btn_aud_{unique_id}"):
                     if groq_client and aud_file:
-                        with st.spinner("Groq 正在聆聽..."):
+                        with st.spinner("AI 正在聆聽..."):
                             analysis, trans = analyze_earnings_audio(groq_client, aud_file)
                             st.markdown(analysis)
                             with st.expander("原始逐字稿"): st.text(trans[:1000]+"...")
                     else: st.warning("請上傳檔案並設定 Groq Key")
 
         if row['Is_LLM']:
-            with st.expander("🧠 AI 觀點 (Gemini/Groq)", expanded=True):
+            with st.expander("🧠 AI 觀點 (LLM)", expanded=True):
                 st.markdown(row['LLM_Analysis'])
         else:
             st.caption(f"FinBERT: {row['LLM_Analysis']}")
@@ -840,14 +717,8 @@ strategies = {
 # 8. 執行區 (UI 與 邏輯)
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ 雙核心 AI 設定")
-    
-    # 雙 Key 輸入
-    groq_key_input = st.text_input("Groq API Key (快速分析)", value="", type="password")
-    gemini_key_input = st.text_input("Gemini API Key (深度推理)", value="", type="password")
-    
-    if gemini_key_input:
-        st.session_state['gemini_api_key'] = gemini_key_input
+    st.header("⚙️ 設定")
+    user_key_input = st.text_input("Groq API Key (選填)", value="", type="password")
     
     st.divider()
     st.header("🕵️‍♀️ 隱藏寶石掃描")
@@ -874,12 +745,11 @@ with st.sidebar:
     tx_fee = st.number_input("單邊交易成本 (%)", min_value=0.0, max_value=5.0, value=0.05, step=0.01) / 100
     st.session_state['tx_fee'] = tx_fee
 
-# 初始化 Groq
 groq_client = None
-if HAS_GROQ and groq_key_input and len(groq_key_input) > 10:
+if HAS_GROQ and user_key_input and len(user_key_input) > 10:
     try: 
         from groq import Groq
-        groq_client = Groq(api_key=groq_key_input)
+        groq_client = Groq(api_key=user_key_input)
         st.session_state['groq_client_obj'] = groq_client
     except Exception as e: pass
 
@@ -963,4 +833,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (Pandas修復版)")
+st.success("✅ 全市場掃描與排序完成")
