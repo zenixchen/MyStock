@@ -200,55 +200,66 @@ def analyze_sentiment_finbert(symbol):
 # 3. AI 邏輯大腦 (Gemini 3 Pro + Groq)
 # ==========================================
 
-# --- A. Gemini 深度分析 (修改版) ---
+# --- A. Gemini 深度分析 (全自動掃描容錯版) ---
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
-    # ★ 關鍵修正：先檢查 genai 是否存在
+    # 1. 檢查套件是否安裝
     if not HAS_GEMINI or genai is None:
-        return "系統錯誤：未安裝 google-generativeai 套件，請檢查 requirements.txt", "⚠️", False
+        return "系統錯誤：未安裝 google-generativeai，請檢查 requirements.txt", "⚠️", False
         
     if not api_key: return None, None, False
     if not news_titles: return "無新聞可分析", "⚪", False
     
-    # 這裡才開始設定 Key
+    # 2. 設定 API Key
     try:
         genai.configure(api_key=api_key)
     except Exception as e:
-        return f"API Key 設定失敗: {str(e)}", "⚠️", False
+        return f"Key 設定失敗: {str(e)}", "⚠️", False
     
     news_text = "\n".join([f"- {t}" for t in news_titles])
     
-    # Gemini 3 Thinking Prompt
+    # 3. 定義 Prompt
     prompt = f"""
     分析目標：{symbol}
     目前數據：{price_data} | 訊號：{tech_signal}
     新聞摘要：
     {news_text}
     
-    請使用你的「深度推理 (Thinking Process)」能力，扮演頂級避險基金經理人：
-    1. 不要只看表面利多/利空，請挖掘數據背後的邏輯漏洞或機會。
+    請使用「深度推理」能力，扮演頂級避險基金經理人：
+    1. 挖掘數據背後的邏輯漏洞或機會 (不要只看表面利多)。
     2. 判斷這是否為「主力洗盤」、「誘多」或「真突破」？
-    3. 給出一個 -10 (極度悲觀) ~ +10 (極度樂觀) 的信心分數。
+    3. 給出一個 -10 (悲觀) ~ +10 (樂觀) 的信心分數。
     4. 輸出簡短、犀利的操作建議 (繁體中文)。
     """
     
-    try:
-        # 優先嘗試 Gemini 3.0 Pro / Experimental，若失敗則降級
+    # 4. ★★★ 自動嘗試所有可能的模型名稱 ★★★
+    # 系統會依序嘗試，直到抓到一個能用的為止
+    model_candidates = [
+        'gemini-2.0-flash-exp',   # 最新測試版
+        'gemini-1.5-pro',         # 標準 Pro 版
+        'gemini-1.5-flash',       # ★ 最穩定、速度最快 (通常這個會成功)
+        'gemini-1.5-pro-latest',  # 另一個別名
+        'gemini-pro'              # 舊版保底
+    ]
+    
+    last_error = ""
+    
+    for model_name in model_candidates:
         try:
-            model = genai.GenerativeModel('gemini-3.0-pro') 
+            model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt)
-            return response.text, "💎", True
-        except:
-            try:
-                model = genai.GenerativeModel('gemini-2.0-flash-exp')
-                response = model.generate_content(prompt)
-                return response.text + " (v2.0 Flash)", "⚡", True
-            except:
-                model = genai.GenerativeModel('gemini-1.5-pro')
-                response = model.generate_content(prompt)
-                return response.text + " (v1.5 Pro)", "🧠", True
-                
-    except Exception as e:
-        return f"Gemini Error: {str(e)}", "⚠️", False
+            
+            # 根據使用的模型給予不同圖示
+            icon = "⚡" if "flash" in model_name else "💎"
+            # 成功後回傳結果，並註明用了哪個模型
+            return f"{response.text}\n\n(使用模型: {model_name})", icon, True
+            
+        except Exception as e:
+            # 如果這個模型失敗 (例如 404)，就記錄錯誤並嘗試下一個
+            last_error = str(e)
+            continue
+            
+    # 如果 5 個都失敗，才回報錯誤
+    return f"所有 Gemini 模型皆無法使用。最後錯誤: {last_error}", "💀", False
 
 # --- B. Groq 快速分析 ---
 def analyze_logic_groq(client, symbol, news_titles, tech_signal):
