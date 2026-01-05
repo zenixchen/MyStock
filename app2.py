@@ -9,6 +9,7 @@ from datetime import datetime
 import sys
 import re
 import importlib.util
+import json  # ★ 新增：用於解析 Groq 的 JSON 回傳
 
 # ==========================================
 # ★★★ 1. 強制編碼修復 ★★★
@@ -34,8 +35,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v5.2)",
-    page_icon="💎",
+    page_title="2026 量化戰情室 (Ultimate v6.4)",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -54,8 +55,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Ultimate v5.2)")
-st.caption("集大成版：產業分類監控 | 核能雙妖神參數 | AI硬體 | 防禦堡壘 | 訊號排序")
+st.title("🛡️ 量化交易 (Ultimate v6.4)")
+st.caption("進化版：內建 AI 風險控管官 (Semantic Filtering) | 訊號自動審查")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -187,8 +188,59 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. LLM 邏輯分析
+# 3. LLM 邏輯分析 (含 Groq 風險濾網)
 # ==========================================
+
+# ★★★ 新增：Groq 語意濾網核心函數 ★★★
+def check_risk_with_groq(client, symbol, rsi_val, tech_signal):
+    """
+    Groq 版語意濾網：利用 Llama-3 的極速推理能力來審查風險。
+    """
+    if "BUY" not in tech_signal:
+        return "PASS", "非買訊，免審查"
+        
+    try:
+        news_list = yf.Ticker(symbol).news
+        if not news_list:
+            return "PASS", "無新聞可查 (放行)"
+        news_text = "\n".join([f"- {n['title']}" for n in news_list[:3]])
+    except:
+        return "PASS", "新聞抓取失敗 (放行)"
+
+    prompt = f"""
+    You are a strict Risk Manager for a hedge fund.
+    Target: {symbol}
+    Tech Signal: BUY (RSI: {rsi_val})
+    
+    Recent News:
+    {news_text}
+    
+    Task: Identify if there is any "CATASTROPHIC RISK" in the news?
+    (e.g., Fraud, Bankruptcy, CEO Arrest, Product Ban, huge Lawsuit).
+    
+    Output Format: JSON only.
+    {{
+        "decision": "BLOCK" or "PASS",
+        "reason": "Short reason in Traditional Chinese (max 15 chars)"
+    }}
+    
+    If news is just normal volatility or earnings miss, output "PASS".
+    Only "BLOCK" if the company is in fundamental danger.
+    """
+
+    try:
+        completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            temperature=0.1,
+            response_format={"type": "json_object"}
+        )
+        result_text = completion.choices[0].message.content
+        result_json = json.loads(result_text)
+        return result_json.get("decision", "PASS"), result_json.get("reason", "AI 判斷無重大風險")
+    except Exception as e:
+        return "PASS", f"Groq 連線略過"
+
 def analyze_logic_llm(client, symbol, news_titles, tech_signal):
     if not client: return None, None, False
     if not news_titles: return "無新聞可分析", "⚪", False
@@ -458,18 +510,36 @@ def analyze_ticker(config, groq_client=None):
     try:
         cmf_seq = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
         curr_cmf = cmf_seq.iloc[-1] if cmf_seq is not None else 0
-        
         vwap = ta.vwma(df['Close'], df['Volume'], length=20).iloc[-1]
         
-        if lp > vwap and curr_cmf > 0.05:
-            act += " | 🚀量價齊揚"
-        elif lp < vwap and curr_cmf > 0.05:
-            act += " | 💎主力低接"
-        elif lp > vwap and curr_cmf < -0.05:
-            act += " | ⚠️高檔虛漲"
-        elif lp < vwap and curr_cmf < -0.05:
-            act += " | 🔻空頭確認"
+        if lp > vwap and curr_cmf > 0.05: act += " | 🚀量價齊揚"
+        elif lp < vwap and curr_cmf > 0.05: act += " | 💎主力低接"
+        elif lp > vwap and curr_cmf < -0.05: act += " | ⚠️高檔虛漲"
+        elif lp < vwap and curr_cmf < -0.05: act += " | 🔻空頭確認"
     except: pass
+
+    # ==========================================
+    # ★★★ 新增：Groq 語意濾網攔截機制 ★★★
+    # ==========================================
+    ai_decision = "PASS"
+    ai_reason = ""
+    
+    # 只有當 Groq Client 存在，且訊號是 BUY 時才檢查
+    if groq_client and "BUY" in sig:
+        # 計算 RSI 數值 (作為給 AI 的參考)
+        current_rsi = ta.rsi(c, length=14).iloc[-1] if len(c) > 14 else 50
+        
+        # 呼叫語意濾網
+        ai_decision, ai_reason = check_risk_with_groq(groq_client, symbol, current_rsi, sig)
+        
+        # 如果 AI 說 BLOCK，就強制把訊號改成 DANGER
+        if ai_decision == "BLOCK":
+            sig = "⛔ DANGER"
+            act = f"AI 攔截: {ai_reason}"
+            sig_type = "WAIT" # 改變顏色為灰色或黃色
+        else:
+            # 如果通過，可以在 action 加上標記
+            act += f" (✅ AI 風控通過)"
 
     fund = get_fundamentals(symbol)
     fund_msg = f"PE: {fund['pe']:.1f}" if fund and fund['pe'] else "N/A"
@@ -833,4 +903,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成")
+st.success("✅ 全市場掃描與排序完成 (v6.4 Groq 風控版)")
