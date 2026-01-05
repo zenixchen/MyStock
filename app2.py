@@ -36,7 +36,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v6.7)",
+    page_title="2026 量化戰情室 (Ultimate v6.8)",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -56,8 +56,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ 量化交易 (Ultimate v6.7)")
-st.caption("結構重整版：策略清單置頂 (徹底解決 NameError) | 資金控管 | AI 風險濾網")
+st.title("🛡️ 量化交易 (Ultimate v6.8)")
+st.caption("完修版：補回顯示函數 | 策略置頂 | 資金控管 | AI 風險濾網")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -67,7 +67,7 @@ if not HAS_TRANSFORMERS:
     st.warning("⚠️ 系統提示：FinBERT 模組未安裝，將僅使用技術指標或 Groq AI。")
 
 # ==========================================
-# ★★★ 關鍵修改：將策略清單移到最前面 ★★★
+# ★★★ 策略清單 (Global Config) ★★★
 # ==========================================
 strategies = {
     # === 1. 指數與外匯 ===
@@ -570,7 +570,7 @@ def analyze_ticker(config, groq_client=None):
     }
 
 # ==========================================
-# 6. 視覺化
+# 6. 視覺化 (含訊號開關)
 # ==========================================
 def plot_chart(df, config, signals=None, show_signals=True):
     if df is None: return None
@@ -619,7 +619,7 @@ def plot_chart(df, config, signals=None, show_signals=True):
         if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
         if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
 
-    fig.update_layout(height=600, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc', family="Roboto"), showlegend=True, xaxis=dict(showgrid=True, gridcolor='#2a2e39'), yaxis=dict(showgrid=True, gridcolor='#2a2e39'))
+    fig.update_layout(height=600, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc', family="Roboto"), showlegend=False, xaxis=dict(showgrid=True, gridcolor='#2a2e39'), yaxis=dict(showgrid=True, gridcolor='#2a2e39'))
     return fig
 
 def quick_backtest(df, config, fee=0.0005):
@@ -655,6 +655,60 @@ def quick_backtest(df, config, fee=0.0005):
         return signals, {"Total_Return": sum(rets)*100, "Win_Rate": (wins/trd*100) if trd else 0, "Trades": trd}
     except: return None, None
 
+def display_card(placeholder, row, config, unique_id, show_signals):
+    with placeholder.container(border=True):
+        st.subheader(f"{row['Name']}")
+        c1, c2 = st.columns(2)
+        c1.metric("昨日收盤", f"${row['Prev_Close']:,.2f}")
+        c2.metric("即時價格", f"${row['Price']:,.2f}", f"{row['Price']-row['Prev_Close']:.2f}")
+        
+        sig_col = "green" if "BUY" in row['Signal'] else "red" if "SELL" in row['Signal'] else "gray"
+        st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
+        st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
+        
+        st.warning(f"💰 **建議倉位 (Risk {st.session_state.get('user_risk', 1.0)}%)**: {row['Position']}")
+        
+        with st.expander("🎙️ AI 法說會工具箱 (手動版)", expanded=False):
+            mode = st.radio("輸入模式", ["貼上逐字稿", "上傳錄音檔(mp3)"], horizontal=True, key=f"mode_{unique_id}")
+            groq_client = st.session_state.get('groq_client_obj', None)
+            
+            if mode == "貼上逐字稿":
+                txt_input = st.text_area("請貼上法說會內容...", height=150, key=f"txt_{unique_id}")
+                if st.button("🧠 AI 分析文字", key=f"btn_txt_{unique_id}"):
+                    if groq_client and txt_input:
+                        with st.spinner("AI 正在研讀..."):
+                            analysis = analyze_earnings_text(groq_client, row['Symbol'], txt_input)
+                            st.markdown(analysis)
+                    else: st.warning("請輸入內容並設定 Groq Key")
+            else:
+                aud_file = st.file_uploader("上傳錄音檔 (25MB內)", type=['mp3', 'wav', 'm4a'], key=f"aud_{unique_id}")
+                if st.button("👂 AI 聽音辨位", key=f"btn_aud_{unique_id}"):
+                    if groq_client and aud_file:
+                        with st.spinner("AI 正在聆聽..."):
+                            analysis, trans = analyze_earnings_audio(groq_client, aud_file)
+                            st.markdown(analysis)
+                            with st.expander("原始逐字稿"): st.text(trans[:1000]+"...")
+                    else: st.warning("請上傳檔案並設定 Groq Key")
+
+        if row['Is_LLM']:
+            with st.expander("🧠 AI 觀點 (LLM)", expanded=True):
+                st.markdown(row['LLM_Analysis'])
+        else:
+            st.caption(f"FinBERT: {row['LLM_Analysis']}")
+            if row.get('Logs'):
+                with st.expander("📊 FinBERT 詳細情緒列表", expanded=False):
+                    for log in row['Logs']:
+                        st.text(log)
+
+        if row['Raw_DF'] is not None:
+            with st.expander("📊 K線與回測 (Pro Charts)", expanded=False):
+                fee_rate = st.session_state.get('tx_fee', 0.0005)
+                sig, perf = quick_backtest(row['Raw_DF'], config, fee_rate)
+                st.plotly_chart(plot_chart(row['Raw_DF'], config, sig, show_signals), use_container_width=True)
+                if perf: st.caption(f"模擬績效 (成本{fee_rate*100}%): 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
+        
+        st.text(f"籌碼: {row['Chip']} | 波動: {row['Pred']}")
+
 # ==========================================
 # 8. 執行區 (UI 與 邏輯)
 # ==========================================
@@ -680,8 +734,6 @@ with st.sidebar:
     st.header("🎛️ 顯示設定")
     
     market_filter = st.radio("市場區域：", ["全部", "美股", "台股"], horizontal=True)
-    
-    # ★★★ 現在這裡絕對安全了，因為 strategies 已經在上面定義過了 ★★★
     all_categories = sorted(list(set(s.get('category', '未分類') for s in strategies.values())))
     category_options = ["📂 全部產業"] + all_categories
     selected_category = st.selectbox("產業分類篩選：", category_options)
@@ -755,4 +807,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (v6.7 結構修正版)")
+st.success("✅ 全市場掃描與排序完成 (v6.8 完修版)")
