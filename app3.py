@@ -36,8 +36,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v6.0)",
-    page_icon="🛡️",
+    page_title="2026 量化戰情室 (Ultimate v6.1)",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -56,8 +56,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Ultimate v6.0)")
-st.caption("暴力輪詢版：同時測試 v1/v1beta 路徑 | 自動限速 | 雙核心 AI")
+st.title("💎 量化交易 (Ultimate v6.1)")
+st.caption("智能重試版：遇到 429 限速自動等待重試 | 鎖定 gemini-1.5-flash")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -188,7 +188,7 @@ def analyze_sentiment_finbert(symbol):
     except Exception as e: return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯大腦 (v6.0 暴力輪詢版)
+# 3. AI 邏輯大腦 (v6.1 智能重試版)
 # ==========================================
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     if not api_key: return None, None, False
@@ -208,60 +208,46 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     4. 輸出簡短、犀利的操作建議 (繁體中文)。
     """
     
-    # ★★★ 暴力測試清單 (包含 v1beta 和 v1) ★★★
-    # 這是真正的「萬能鑰匙」組合
-    model_configs = [
-        # 組合 1: 1.5-flash (Beta)
-        ("v1beta", "models/gemini-1.5-flash"),
-        # 組合 2: 1.5-flash (正式版)
-        ("v1", "models/gemini-1.5-flash"),
-        # 組合 3: 1.5-pro (Beta)
-        ("v1beta", "models/gemini-1.5-pro"),
-        # 組合 4: 1.5-pro (正式版)
-        ("v1", "models/gemini-1.5-pro"),
-        # 組合 5: 舊版 Pro (Beta)
-        ("v1beta", "models/gemini-pro"),
-        # 組合 6: 舊版 Pro (正式版)
-        ("v1", "models/gemini-pro"),
-        # 組合 7: 1.0-pro (別名)
-        ("v1beta", "models/gemini-1.0-pro")
-    ]
+    # ★★★ 策略調整：只鎖定最強且最可能成功的 1.5-flash ★★★
+    # 我們不再亂槍打鳥，而是死守這個最標準的模型
+    # 如果遇到 429，就在這裡原地重試，直到成功
+    
+    target_model = "gemini-1.5-flash"
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key}"
     
     headers = {"Content-Type": "application/json"}
     data = {"contents": [{"parts": [{"text": prompt}]}]}
     
-    last_error = ""
+    max_retries = 3
+    retry_count = 0
     
-    for version, model_name in model_configs:
-        # 動態組裝 URL
-        api_url = f"https://generativelanguage.googleapis.com/{version}/{model_name}:generateContent?key={api_key}"
-        
+    while retry_count < max_retries:
         try:
-            # 發送請求 (timeout=10秒)
-            response = requests.post(api_url, headers=headers, json=data, timeout=10)
+            response = requests.post(api_url, headers=headers, json=data, timeout=15)
             
             if response.status_code == 200:
                 result = response.json()
                 try:
                     analysis_text = result['candidates'][0]['content']['parts'][0]['text']
-                    icon = "⚡" if "flash" in model_name else "🧠"
-                    # 成功後顯示它是用哪條路徑打通的
-                    return f"{analysis_text}\n\n(連線成功: {version}/{model_name})", icon, True
+                    return f"{analysis_text}\n\n(API直連: {target_model})", "⚡", True
                 except:
-                    last_error = "JSON 解析失敗"
-                    continue
+                    return f"解析錯誤: {str(result)}", "💀", False
+            
             elif response.status_code == 429:
-                time.sleep(1) # 被限速就休息一下
-                continue
+                # ★ 關鍵邏輯：遇到 429 (太快)，等待 5 秒後重試
+                wait_time = 3 + (retry_count * 2) # 3秒, 5秒, 7秒
+                time.sleep(wait_time) 
+                retry_count += 1
+                continue # 回到迴圈開頭重試
+                
             else:
-                last_error = f"{response.status_code}: {response.text}"
-                continue
+                # 如果是其他錯誤 (如 404)，那真的就是失敗了
+                return f"API 錯誤 ({response.status_code}): {response.text}", "💀", False
                 
         except Exception as e:
-            last_error = str(e)
-            continue
+            return f"連線例外: {str(e)}", "💀", False
             
-    return f"Gemini 全路徑失敗。最後錯誤: {last_error}", "💀", False
+    return "Gemini 忙碌中 (429 Retries Failed)", "⏳", False
 
 def analyze_logic_groq(client, symbol, news_titles, tech_signal):
     if not client: return None, None, False
@@ -844,4 +830,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (v6.0 暴力輪詢版)")
+st.success("✅ 全市場掃描與排序完成 (v6.1 智能重試版)")
