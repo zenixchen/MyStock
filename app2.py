@@ -31,21 +31,20 @@ try:
 except ImportError:
     HAS_GROQ = False
 
-# 匯入 Google Gemini (修改版)
+# 匯入 Google Gemini (防呆修正版)
 try:
     import google.generativeai as genai
     HAS_GEMINI = True
 except ImportError:
-    # ★ 關鍵修正：如果失敗，先定義 genai 為 None，避免後面報錯 NameError
-    genai = None  
+    genai = None
     HAS_GEMINI = False
 
 # ==========================================
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v5.3)",
-    page_icon="💎",
+    page_title="2026 量化戰情室 (Debug版)",
+    page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -64,8 +63,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Ultimate v5.3)")
-st.caption("混合雙核心版：Gemini 3 Pro 推理 | Groq 極速運算 | 產業分類 | 訊號排序")
+st.title("🔧 量化戰情室 (強制除錯版)")
+st.caption("目前模式：錯誤揭露模式 (若 Gemini 失敗，將直接顯示錯誤代碼，不切換至 FinBERT)")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -197,10 +196,10 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯大腦 (Gemini 3 Pro + Groq)
+# 3. AI 邏輯大腦 (Gemini 深度分析 - 全自動掃描容錯版)
 # ==========================================
 
-# --- A. Gemini 深度分析 (全自動掃描容錯版) ---
+# --- A. Gemini 深度分析 ---
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     # 1. 檢查套件是否安裝
     if not HAS_GEMINI or genai is None:
@@ -259,7 +258,8 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
             continue
             
     # 如果 5 個都失敗，才回報錯誤
-    return f"所有 Gemini 模型皆無法使用。最後錯誤: {last_error}", "💀", False
+    return f"Gemini Error: 所有模型皆失敗。最後錯誤: {last_error}", "💀", False
+
 
 # --- B. Groq 快速分析 ---
 def analyze_logic_groq(client, symbol, news_titles, tech_signal):
@@ -416,7 +416,7 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         return f"籌碼錯誤: {str(e)}"
 
 # ==========================================
-# 5. 主分析邏輯 (整合 Gemini 與 Groq)
+# 5. 主分析邏輯 (強制除錯版)
 # ==========================================
 def analyze_ticker(config, groq_client=None):
     symbol = config['symbol']
@@ -530,7 +530,6 @@ def analyze_ticker(config, groq_client=None):
         elif curr_cmf < -0.15: sig="💀 SELL"; act="主力高檔出貨"; sig_type="SELL"
         else: sig="WAIT"; act="籌碼觀察中"; sig_type="WAIT"
     
-    # 主力指標補充
     try:
         cmf_seq = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
         curr_cmf = cmf_seq.iloc[-1] if cmf_seq is not None else 0
@@ -549,10 +548,10 @@ def analyze_ticker(config, groq_client=None):
     logs = [] 
     news = get_news_content(symbol)
     
-    # --- AI 分析邏輯 (Gemini 優先 -> Groq 備援 -> FinBERT 最後) ---
+    # --- AI 分析邏輯 ---
     gemini_key = st.session_state.get('gemini_api_key', None)
     
-    # 1. 優先嘗試 Gemini 3 (深度推理)
+    # 1. 優先嘗試 Gemini
     if gemini_key:
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
         llm_res, icon, success = analyze_logic_gemini(gemini_key, symbol, news, tech_ctx, f"${lp:.2f}")
@@ -564,9 +563,9 @@ def analyze_ticker(config, groq_client=None):
         llm_res, icon, success = analyze_logic_groq(groq_client, symbol, news, tech_ctx)
         if success: is_llm = True
             
-    # 3. 如果都沒有，且沒有發生錯誤，才用 FinBERT
-    # (修改：如果 Gemini 回傳 Error，直接顯示 Error，不要覆蓋掉)
-    if not is_llm and "Error" not in llm_res:
+    # 3. ★★★ 關鍵修改：只有在「沒成功」且「沒有錯誤訊息」時，才降級到 FinBERT ★★★
+    # 這樣如果 Gemini 回傳 "Error: 404...", 它會直接顯示出來，不會被覆蓋掉
+    if not is_llm and "Error" not in llm_res and "系統錯誤" not in llm_res:
         score, _, logs = analyze_sentiment_finbert(symbol)
         llm_res = f"情緒分: {score:.2f} (未設定 AI Key 或 呼叫失敗)"
 
@@ -922,4 +921,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (混合雙核心)")
+st.success("✅ 全市場掃描與排序完成 (Debug模式)")
