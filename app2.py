@@ -553,10 +553,11 @@ def analyze_ticker(config, groq_client=None):
         llm_res, icon, success = analyze_logic_groq(groq_client, symbol, news, tech_ctx)
         if success: is_llm = True
             
-    # 3. 如果都沒有，用 FinBERT
-    if not is_llm:
+    # 3. 如果都沒有，且沒有發生錯誤，才用 FinBERT
+    # (修改：如果 Gemini 回傳 Error，直接顯示 Error，不要覆蓋掉)
+    if not is_llm and "Error" not in llm_res:
         score, _, logs = analyze_sentiment_finbert(symbol)
-        llm_res = f"情緒分: {score:.2f} (未設定 AI Key)"
+        llm_res = f"情緒分: {score:.2f} (未設定 AI Key 或 呼叫失敗)"
 
     p_high, p_low = predict_volatility(df)
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
