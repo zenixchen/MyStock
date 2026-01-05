@@ -43,7 +43,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Debug版)",
+    page_title="2026 量化戰情室 (Ultimate v5.4)",
     page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -63,8 +63,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🔧 量化戰情室 (強制除錯版)")
-st.caption("目前模式：錯誤揭露模式 (若 Gemini 失敗，將直接顯示錯誤代碼，不切換至 FinBERT)")
+st.title("💎 量化交易 (Ultimate v5.4)")
+st.caption("修復版：解決 Pandas ValueError | 雙核心 AI | 產業分類 | 訊號排序")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -74,7 +74,7 @@ if not HAS_TRANSFORMERS:
     st.warning("⚠️ 系統提示：FinBERT 模組未安裝，將僅使用技術指標或 AI 模型。")
 
 # ==========================================
-# 1. 核心函數
+# 1. 核心函數 (資料獲取 - 增強穩健性)
 # ==========================================
 def get_real_live_price(symbol):
     try:
@@ -86,10 +86,18 @@ def get_real_live_price(symbol):
             df_rt = yf.download(symbol, period="5d", interval="1m", prepost=True, progress=False)
             
         if df_rt.empty: return None
+        
+        # ★★★ 修正點 1: 處理 MultiIndex 並移除重複欄位 ★★★
         if isinstance(df_rt.columns, pd.MultiIndex): 
             df_rt.columns = df_rt.columns.get_level_values(0)
+        
+        # 強制移除重複欄位 (例如有兩個 Close)
+        df_rt = df_rt.loc[:, ~df_rt.columns.duplicated()]
             
-        return float(df_rt['Close'].iloc[-1])
+        # 確保取出來的是單一數值
+        val = df_rt['Close'].iloc[-1]
+        if isinstance(val, pd.Series): val = val.iloc[0]
+        return float(val)
     except: 
         try:
             return float(yf.Ticker(symbol).fast_info.get('last_price'))
@@ -100,7 +108,14 @@ def get_safe_data(ticker):
     try:
         df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         if df is None or df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        
+        # ★★★ 修正點 2: 處理 MultiIndex 並移除重複欄位 ★★★
+        if isinstance(df.columns, pd.MultiIndex): 
+            df.columns = df.columns.get_level_values(0)
+            
+        # 強制移除重複欄位 (關鍵修復)
+        df = df.loc[:, ~df.columns.duplicated()]
+        
         df.index = pd.to_datetime(df.index)
         return df
     except: return None
@@ -231,12 +246,11 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     """
     
     # 4. ★★★ 自動嘗試所有可能的模型名稱 ★★★
-    # 系統會依序嘗試，直到抓到一個能用的為止
     model_candidates = [
         'gemini-2.0-flash-exp',   # 最新測試版
         'gemini-1.5-pro',         # 標準 Pro 版
-        'gemini-1.5-flash',       # ★ 最穩定、速度最快 (通常這個會成功)
-        'gemini-1.5-pro-latest',  # 另一個別名
+        'gemini-1.5-flash',       # ★ 最穩定
+        'gemini-1.5-pro-latest',
         'gemini-pro'              # 舊版保底
     ]
     
@@ -247,17 +261,13 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
             model = genai.GenerativeModel(model_name)
             response = model.generate_content(prompt)
             
-            # 根據使用的模型給予不同圖示
             icon = "⚡" if "flash" in model_name else "💎"
-            # 成功後回傳結果，並註明用了哪個模型
             return f"{response.text}\n\n(使用模型: {model_name})", icon, True
             
         except Exception as e:
-            # 如果這個模型失敗 (例如 404)，就記錄錯誤並嘗試下一個
             last_error = str(e)
             continue
             
-    # 如果 5 個都失敗，才回報錯誤
     return f"Gemini Error: 所有模型皆失敗。最後錯誤: {last_error}", "💀", False
 
 
@@ -285,7 +295,7 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal):
     except Exception as e:
         return f"Groq Error: {str(e)}", "⚠️", False
 
-# --- C. 法說會與財報工具 (保留 Groq 供語音使用) ---
+# --- C. 法說會與財報工具 ---
 def analyze_earnings_text(client, symbol, text):
     if not client: return "請先設定 Groq Key"
     short_text = text[:7000] # 截取重點
@@ -357,6 +367,9 @@ def optimize_rsi_strategy(df, symbol):
 def find_price_for_rsi(df, target_rsi, length=2):
     if df is None or df.empty: return 0
     last_close = df['Close'].iloc[-1]
+    # Ensure scalar
+    if isinstance(last_close, pd.Series): last_close = float(last_close.iloc[0])
+    
     low, high = last_close * 0.4, last_close * 1.6
     temp_df = df.copy()
     for _ in range(10): 
@@ -372,7 +385,14 @@ def predict_volatility(df):
     try:
         atr = ta.atr(df['High'], df['Low'], df['Close'], length=14)
         if atr is None: return None, None
-        return df['Close'].iloc[-1] + atr.iloc[-1], df['Close'].iloc[-1] - atr.iloc[-1]
+        
+        last_close = df['Close'].iloc[-1]
+        if isinstance(last_close, pd.Series): last_close = float(last_close.iloc[0])
+        
+        atr_val = atr.iloc[-1]
+        if isinstance(atr_val, pd.Series): atr_val = float(atr_val.iloc[0])
+        
+        return last_close + atr_val, last_close - atr_val
     except: return None, None
 
 def analyze_chips_volume(df, inst_percent, short_percent):
@@ -384,9 +404,11 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         
         cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
         curr_cmf = cmf.iloc[-1]
+        if isinstance(curr_cmf, pd.Series): curr_cmf = float(curr_cmf.iloc[0])
         
         mfi = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
         curr_mfi = mfi.iloc[-1]
+        if isinstance(curr_mfi, pd.Series): curr_mfi = float(curr_mfi.iloc[0])
         
         status = "⚪ 中性"
         details = []
@@ -431,11 +453,32 @@ def analyze_ticker(config, groq_client=None):
         }
 
     lp = get_real_live_price(symbol)
-    if lp is None: lp = df['Close'].iloc[-1]
+    if lp is None: 
+        lp = df['Close'].iloc[-1]
+    
+    # ★★★ 修正點 3: 確保所有數值都是純量 (Scalar) ★★★
+    if isinstance(lp, pd.Series): lp = float(lp.iloc[0])
+    lp = float(lp)
     
     prev_c = df['Close'].iloc[-1]
+    if isinstance(prev_c, pd.Series): prev_c = float(prev_c.iloc[0])
     
-    new_row = pd.DataFrame({'Close': [lp], 'High': [max(lp, df['High'].iloc[-1])], 'Low': [min(lp, df['Low'].iloc[-1])], 'Open': [lp], 'Volume': [0]}, index=[pd.Timestamp.now()])
+    # 安全取得 High/Low 的最後一筆，避免 Series ambiguous 錯誤
+    last_high = df['High'].iloc[-1]
+    if isinstance(last_high, pd.Series): last_high = float(last_high.iloc[0])
+    
+    last_low = df['Low'].iloc[-1]
+    if isinstance(last_low, pd.Series): last_low = float(last_low.iloc[0])
+    
+    # 建立新的一行 (確保 max/min 裡面都是數字)
+    new_row = pd.DataFrame({
+        'Close': [lp], 
+        'High': [max(lp, last_high)], 
+        'Low': [min(lp, last_low)], 
+        'Open': [lp], 
+        'Volume': [0]
+    }, index=[pd.Timestamp.now()])
+    
     calc_df = pd.concat([df.copy(), new_row])
     c, h, l = calc_df['Close'], calc_df['High'], calc_df['Low']
     
@@ -563,8 +606,8 @@ def analyze_ticker(config, groq_client=None):
         llm_res, icon, success = analyze_logic_groq(groq_client, symbol, news, tech_ctx)
         if success: is_llm = True
             
-    # 3. ★★★ 關鍵修改：只有在「沒成功」且「沒有錯誤訊息」時，才降級到 FinBERT ★★★
-    # 這樣如果 Gemini 回傳 "Error: 404...", 它會直接顯示出來，不會被覆蓋掉
+    # 3. 錯誤揭露模式：只有在沒設定Key時才切換 FinBERT
+    # 如果有 Error，就顯示 Error
     if not is_llm and "Error" not in llm_res and "系統錯誤" not in llm_res:
         score, _, logs = analyze_sentiment_finbert(symbol)
         llm_res = f"情緒分: {score:.2f} (未設定 AI Key 或 呼叫失敗)"
@@ -635,7 +678,6 @@ def plot_chart(df, config, signals=None, show_signals=True):
         fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF (主力籌碼)', marker_color=colors), row=3, col=1)
         fig.add_hline(y=0, line_color='gray', row=3, col=1)
 
-    # ★ 訊號顯示邏輯：只有當 show_signals 為 True 時才畫三角形
     if show_signals and signals is not None:
         buy_pts = df.loc[signals == 1]; sell_pts = df.loc[signals == -1]
         if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
@@ -921,4 +963,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (Debug模式)")
+st.success("✅ 全市場掃描與排序完成 (Pandas修復版)")
