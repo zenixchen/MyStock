@@ -11,6 +11,7 @@ import re
 import importlib.util
 import requests
 import json
+import time  # ★ 新增：用於控制速度
 
 # ==========================================
 # ★★★ 1. 強制編碼修復 ★★★
@@ -35,7 +36,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v5.8)",
+    page_title="2026 量化戰情室 (Ultimate v5.9)",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +56,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Ultimate v5.8)")
-st.caption("終極相容版：自動輪詢所有 Gemini 模型 (含舊版保底) | Pandas/AttributeError 全修復")
+st.title("💎 量化交易 (Ultimate v5.9)")
+st.caption("防護版：API 限速機制 (解決 429 錯誤) | 自動輪詢模型 | 完整修復")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -66,7 +67,7 @@ if not HAS_TRANSFORMERS:
     st.warning("⚠️ 系統提示：FinBERT 模組未安裝，將僅使用技術指標或 AI 模型。")
 
 # ==========================================
-# 1. 核心函數 (資料獲取 - 穩健版)
+# 1. 核心函數 (資料獲取)
 # ==========================================
 def get_real_live_price(symbol):
     try:
@@ -187,7 +188,7 @@ def analyze_sentiment_finbert(symbol):
     except Exception as e: return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯大腦 (REST API 輪詢版)
+# 3. AI 邏輯大腦 (REST API 直連 + 自動降級)
 # ==========================================
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     if not api_key: return None, None, False
@@ -207,14 +208,13 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
     4. 輸出簡短、犀利的操作建議 (繁體中文)。
     """
     
-    # ★★★ 自動輪詢所有可能的模型名稱 ★★★
-    # 既然 1.5-flash 不行，我們就試 1.5-pro，再不行就試 gemini-pro (舊版)
+    # 針對 429 錯誤的優化策略：
+    # 優先使用 1.5-flash (速度快/額度高)，如果不行則降級到 gemini-pro (舊版最穩)
     model_candidates = [
-        'gemini-1.5-flash',       # 首選: 快
-        'gemini-1.5-pro',         # 次選: 強
-        'gemini-pro',             # ★ 保底: 舊版 1.0 (相容性最高)
-        'gemini-1.0-pro',         # 舊版別名
-        'gemini-2.0-flash-exp'    # 實驗版
+        'gemini-1.5-flash', 
+        'gemini-1.5-pro',
+        'gemini-2.0-flash-exp',
+        'gemini-pro'
     ]
     
     headers = {"Content-Type": "application/json"}
@@ -226,27 +226,31 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
         api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         
         try:
+            # 這裡不加 sleep，因為外層迴圈已經加了，避免雙重延遲
             response = requests.post(api_url, headers=headers, json=data, timeout=10)
             
             if response.status_code == 200:
                 result = response.json()
                 try:
                     analysis_text = result['candidates'][0]['content']['parts'][0]['text']
-                    icon = "⚡" if "flash" in model_name else "🧠" if "pro" in model_name else "🤖"
+                    icon = "⚡" if "flash" in model_name else "🧠"
                     return f"{analysis_text}\n\n(使用模型: {model_name})", icon, True
                 except:
-                    # 如果格式不對，嘗試下一個
-                    continue
+                    continue # 格式解析失敗，換下一個
+            elif response.status_code == 429:
+                # 如果遇到限速，稍等一下再試下一個模型
+                time.sleep(1)
+                last_error = "429 限速"
+                continue
             else:
-                # 記錄錯誤並嘗試下一個
-                last_error = f"{model_name}: {response.status_code}"
+                last_error = f"{response.status_code}: {response.text}"
                 continue
                 
         except Exception as e:
             last_error = str(e)
             continue
             
-    return f"Gemini 全失敗。最後錯誤: {last_error}", "💀", False
+    return f"Gemini 請求失敗。原因: {last_error}", "💀", False
 
 def analyze_logic_groq(client, symbol, news_titles, tech_signal):
     if not client: return None, None, False
@@ -805,6 +809,9 @@ analysis_results = []
 prog_bar = st.progress(0, text="正在分析全市場與排序中...")
 
 for i, (k, cfg) in enumerate(visible_strategies):
+    # ★★★ 關鍵修改：強制休息 2 秒，避免觸發 429 ★★★
+    time.sleep(2) 
+    
     prog_bar.progress((i + 1) / len(visible_strategies))
     row = analyze_ticker(cfg, groq_client)
     analysis_results.append((k, cfg, row))
@@ -826,4 +833,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (終極相容版)")
+st.success("✅ 全市場掃描與排序完成 (v5.9)")
