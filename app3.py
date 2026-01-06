@@ -41,8 +41,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v7.1 Debug)",
-    page_icon="🔧",
+    page_title="2026 量化戰情室 (Ultimate v7.3)",
+    page_icon="👆",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -61,18 +61,18 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🔧 量化交易 (Ultimate v7.1 Debug)")
-st.caption("除錯版：強制顯示 Gemini 錯誤訊息 | 不自動隱藏報錯")
+st.title("👆 量化交易 (Ultimate v7.3)")
+st.caption("點播版：單股即時分析 | 解決 429 限速問題 | 雙引擎 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
     st.rerun()
 
 if not HAS_GEMINI:
-    st.error("❌ 嚴重錯誤：google-generativeai 套件未安裝。Gemini 無法運作。")
+    st.warning("⚠️ 系統提示：google-generativeai 未安裝，無法使用 Gemini。")
 
 # ==========================================
-# ★★★ 策略清單 ★★★
+# ★★★ 策略清單 (Global Config) ★★★
 # ==========================================
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
@@ -227,7 +227,7 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯分析 (強制顯示錯誤版)
+# 3. AI 邏輯分析
 # ==========================================
 
 # ★ 3.1 Groq 風險濾網
@@ -279,7 +279,6 @@ def check_risk_with_gemini(api_key, symbol, rsi_val, tech_signal, model_name):
         return res.get("decision", "PASS"), res.get("reason", "Gemini 判斷無風險")
         
     except Exception as e:
-        # ★ 重點：直接回傳錯誤訊息，不要吞掉
         return "PASS", f"Gemini 濾網錯誤: {str(e)}"
 
 # ★ 3.3 LLM 通用分析 (Groq)
@@ -298,12 +297,10 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal):
         return resp.choices[0].message.content, "🤖", True
     except Exception as e: return f"Groq Error: {str(e)}", "⚠️", False
 
-# ★ 3.4 LLM 通用分析 (Gemini) - 強制除錯版
+# ★ 3.4 LLM 通用分析 (Gemini)
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, model_name):
     if not HAS_GEMINI: return "Gemini 套件未安裝", "⚠️", False
-    
-    # ★ 檢查點 1: 是否有新聞
-    if not news_titles: return f"⚠️ {symbol} 抓不到新聞 (yfinance 回傳空白)，Gemini 無法分析。", "⚪", False
+    if not news_titles: return f"⚠️ {symbol} 抓不到新聞，無法分析。", "⚪", False
     
     try:
         genai.configure(api_key=api_key)
@@ -316,7 +313,6 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, model_name):
         response = model.generate_content(prompt)
         return response.text, "⚡", True
     except Exception as e:
-        # ★ 檢查點 2: 回傳真實錯誤
         return f"❌ Gemini 連線失敗: {str(e)}", "⚠️", False
 
 def analyze_earnings_text(client, symbol, text):
@@ -431,7 +427,7 @@ def calculate_position_size(price, df, capital, risk_pct):
     except: return "計算失敗"
 
 # ==========================================
-# 5. 主分析邏輯 (v7.1 除錯版)
+# 5. 主分析邏輯
 # ==========================================
 def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_model_name):
     symbol = config['symbol']
@@ -554,7 +550,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         elif lp < vwap and curr_cmf < -0.05: act += " | 🔻空頭確認"
     except: pass
 
-    # ★★★ 雙引擎風險濾網 (強制回傳錯誤版) ★★★
+    # ★★★ 雙引擎風險濾網 ★★★
     ai_decision = "PASS"
     ai_reason = ""
     
@@ -568,8 +564,10 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
             except: pass
             
         elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
-             # ★ Gemini 可能回傳錯誤訊息字串，這裡要處理
+             # ★ Gemini 可能回傳錯誤訊息字串
              ai_decision, ai_reason = check_risk_with_gemini(api_key_gemini, symbol, current_rsi, sig, gemini_model_name)
+             if isinstance(ai_decision, str) and "Error" in ai_decision:
+                 ai_decision = "PASS"
         
         if ai_decision == "BLOCK":
             sig = "⛔ DANGER"
@@ -586,7 +584,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     logs = [] 
     news = get_news_content(symbol)
     
-    # ★★★ 雙引擎邏輯分析 (強制顯示錯誤版) ★★★
+    # ★★★ 雙引擎邏輯分析 ★★★
     if ai_provider == "Groq (Llama-3)" and api_key_groq:
         try:
             groq_c = Groq(api_key=api_key_groq)
@@ -598,12 +596,9 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
         llm_res, icon, success = analyze_logic_gemini(api_key_gemini, symbol, news, tech_ctx, gemini_model_name)
-        
         if success:
             is_llm = True
         else:
-            # ★ 關鍵修改：就算失敗 (success=False)，也要設 is_llm=True
-            # 這樣 UI 才會展開，顯示 "❌ Gemini 連線失敗..." 讓用戶看到
             is_llm = True 
             
     if not is_llm:
@@ -817,20 +812,37 @@ with st.sidebar:
     st.session_state['user_risk'] = risk_input
     
     st.divider()
-    st.header("🕵️‍♀️ 隱藏寶石掃描")
-    custom_input = st.text_area("代碼 (逗號分隔)", placeholder="PLTR, AMD, SOFI, 2603.TW")
-    enable_opt = st.checkbox("🧪 執行 Grid Search 優化 (慢)", value=False)
-    run_scan = st.button("🚀 掃描自選股")
-
-    st.divider()
-    st.header("🎛️ 顯示設定")
+    
+    # ---------------------------------------------
+    # ★★★ 改用「點菜模式 (Selectbox)」 ★★★
+    # ---------------------------------------------
+    st.header("👆 選擇分析目標")
     
     market_filter = st.radio("市場區域：", ["全部", "美股", "台股"], horizontal=True)
-    
     all_categories = sorted(list(set(s.get('category', '未分類') for s in strategies.values())))
     category_options = ["📂 全部產業"] + all_categories
     selected_category = st.selectbox("產業分類篩選：", category_options)
 
+    # 1. 篩選出符合條件的股票清單
+    filtered_strategies = {}
+    for k, v in strategies.items():
+        is_tw = ".TW" in v['symbol'] or "TWD" in v['symbol']
+        if market_filter == "美股" and is_tw: continue
+        if market_filter == "台股" and not is_tw: continue
+        if selected_category != "📂 全部產業":
+            if v.get('category') != selected_category: continue
+        filtered_strategies[k] = v
+
+    # 2. 製作選單 (顯示名稱而非代碼)
+    option_map = {f"{v['symbol']} - {v['name']}": k for k, v in filtered_strategies.items()}
+    selected_option = st.selectbox("請選擇要分析的股票：", list(option_map.keys()))
+    
+    # 3. 取得選中的 key
+    target_key = option_map[selected_option]
+    target_config = strategies[target_key]
+
+    st.divider()
+    st.header("🎛️ 顯示設定")
     show_signals = st.checkbox("顯示買賣訊號 (Buy/Sell)", value=True)
     tx_fee = st.number_input("單邊交易成本 (%)", min_value=0.0, max_value=5.0, value=0.05, step=0.01) / 100
     st.session_state['tx_fee'] = tx_fee
@@ -862,63 +874,24 @@ with m2:
     st.metric(k_name, k_price, k_chg)
 
 # ==========================================
-# 9. 執行區
+# 9. 執行區 (改為單股分析)
 # ==========================================
-if run_scan and custom_input:
-    st.subheader("🔍 自選股掃描結果")
-    tickers = [t.strip().upper() for t in custom_input.split(",") if t.strip()]
-    cols = st.columns(2) if len(tickers) > 1 else [st.container()]
+if target_key:
+    st.subheader(f"📊 {target_config['name']} 深度分析")
     
-    for i, sym in enumerate(tickers):
-        with cols[i % 2]:
-            st.text(f"⏳ 分析 {sym}...")
-            def_cfg = {"symbol": sym, "name": sym, "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70}
-            row = analyze_ticker(def_cfg, ai_provider, groq_key, gemini_key, gemini_model_name)
-            display_card(st.empty(), row, def_cfg, f"scan_{sym}", show_signals)
-            
-            if enable_opt and row['Raw_DF'] is not None:
-                with st.expander(f"🧪 {sym} 最佳參數"):
-                    opt_res = optimize_rsi_strategy(row['Raw_DF'], sym)
-                    if opt_res is not None and not opt_res.empty:
-                        best = opt_res.sort_values(by="Return", ascending=False).iloc[0]
-                        st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
+    # 直接執行單股分析
+    with st.spinner(f"正在連線 {ai_provider} 分析 {target_config['symbol']}..."):
+        row = analyze_ticker(target_config, ai_provider, groq_key, gemini_key, gemini_model_name)
+        display_card(st.empty(), row, target_config, target_key, show_signals)
+        
+    # 如果有開啟參數優化，才跑這段
+    if st.checkbox("🧪 執行 Grid Search 參數優化 (耗時)", value=False):
+        if row['Raw_DF'] is not None:
+            with st.expander(f"🧪 {target_config['symbol']} 最佳參數"):
+                opt_res = optimize_rsi_strategy(row['Raw_DF'], target_config['symbol'])
+                if opt_res is not None and not opt_res.empty:
+                    best = opt_res.sort_values(by="Return", ascending=False).iloc[0]
+                    st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
 
 st.divider()
-st.subheader("📋 核心持股監控 (依訊號排序)")
-if st.button("🔄 刷新全市場"): st.cache_data.clear(); st.rerun()
-
-visible_strategies = []
-for k, v in strategies.items():
-    is_tw = ".TW" in v['symbol'] or "TWD" in v['symbol']
-    if market_filter == "美股" and is_tw: continue
-    if market_filter == "台股" and not is_tw: continue
-    if selected_category != "📂 全部產業":
-        if v.get('category') != selected_category: continue
-    visible_strategies.append((k, v))
-
-analysis_results = []
-prog_bar = st.progress(0, text="正在分析全市場與排序中...")
-
-for i, (k, cfg) in enumerate(visible_strategies):
-    prog_bar.progress((i + 1) / len(visible_strategies))
-    row = analyze_ticker(cfg, ai_provider, groq_key, gemini_key, gemini_model_name)
-    analysis_results.append((k, cfg, row))
-    
-prog_bar.empty()
-
-def get_sort_priority(data):
-    key, cfg, row = data
-    if "TWD=X" in cfg['symbol'] or "USD" in cfg['name']: return 0
-    if "BUY" in row['Signal']: return 1
-    if "SELL" in row['Signal']: return 2
-    return 3
-
-sorted_results = sorted(analysis_results, key=get_sort_priority)
-col1, col2 = st.columns(2)
-holders = [col1.container() if i % 2 == 0 else col2.container() for i in range(len(sorted_results))]
-
-for i, (k, cfg, row) in enumerate(sorted_results):
-    with holders[i]:
-        display_card(st.empty(), row, cfg, k, show_signals)
-
-st.success("✅ 全市場掃描與排序完成 (v7.1 Debug 版)")
+st.success("✅ 分析完成 (v7.3 點播版)")
