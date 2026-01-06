@@ -9,7 +9,6 @@ from datetime import datetime
 import sys
 import re
 import importlib.util
-import requests
 import json
 import time
 
@@ -32,12 +31,18 @@ try:
 except ImportError:
     HAS_GROQ = False
 
+try:
+    import google.generativeai as genai
+    HAS_GEMINI = True
+except ImportError:
+    HAS_GEMINI = False
+
 # ==========================================
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v6.1)",
-    page_icon="💎",
+    page_title="2026 量化戰情室 (Ultimate v7.0)",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -56,15 +61,48 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化交易 (Ultimate v6.1)")
-st.caption("智能重試版：遇到 429 限速自動等待重試 | 鎖定 gemini-1.5-flash")
+st.title("🚀 量化交易 (Ultimate v7.0)")
+st.caption("未來版：解鎖 Gemini 3 / 2.5 / 2.0 模型 | 資金控管 | AI 風險濾網")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
     st.rerun()
 
-if not HAS_TRANSFORMERS:
-    st.warning("⚠️ 系統提示：FinBERT 模組未安裝，將僅使用技術指標或 AI 模型。")
+if not HAS_GEMINI:
+    st.warning("⚠️ 尚未安裝 google-generativeai，請執行 `pip install google-generativeai`")
+
+# ==========================================
+# ★★★ 策略清單 (Global Config) ★★★
+# ==========================================
+strategies = {
+    "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
+    "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+    "QLD": { "symbol": "QLD", "name": "QLD (那斯達克 2倍做多)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+    "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (那斯達克 3倍做多)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
+    "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 狙擊)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
+    "SOXL_F": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 快攻)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 10, "exit_k": 75 },
+    "EDZ": { "symbol": "EDZ", "name": "EDZ (新興市場 3倍做空 - 避險)", "category": "📊 指數/外匯", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
+    "BTC_W": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 波段)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
+    "BTC_F": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 閃電)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
+    "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
+    "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200 },
+    "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100 },
+    "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100 },
+    "GLW": { "symbol": "GLW", "name": "GLW (康寧 - 玻璃基板/光通訊)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
+    "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖 - CoWoS 檢測設備)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
+    "META": { "symbol": "META", "name": "META (臉書 - 廣告與元宇宙)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
+    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (谷歌 - 搜尋與 Gemini)", "category": "💻 軟體/巨頭", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+    "ETN": { "symbol": "ETN", "name": "ETN (伊頓 - 電網與電力管理)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
+    "VRT": { "symbol": "VRT", "name": "VRT (維諦 - AI 伺服器液冷)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
+    "OKLO": { "symbol": "OKLO", "name": "OKLO (核能 - 微型反應堆)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 50, "exit_rsi": 95, "ma_trend": 0 },
+    "SMR": { "symbol": "SMR", "name": "SMR (NuScale - 模組化核能)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 45, "exit_rsi": 90, "ma_trend": 0 },
+    "KO": { "symbol": "KO", "name": "KO (可口可樂 - 消費必需品)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
+    "JNJ": { "symbol": "JNJ", "name": "JNJ (嬌生 - 醫療與製藥)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200 },
+    "PG": { "symbol": "PG", "name": "PG (寶僑 - 日用品龍頭)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0 },
+    "BA": { "symbol": "BA", "name": "BA (波音 - 航太製造)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 15, "exit_rsi": 60, "ma_trend": 0 },
+    "CHT": { "symbol": "2412.TW", "name": "中華電 (台灣電信龍頭)", "category": "🇹🇼 台股", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70, "ma_trend": 0 }
+}
 
 # ==========================================
 # 1. 核心函數 (資料獲取)
@@ -79,12 +117,10 @@ def get_real_live_price(symbol):
             df_rt = yf.download(symbol, period="5d", interval="1m", prepost=True, progress=False)
             
         if df_rt.empty: return None
-        if isinstance(df_rt.columns, pd.MultiIndex): df_rt.columns = df_rt.columns.get_level_values(0)
-        df_rt = df_rt.loc[:, ~df_rt.columns.duplicated()]
+        if isinstance(df_rt.columns, pd.MultiIndex): 
+            df_rt.columns = df_rt.columns.get_level_values(0)
             
-        val = df_rt['Close'].iloc[-1]
-        if isinstance(val, pd.Series): val = val.iloc[0]
-        return float(val)
+        return float(df_rt['Close'].iloc[-1])
     except: 
         try:
             return float(yf.Ticker(symbol).fast_info.get('last_price'))
@@ -96,7 +132,6 @@ def get_safe_data(ticker):
         df = yf.download(ticker, period="2y", interval="1d", progress=False, timeout=10)
         if df is None or df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        df = df.loc[:, ~df.columns.duplicated()]
         df.index = pd.to_datetime(df.index)
         return df
     except: return None
@@ -117,7 +152,8 @@ def get_news_content(symbol):
             summary = n.get('summary', '') 
             title = clean_text_for_llm(title)
             summary = clean_text_for_llm(summary)
-            full_text = f"標題: {title}\n   摘要: {summary}" if summary else f"標題: {title}"
+            if summary: full_text = f"標題: {title}\n   摘要: {summary}"
+            else: full_text = f"標題: {title}"
             if len(title) > 5: clean_news.append(full_text)
         return clean_news
     except: return []
@@ -148,7 +184,8 @@ def load_finbert_model():
         return pipeline("sentiment-analysis", model="ProsusAI/finbert", device=-1)
     except ImportError:
         return None
-    except Exception as e: return None
+    except Exception as e:
+        return None
 
 def analyze_sentiment_finbert(symbol):
     if not HAS_TRANSFORMERS: return 0, "套件未安裝(跳過)", []
@@ -171,6 +208,7 @@ def analyze_sentiment_finbert(symbol):
                 raw_titles.append(t)
         
         if not texts: return 0, "無新聞內容", []
+        
         results = classifier(texts)
         total_score = 0
         score_map = {"positive": 1, "negative": -1, "neutral": 0}
@@ -185,90 +223,99 @@ def analyze_sentiment_finbert(symbol):
             debug_logs.append(log_str)
             
         return total_score/len(texts), texts[0], debug_logs
-    except Exception as e: return 0, f"分析錯誤: {str(e)}", []
+    except Exception as e:
+        return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯大腦 (v6.1 智能重試版)
+# 3. LLM 邏輯分析 (Groq & Gemini)
 # ==========================================
-def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, price_data):
-    if not api_key: return None, None, False
-    if not news_titles: return "無新聞可分析", "⚪", False
-    
-    news_text = "\n".join([f"- {t}" for t in news_titles])
+
+# ★ 3.1 Groq 風險濾網
+def check_risk_with_groq(client, symbol, rsi_val, tech_signal):
+    if "BUY" not in tech_signal: return "PASS", "非買訊，免審查"
+    try:
+        news_list = yf.Ticker(symbol).news
+        if not news_list: return "PASS", "無新聞可查 (放行)"
+        news_text = "\n".join([f"- {n['title']}" for n in news_list[:3]])
+    except: return "PASS", "新聞抓取失敗 (放行)"
+
     prompt = f"""
-    分析目標：{symbol}
-    目前數據：{price_data} | 訊號：{tech_signal}
-    新聞摘要：
-    {news_text}
-    
-    請使用「深度推理」能力，扮演頂級避險基金經理人：
-    1. 挖掘數據背後的邏輯漏洞或機會 (不要只看表面利多)。
-    2. 判斷這是否為「主力洗盤」、「誘多」或「真突破」？
-    3. 給出一個 -10 (悲觀) ~ +10 (樂觀) 的信心分數。
-    4. 輸出簡短、犀利的操作建議 (繁體中文)。
+    You are a strict Risk Manager. Target: {symbol}. Signal: BUY (RSI: {rsi_val}).
+    News: {news_text}
+    Identify if there is any CATASTROPHIC RISK (Fraud, Bankruptcy, Arrest).
+    Output JSON: {{ "decision": "BLOCK" or "PASS", "reason": "Short reason in Traditional Chinese" }}
     """
-    
-    # ★★★ 策略調整：只鎖定最強且最可能成功的 1.5-flash ★★★
-    # 我們不再亂槍打鳥，而是死守這個最標準的模型
-    # 如果遇到 429，就在這裡原地重試，直到成功
-    
-    target_model = "gemini-1.5-flash"
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={api_key}"
-    
-    headers = {"Content-Type": "application/json"}
-    data = {"contents": [{"parts": [{"text": prompt}]}]}
-    
-    max_retries = 3
-    retry_count = 0
-    
-    while retry_count < max_retries:
-        try:
-            response = requests.post(api_url, headers=headers, json=data, timeout=15)
-            
-            if response.status_code == 200:
-                result = response.json()
-                try:
-                    analysis_text = result['candidates'][0]['content']['parts'][0]['text']
-                    return f"{analysis_text}\n\n(API直連: {target_model})", "⚡", True
-                except:
-                    return f"解析錯誤: {str(result)}", "💀", False
-            
-            elif response.status_code == 429:
-                # ★ 關鍵邏輯：遇到 429 (太快)，等待 5 秒後重試
-                wait_time = 3 + (retry_count * 2) # 3秒, 5秒, 7秒
-                time.sleep(wait_time) 
-                retry_count += 1
-                continue # 回到迴圈開頭重試
-                
-            else:
-                # 如果是其他錯誤 (如 404)，那真的就是失敗了
-                return f"API 錯誤 ({response.status_code}): {response.text}", "💀", False
-                
-        except Exception as e:
-            return f"連線例外: {str(e)}", "💀", False
-            
-    return "Gemini 忙碌中 (429 Retries Failed)", "⏳", False
+    try:
+        completion = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile", temperature=0.1, response_format={"type": "json_object"}
+        )
+        res = json.loads(completion.choices[0].message.content)
+        return res.get("decision", "PASS"), res.get("reason", "AI 判斷無重大風險")
+    except: return "PASS", "Groq 連線略過"
 
+# ★ 3.2 Gemini 風險濾網 (彈性模型版)
+def check_risk_with_gemini(api_key, symbol, rsi_val, tech_signal, model_name):
+    if "BUY" not in tech_signal: return "PASS", "非買訊，免審查"
+    if not HAS_GEMINI: return "PASS", "Gemini 套件未安裝"
+    
+    try:
+        genai.configure(api_key=api_key)
+        # ★★★ 使用側邊欄指定的模型名稱 ★★★
+        model = genai.GenerativeModel(model_name) 
+        
+        news_list = yf.Ticker(symbol).news
+        if not news_list: return "PASS", "無新聞"
+        news_text = "\n".join([f"- {n['title']}" for n in news_list[:3]])
+        
+        prompt = f"""
+        You are a strict Risk Manager. Target: {symbol}. Signal: BUY (RSI: {rsi_val}).
+        News: {news_text}
+        Identify if there is any CATASTROPHIC RISK (Fraud, Bankruptcy, Arrest).
+        Output JSON: {{ "decision": "BLOCK" or "PASS", "reason": "Short reason in Traditional Chinese" }}
+        """
+        
+        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        res = json.loads(response.text)
+        return res.get("decision", "PASS"), res.get("reason", "Gemini 判斷無風險")
+        
+    except Exception as e:
+        return "PASS", f"Gemini 連線失敗: {str(e)[:20]}"
+
+# ★ 3.3 LLM 通用分析 (Groq)
 def analyze_logic_groq(client, symbol, news_titles, tech_signal):
-    if not client: return None, None, False
     if not news_titles: return "無新聞可分析", "⚪", False
     try:
-        news_text = "\n\n".join([f"{i+1}. {t}" for i, t in enumerate(news_titles)])
+        news_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(news_titles)])
         prompt = f"""
-        你是專業操盤手。分析 {symbol}。
-        【最新新聞與摘要】：{news_text}
-        【技術面訊號】：{tech_signal}
-        請用繁體中文回答：
-        1. 一句話總結多空邏輯。
-        2. 情緒評分 (-10悲觀 ~ +10樂觀)。
-        3. 操作建議。
+        分析 {symbol}。新聞：{news_text}。訊號：{tech_signal}。
+        請用繁體中文回答：1.多空邏輯 2.情緒評分(-10~10) 3.操作建議。
         """
-        chat_completion = client.chat.completions.create(
+        resp = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile", temperature=0.3,
+            model="llama-3.3-70b-versatile", temperature=0.3
         )
-        return chat_completion.choices[0].message.content, "🤖", True
+        return resp.choices[0].message.content, "🤖", True
     except Exception as e: return f"Groq Error: {str(e)}", "⚠️", False
+
+# ★ 3.4 LLM 通用分析 (Gemini 彈性模型版)
+def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, model_name):
+    if not HAS_GEMINI: return "Gemini 套件未安裝", "⚠️", False
+    if not news_titles: return "無新聞可分析", "⚪", False
+    
+    try:
+        genai.configure(api_key=api_key)
+        # ★★★ 使用側邊欄指定的模型名稱 ★★★
+        model = genai.GenerativeModel(model_name)
+        news_text = "\n".join(news_titles)
+        prompt = f"""
+        分析 {symbol}。新聞：{news_text}。訊號：{tech_signal}。
+        請用繁體中文回答：1.多空邏輯 2.情緒評分(-10~10) 3.操作建議。
+        """
+        response = model.generate_content(prompt)
+        return response.text, "⚡", True
+    except:
+        return "Gemini 分析失敗", "⚠️", False
 
 def analyze_earnings_text(client, symbol, text):
     if not client: return "請先設定 Groq Key"
@@ -294,7 +341,7 @@ def analyze_earnings_audio(client, uploaded_file):
     except Exception as e: return f"語音分析失敗: {str(e)}", ""
 
 # ==========================================
-# 4. 技術指標 (防呆版)
+# 4. 技術指標與倉位計算 (修正回測 Bug)
 # ==========================================
 def optimize_rsi_strategy(df, symbol):
     if df is None or df.empty: return None
@@ -321,8 +368,6 @@ def optimize_rsi_strategy(df, symbol):
 def find_price_for_rsi(df, target_rsi, length=2):
     if df is None or df.empty: return 0
     last_close = df['Close'].iloc[-1]
-    if isinstance(last_close, pd.Series): last_close = float(last_close.iloc[0])
-    
     low, high = last_close * 0.4, last_close * 1.6
     temp_df = df.copy()
     for _ in range(10): 
@@ -338,9 +383,7 @@ def predict_volatility(df):
     try:
         atr = ta.atr(df['High'], df['Low'], df['Close'], length=14)
         if atr is None: return None, None
-        last_close = float(df['Close'].iloc[-1])
-        atr_val = float(atr.iloc[-1])
-        return last_close + atr_val, last_close - atr_val
+        return df['Close'].iloc[-1] + atr.iloc[-1], df['Close'].iloc[-1] - atr.iloc[-1]
     except: return None, None
 
 def analyze_chips_volume(df, inst_percent, short_percent):
@@ -350,9 +393,9 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         obv_trend = "⬆️" if obv.iloc[-1] > ta.sma(obv, length=20).iloc[-1] else "⬇️"
         
         cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
-        curr_cmf = float(cmf.iloc[-1])
+        curr_cmf = cmf.iloc[-1]
         mfi = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
-        curr_mfi = float(mfi.iloc[-1])
+        curr_mfi = mfi.iloc[-1]
         
         status = "⚪ 中性"; details = []
         if curr_cmf > 0.15: status = "🔴 主力大買"; details.append(f"主力吃貨({curr_cmf:.2f})")
@@ -371,10 +414,24 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         return final_msg
     except Exception as e: return f"籌碼錯誤: {str(e)}"
 
+def calculate_position_size(price, df, capital, risk_pct):
+    try:
+        if df is None or len(df) < 15: return "N/A"
+        atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
+        stop_loss_dist = 2 * atr
+        risk_amount = capital * (risk_pct / 100)
+        shares = risk_amount / stop_loss_dist
+        total_cost = shares * price
+        if total_cost > capital:
+            shares = capital / price
+            return f"{int(shares)}股 (滿倉)"
+        return f"{int(shares)}股 (約${total_cost:.0f})"
+    except: return "計算失敗"
+
 # ==========================================
-# 5. 主分析邏輯 (修復版 - 指標防呆)
+# 5. 主分析邏輯 (更新版)
 # ==========================================
-def analyze_ticker(config, groq_client=None):
+def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_model_name):
     symbol = config['symbol']
     df = get_safe_data(symbol)
     
@@ -383,138 +440,142 @@ def analyze_ticker(config, groq_client=None):
             "Symbol": symbol, "Name": config['name'], "Signal": "ERR", "Action": "資料下載失敗",
             "Price": 0, "Prev_Close": 0, "Raw_DF": None, "Type": "ERR", "Strat_Desc": "無數據",
             "Is_LLM": False, "LLM_Analysis": "無法分析", "Chip": "N/A", "Pred": "N/A",
-            "Buy_At": "---", "Sell_At": "---", "Logs": []
+            "Buy_At": "---", "Sell_At": "---", "Logs": [], "Position": "---"
         }
 
     lp = get_real_live_price(symbol)
     if lp is None: lp = df['Close'].iloc[-1]
-    
-    if isinstance(lp, pd.Series): lp = float(lp.iloc[0])
-    lp = float(lp)
-    
     prev_c = df['Close'].iloc[-1]
-    if isinstance(prev_c, pd.Series): prev_c = float(prev_c.iloc[0])
     
-    last_high = float(df['High'].iloc[-1])
-    last_low = float(df['Low'].iloc[-1])
-    
-    new_row = pd.DataFrame({
-        'Close': [lp], 
-        'High': [max(lp, last_high)], 
-        'Low': [min(lp, last_low)], 
-        'Open': [lp], 
-        'Volume': [0]
-    }, index=[pd.Timestamp.now()])
-    
+    new_row = pd.DataFrame({'Close': [lp], 'High': [max(lp, df['High'].iloc[-1])], 'Low': [min(lp, df['Low'].iloc[-1])], 'Open': [lp], 'Volume': [0]}, index=[pd.Timestamp.now()])
     calc_df = pd.concat([df.copy(), new_row])
     c, h, l = calc_df['Close'], calc_df['High'], calc_df['Low']
     
     sig = "WAIT"; act = "觀望"; buy_at = "---"; sell_at = "---"; sig_type = "WAIT"; strategy_desc = ""
     
-    try:
-        if config['mode'] == "SUPERTREND":
-            st_val = ta.supertrend(h, l, c, length=config['period'], multiplier=config['multiplier'])
-            strategy_desc = f"SuperTrend (P={config['period']}, M={config['multiplier']})"
-            if st_val is not None:
-                dr = st_val.iloc[-1, 1]; p_dr = st_val.iloc[-2, 1]; s_line = st_val.iloc[-1, 0]
-                sell_at = f"${s_line:.2f}"
-                if p_dr == -1 and dr == 1: sig = "🚀 BUY"; act = "趨勢翻多"; sig_type="BUY"
-                elif p_dr == 1 and dr == -1: sig = "📉 SELL"; act = "趨勢翻空"; sig_type="SELL"
-                elif dr == 1: sig = "✊ HOLD"; act = f"多頭續抱 (損{s_line:.1f})"; sig_type="HOLD"
-                else: sig = "☁️ EMPTY"; act = "空頭觀望"; sig_type="EMPTY"
+    if config['mode'] == "SUPERTREND":
+        st_val = ta.supertrend(h, l, c, length=config['period'], multiplier=config['multiplier'])
+        strategy_desc = f"SuperTrend (P={config['period']}, M={config['multiplier']})"
+        if st_val is not None:
+            dr = st_val.iloc[-1, 1]; p_dr = st_val.iloc[-2, 1]; s_line = st_val.iloc[-1, 0]
+            sell_at = f"${s_line:.2f}"
+            if p_dr == -1 and dr == 1: sig = "🚀 BUY"; act = "趨勢翻多"; sig_type="BUY"
+            elif p_dr == 1 and dr == -1: sig = "📉 SELL"; act = "趨勢翻空"; sig_type="SELL"
+            elif dr == 1: sig = "✊ HOLD"; act = f"多頭續抱 (損{s_line:.1f})"; sig_type="HOLD"
+            else: sig = "☁️ EMPTY"; act = "空頭觀望"; sig_type="EMPTY"
 
-        elif config['mode'] == "FUSION":
-            rsi = ta.rsi(c, length=config['rsi_len']).iloc[-1]
-            if len(c) > config['ma_trend']:
-                ma_res = ta.ema(c, length=config['ma_trend'])
-                ma = ma_res.iloc[-1] if ma_res is not None else lp
-            else: ma = lp 
-                
-            buy_at = f"${find_price_for_rsi(df, config['entry_rsi'], config['rsi_len'])}"
-            sell_at = f"${find_price_for_rsi(df, config['exit_rsi'], config['rsi_len'])}"
-            strategy_desc = f"FUSION (RSI<{config['entry_rsi']} + EMA{config['ma_trend']})"
-            if lp > ma and rsi < config['entry_rsi']: sig = "🔥 BUY"; act = "趨勢回檔超跌"; sig_type="BUY"
-            elif rsi > config['exit_rsi']: sig = "💰 SELL"; act = "RSI過熱獲利"; sig_type="SELL"
-            else: act = f"趨勢多頭 (RSI:{rsi:.1f})"
+    elif config['mode'] == "FUSION":
+        rsi = ta.rsi(c, length=config['rsi_len']).iloc[-1]
+        ma = ta.ema(c, length=config['ma_trend']).iloc[-1]
+        buy_at = f"${find_price_for_rsi(df, config['entry_rsi'], config['rsi_len'])}"
+        sell_at = f"${find_price_for_rsi(df, config['exit_rsi'], config['rsi_len'])}"
+        strategy_desc = f"FUSION (RSI<{config['entry_rsi']} + EMA{config['ma_trend']})"
+        if lp > ma and rsi < config['entry_rsi']: sig = "🔥 BUY"; act = "趨勢回檔超跌"; sig_type="BUY"
+        elif rsi > config['exit_rsi']: sig = "💰 SELL"; act = "RSI過熱獲利"; sig_type="SELL"
+        else: act = f"趨勢多頭 (RSI:{rsi:.1f})"
 
-        elif config['mode'] in ["RSI_RSI", "RSI_MA"]:
-            rsi = ta.rsi(c, length=config.get('rsi_len', 14)).iloc[-1]
-            use_trend = config.get('ma_trend', 0) > 0
-            is_trend_ok = True
-            trend_msg = ""
-            if use_trend:
-                if len(c) > config['ma_trend']:
-                    ma_res = ta.ema(c, length=config['ma_trend'])
-                    ma_val = ma_res.iloc[-1] if ma_res is not None else 0
-                else: ma_val = 0
-                    
-                if ma_val > 0 and lp < ma_val: 
-                    is_trend_ok = False
-                    trend_msg = f"(逆勢: 破MA{config['ma_trend']})"
-                else: trend_msg = f"(順勢: 上MA{config['ma_trend']})"
-
-            buy_at = f"${find_price_for_rsi(df, config['entry_rsi'], config.get('rsi_len', 14))}"
-            
-            if config['mode'] == "RSI_RSI":
-                strategy_desc = f"RSI區間 (L={config.get('rsi_len',14)}, Buy<{config['entry_rsi']}, Sell>{config['exit_rsi']})"
-                sell_at = f"${find_price_for_rsi(df, config['exit_rsi'], config.get('rsi_len', 14))}"
-                if rsi < config['entry_rsi']: 
-                    if is_trend_ok: sig = "🔥 BUY"; act = f"RSI低檔 ({rsi:.1f}) {trend_msg}"; sig_type="BUY"
-                    else: sig = "✋ WAIT"; act = f"RSI低但逆勢 {trend_msg} 不接刀"; sig_type="WAIT"
-                elif rsi > config['exit_rsi']: sig = "💰 SELL"; act = f"RSI高檔 ({rsi:.1f})"; sig_type="SELL"
-                else: act = f"區間震盪 (RSI:{rsi:.1f})"
+    elif config['mode'] in ["RSI_RSI", "RSI_MA"]:
+        rsi = ta.rsi(c, length=config.get('rsi_len', 14)).iloc[-1]
+        use_trend = config.get('ma_trend', 0) > 0
+        is_trend_ok = True
+        trend_msg = ""
+        if use_trend:
+            ma_val = ta.ema(c, length=config['ma_trend']).iloc[-1]
+            if lp < ma_val: 
+                is_trend_ok = False
+                trend_msg = f"(逆勢: 破MA{config['ma_trend']})"
             else:
-                s_val = ta.sma(c, length=config['exit_ma']).iloc[-1]
-                strategy_desc = f"RSI+MA (RSI<{config['entry_rsi']} 買, 破MA{config['exit_ma']} 賣)"
-                sell_at = f"${s_val:.2f}"
-                if rsi < config['entry_rsi']: 
-                    if is_trend_ok: sig = "🔥 BUY"; act = f"短線超賣 {trend_msg}"; sig_type="BUY"
-                    else: sig = "✋ WAIT"; act = f"超賣但逆勢 {trend_msg}"; sig_type="WAIT"
-                elif lp > s_val: sig = "💰 SELL"; act = "觸及均線壓力"; sig_type="SELL"
+                trend_msg = f"(順勢: 上MA{config['ma_trend']})"
 
-        elif config['mode'] == "KD":
-            k = ta.stoch(h, l, c, k=9, d=3).iloc[-1, 0]
-            buy_at = f"K<{config['entry_k']}"; sell_at = f"K>{config['exit_k']}"
-            strategy_desc = f"KD震盪 (K<{config['entry_k']} 買, K>{config['exit_k']} 賣)"
-            if k < config['entry_k']: sig = "🚀 BUY"; act = f"KD低檔 ({k:.1f})"; sig_type="BUY"
-            elif k > config['exit_k']: sig = "💀 SELL"; act = f"KD高檔 ({k:.1f})"; sig_type="SELL"
-            else: act = f"盤整中 (K:{k:.1f})"
-
-        elif config['mode'] == "MA_CROSS":
-            f_ma = ta.sma(c, config['fast_ma'])
-            s_ma = ta.sma(c, config['slow_ma'])
-            if f_ma is not None and s_ma is not None:
-                curr_f, prev_f = f_ma.iloc[-1], f_ma.iloc[-2]
-                curr_s, prev_s = s_ma.iloc[-1], s_ma.iloc[-2]
-                strategy_desc = f"均線交叉 (F:{config['fast_ma']}, S:{config['slow_ma']})"
-                if prev_f <= prev_s and curr_f > curr_s: sig = "🔥 BUY"; act = "黃金交叉"; sig_type="BUY"
-                elif prev_f >= prev_s and curr_f < curr_s: sig = "📉 SELL"; act = "死亡交叉"; sig_type="SELL"
-                elif curr_f > curr_s: sig = "✊ HOLD"; act = "多頭排列"; sig_type="HOLD"
-                else: sig = "☁️ EMPTY"; act = "空頭排列"; sig_type="EMPTY"
-            else: act = "數據不足計算 MA"
-            
-        elif config['mode'] == "BOLL_RSI":
-            rsi = ta.rsi(c, length=config.get('rsi_len', 2)).iloc[-1]
-            bb = ta.bbands(c, length=20, std=2)
-            if bb is not None:
-                lower = bb.iloc[-1, 0]; mid = bb.iloc[-1, 1]; upper = bb.iloc[-1, 2]
-                buy_at = f"${lower:.2f}"; sell_at = f"${mid:.2f}"
-                strategy_desc = f"布林+RSI (破下軌 & RSI<{config['entry_rsi']})"
-                if lp < lower and rsi < config['entry_rsi']: sig = "🚑 BUY"; act = "破底搶反彈"; sig_type="BUY"
-                elif lp >= upper: sig = "💀 SELL"; act = "觸上軌快逃"; sig_type="SELL"
-                elif lp >= mid: sig = "⚠️ HOLD"; act = "中軸震盪"; sig_type="HOLD"
+        buy_at = f"${find_price_for_rsi(df, config['entry_rsi'], config.get('rsi_len', 14))}"
         
-        elif config['mode'] == "CHIPS":
-            cmf = ta.cmf(h, l, c, calc_df['Volume'], length=20)
-            curr_cmf = cmf.iloc[-1]
-            strategy_desc = "主力籌碼分析 (CMF+MFI)"
-            if curr_cmf > 0.15: sig="🔥 BUY"; act="主力強勢吃貨"; sig_type="BUY"
-            elif curr_cmf < -0.15: sig="💀 SELL"; act="主力高檔出貨"; sig_type="SELL"
-            else: sig="WAIT"; act="籌碼觀察中"; sig_type="WAIT"
+        if config['mode'] == "RSI_RSI":
+            strategy_desc = f"RSI區間 (L={config.get('rsi_len',14)}, Buy<{config['entry_rsi']}, Sell>{config['exit_rsi']})"
+            sell_at = f"${find_price_for_rsi(df, config['exit_rsi'], config.get('rsi_len', 14))}"
+            if rsi < config['entry_rsi']: 
+                if is_trend_ok: sig = "🔥 BUY"; act = f"RSI低檔 ({rsi:.1f}) {trend_msg}"; sig_type="BUY"
+                else: sig = "✋ WAIT"; act = f"RSI低但逆勢 {trend_msg} 不接刀"; sig_type="WAIT"
+            elif rsi > config['exit_rsi']: sig = "💰 SELL"; act = f"RSI高檔 ({rsi:.1f})"; sig_type="SELL"
+            else: act = f"區間震盪 (RSI:{rsi:.1f})"
+        else:
+            s_val = ta.sma(c, length=config['exit_ma']).iloc[-1]
+            strategy_desc = f"RSI+MA (RSI<{config['entry_rsi']} 買, 破MA{config['exit_ma']} 賣)"
+            sell_at = f"${s_val:.2f}"
+            if rsi < config['entry_rsi']: 
+                if is_trend_ok: sig = "🔥 BUY"; act = f"短線超賣 {trend_msg}"; sig_type="BUY"
+                else: sig = "✋ WAIT"; act = f"超賣但逆勢 {trend_msg}"; sig_type="WAIT"
+            elif lp > s_val: sig = "💰 SELL"; act = "觸及均線壓力"; sig_type="SELL"
+
+    elif config['mode'] == "KD":
+        k = ta.stoch(h, l, c, k=9, d=3).iloc[-1, 0]
+        buy_at = f"K<{config['entry_k']}"; sell_at = f"K>{config['exit_k']}"
+        strategy_desc = f"KD震盪 (K<{config['entry_k']} 買, K>{config['exit_k']} 賣)"
+        if k < config['entry_k']: sig = "🚀 BUY"; act = f"KD低檔 ({k:.1f})"; sig_type="BUY"
+        elif k > config['exit_k']: sig = "💀 SELL"; act = f"KD高檔 ({k:.1f})"; sig_type="SELL"
+        else: act = f"盤整中 (K:{k:.1f})"
+
+    elif config['mode'] == "MA_CROSS":
+        f, s = ta.sma(c, config['fast_ma']), ta.sma(c, config['slow_ma'])
+        curr_f, prev_f = f.iloc[-1], f.iloc[-2]; curr_s, prev_s = s.iloc[-1], s.iloc[-2]
+        strategy_desc = f"均線交叉 (F:{config['fast_ma']}, S:{config['slow_ma']})"
+        if prev_f <= prev_s and curr_f > curr_s: sig = "🔥 BUY"; act = "黃金交叉"; sig_type="BUY"
+        elif prev_f >= prev_s and curr_f < curr_s: sig = "📉 SELL"; act = "死亡交叉"; sig_type="SELL"
+        elif curr_f > curr_s: sig = "✊ HOLD"; act = "多頭排列"; sig_type="HOLD"
+        else: sig = "☁️ EMPTY"; act = "空頭排列"; sig_type="EMPTY"
+        
+    elif config['mode'] == "BOLL_RSI":
+        rsi = ta.rsi(c, length=config.get('rsi_len', 2)).iloc[-1]
+        bb = ta.bbands(c, length=20, std=2)
+        lower = bb.iloc[-1, 0]; mid = bb.iloc[-1, 1]; upper = bb.iloc[-1, 2]
+        buy_at = f"${lower:.2f}"; sell_at = f"${mid:.2f}"
+        strategy_desc = f"布林+RSI (破下軌 & RSI<{config['entry_rsi']})"
+        if lp < lower and rsi < config['entry_rsi']: sig = "🚑 BUY"; act = "破底搶反彈"; sig_type="BUY"
+        elif lp >= upper: sig = "💀 SELL"; act = "觸上軌快逃"; sig_type="SELL"
+        elif lp >= mid: sig = "⚠️ HOLD"; act = "中軸震盪"; sig_type="HOLD"
     
-    except Exception as e:
-        sig = "ERR"
-        act = f"指標錯誤: {str(e)}"
+    elif config['mode'] == "CHIPS":
+        cmf = ta.cmf(h, l, c, calc_df['Volume'], length=20)
+        curr_cmf = cmf.iloc[-1]
+        strategy_desc = "主力籌碼分析 (CMF+MFI)"
+        if curr_cmf > 0.15: sig="🔥 BUY"; act="主力強勢吃貨"; sig_type="BUY"
+        elif curr_cmf < -0.15: sig="💀 SELL"; act="主力高檔出貨"; sig_type="SELL"
+        else: sig="WAIT"; act="籌碼觀察中"; sig_type="WAIT"
+    
+    try:
+        cmf_seq = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
+        curr_cmf = cmf_seq.iloc[-1] if cmf_seq is not None else 0
+        vwap = ta.vwma(df['Close'], df['Volume'], length=20).iloc[-1]
+        
+        if lp > vwap and curr_cmf > 0.05: act += " | 🚀量價齊揚"
+        elif lp < vwap and curr_cmf > 0.05: act += " | 💎主力低接"
+        elif lp > vwap and curr_cmf < -0.05: act += " | ⚠️高檔虛漲"
+        elif lp < vwap and curr_cmf < -0.05: act += " | 🔻空頭確認"
+    except: pass
+
+    # ★★★ 雙引擎風險濾網 ★★★
+    ai_decision = "PASS"
+    ai_reason = ""
+    
+    if "BUY" in sig:
+        current_rsi = ta.rsi(c, length=14).iloc[-1] if len(c) > 14 else 50
+        
+        if ai_provider == "Groq (Llama-3)" and api_key_groq:
+            try:
+                groq_c = Groq(api_key=api_key_groq)
+                ai_decision, ai_reason = check_risk_with_groq(groq_c, symbol, current_rsi, sig)
+            except: pass
+            
+        elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
+             # ★★★ 傳入用戶自訂模型 ★★★
+             ai_decision, ai_reason = check_risk_with_gemini(api_key_gemini, symbol, current_rsi, sig, gemini_model_name)
+        
+        if ai_decision == "BLOCK":
+            sig = "⛔ DANGER"
+            act = f"AI 攔截: {ai_reason}"
+            sig_type = "WAIT"
+        else:
+            if ai_provider != "不使用":
+                act += f" (✅ AI 通過)"
 
     fund = get_fundamentals(symbol)
     fund_msg = f"PE: {fund['pe']:.1f}" if fund and fund['pe'] else "N/A"
@@ -523,32 +584,40 @@ def analyze_ticker(config, groq_client=None):
     logs = [] 
     news = get_news_content(symbol)
     
-    gemini_key = st.session_state.get('gemini_api_key', None)
-    
-    if gemini_key:
-        tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
-        llm_res, icon, success = analyze_logic_gemini(gemini_key, symbol, news, tech_ctx, f"${lp:.2f}")
-        if success: is_llm = True
+    # ★★★ 雙引擎邏輯分析 ★★★
+    if ai_provider == "Groq (Llama-3)" and api_key_groq:
+        try:
+            groq_c = Groq(api_key=api_key_groq)
+            tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
+            llm_res, icon, success = analyze_logic_groq(groq_c, symbol, news, tech_ctx)
+            if success: is_llm = True
+        except: pass
         
-    if not is_llm and groq_client:
+    elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
-        llm_res, icon, success = analyze_logic_groq(groq_client, symbol, news, tech_ctx)
+        # ★★★ 傳入用戶自訂模型 ★★★
+        llm_res, icon, success = analyze_logic_gemini(api_key_gemini, symbol, news, tech_ctx, gemini_model_name)
         if success: is_llm = True
             
-    if not is_llm and "Error" not in llm_res and "系統錯誤" not in llm_res and "API" not in llm_res and "全失敗" not in llm_res:
+    if not is_llm:
         score, _, logs = analyze_sentiment_finbert(symbol)
-        llm_res = f"情緒分: {score:.2f} (未設定 AI Key 或 呼叫失敗)"
+        llm_res = f"情緒分: {score:.2f} (未連線 AI)"
 
     p_high, p_low = predict_volatility(df)
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     chip_msg = analyze_chips_volume(df, fund['inst'] if fund else 0, fund['short'] if fund else 0)
+
+    # ★ 計算建議部位
+    user_capital = st.session_state.get('user_capital', 10000)
+    user_risk = st.session_state.get('user_risk', 1.0)
+    pos_msg = calculate_position_size(lp, df, user_capital, user_risk)
 
     return {
         "Symbol": symbol, "Name": config['name'], "Price": lp, "Prev_Close": prev_c,
         "Signal": sig, "Action": act, "Type": sig_type, "Buy_At": buy_at, "Sell_At": sell_at,
         "Fund": fund_msg, "LLM_Analysis": llm_res, "Is_LLM": is_llm, 
         "Raw_DF": df, "Pred": pred_msg, "Chip": chip_msg, "Strat_Desc": strategy_desc,
-        "Logs": logs
+        "Logs": logs, "Position": pos_msg
     }
 
 # ==========================================
@@ -558,17 +627,14 @@ def plot_chart(df, config, signals=None, show_signals=True):
     if df is None: return None
     
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.6, 0.2, 0.2], specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]])
-    
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#f23645', decreasing_fillcolor='#f23645'), row=1, col=1)
     
     vwap_line = ta.vwma(df['Close'], df['Volume'], length=20)
-    if vwap_line is not None:
-        fig.add_trace(go.Scatter(x=df.index, y=vwap_line, name='VWAP', line=dict(color='#FFD700', width=1.5)), row=1, col=1)
+    if vwap_line is not None: fig.add_trace(go.Scatter(x=df.index, y=vwap_line, name='VWAP', line=dict(color='#FFD700', width=1.5)), row=1, col=1)
 
     if config.get('ma_trend', 0) > 0:
         ma_trend = ta.ema(df['Close'], length=config['ma_trend'])
-        if ma_trend is not None:
-            fig.add_trace(go.Scatter(x=df.index, y=ma_trend, name=f"EMA {config['ma_trend']}", line=dict(color='purple', width=2)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=ma_trend, name=f"EMA {config['ma_trend']}", line=dict(color='purple', width=2)), row=1, col=1)
 
     if config['mode'] == "SUPERTREND":
         st = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
@@ -576,15 +642,15 @@ def plot_chart(df, config, signals=None, show_signals=True):
 
     elif config['mode'] == "MA_CROSS":
         f = ta.sma(df['Close'], config['fast_ma']); s = ta.sma(df['Close'], config['slow_ma'])
-        if f is not None: fig.add_trace(go.Scatter(x=df.index, y=f, name=f'MA{config["fast_ma"]}', line=dict(color='#ff9800', width=1.5)), row=1, col=1)
-        if s is not None: fig.add_trace(go.Scatter(x=df.index, y=s, name=f'MA{config["slow_ma"]}', line=dict(color='#2962ff', width=2)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=f, name=f'MA{config["fast_ma"]}', line=dict(color='#ff9800', width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=s, name=f'MA{config["slow_ma"]}', line=dict(color='#2962ff', width=2)), row=1, col=1)
         
     if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
-        if rsi is not None:
-            fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb', width=2)), row=2, col=1)
-            fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color='#089981', row=2, col=1)
-            fig.add_hline(y=config.get('exit_rsi', 70), line_dash="dash", line_color='#f23645', row=2, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb', width=2)), row=2, col=1)
+        fig.add_hrect(y0=config.get('entry_rsi', 30), y1=config.get('exit_rsi', 70), fillcolor="rgba(255, 255, 255, 0.05)", line_width=0, row=2, col=1)
+        fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color='#089981', row=2, col=1)
+        fig.add_hline(y=config.get('exit_rsi', 70), line_dash="dash", line_color='#f23645', row=2, col=1)
 
     elif config['mode'] == "KD":
         k = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
@@ -607,27 +673,46 @@ def plot_chart(df, config, signals=None, show_signals=True):
     fig.update_layout(height=600, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc', family="Roboto"), showlegend=False, xaxis=dict(showgrid=True, gridcolor='#2a2e39'), yaxis=dict(showgrid=True, gridcolor='#2a2e39'))
     return fig
 
+# ★★★ 修正回測邏輯 (支援所有策略) ★★★
 def quick_backtest(df, config, fee=0.0005):
     if df is None or len(df) < 50: return None, None
-    close = df['Close']; signals = pd.Series(0, index=df.index)
+    close = df['Close']; high = df['High']; low = df['Low']
+    signals = pd.Series(0, index=df.index)
+    
     try:
-        if "RSI" in config['mode'] or config['mode'] == "FUSION":
+        if config['mode'] in ["RSI_RSI", "FUSION"]:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
-            signals[rsi < config['entry_rsi']] = 1; signals[rsi > config['exit_rsi']] = -1
+            signals[rsi < config['entry_rsi']] = 1
+            signals[rsi > config['exit_rsi']] = -1
+
+        elif config['mode'] == "RSI_MA":
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            ma_exit = ta.sma(close, length=config['exit_ma'])
+            signals[rsi < config['entry_rsi']] = 1
+            signals[close > ma_exit] = -1
+
+        elif config['mode'] == "BOLL_RSI":
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            bb = ta.bbands(close, length=20, std=2)
+            lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
+            signals[(close < lower) & (rsi < config['entry_rsi'])] = 1
+            signals[close > upper] = -1
+
         elif config['mode'] == "KD":
-            k = ta.stoch(df['High'], df['Low'], close, k=9, d=3).iloc[:, 0]
-            signals[k < config['entry_k']] = 1; signals[k > config['exit_k']] = -1
+            k = ta.stoch(high, low, close, k=9, d=3).iloc[:, 0]
+            signals[k < config['entry_k']] = 1
+            signals[k > config['exit_k']] = -1
+
         elif config['mode'] == "SUPERTREND":
-            st = ta.supertrend(df['High'], df['Low'], close, length=config['period'], multiplier=config['multiplier'])
+            st = ta.supertrend(high, low, close, length=config['period'], multiplier=config['multiplier'])
             dr = st.iloc[:, 1]
-            signals[(dr == 1) & (dr.shift(1) == -1)] = 1; signals[(dr == -1) & (dr.shift(1) == 1)] = -1
+            signals[(dr == 1) & (dr.shift(1) == -1)] = 1
+            signals[(dr == -1) & (dr.shift(1) == 1)] = -1
+
         elif config['mode'] == "MA_CROSS":
-            f, s = ta.sma(close, config['fast_ma']), ta.sma(close, config['slow_ma'])
+            f = ta.sma(close, config['fast_ma']); s = ta.sma(close, config['slow_ma'])
             signals[(f > s) & (f.shift(1) <= s.shift(1))] = 1; signals[(f < s) & (f.shift(1) >= s.shift(1))] = -1
-        elif config['mode'] == "CHIPS":
-             cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
-             signals[cmf > 0.15] = 1; signals[cmf < -0.15] = -1
-        
+            
         pos = 0; ent = 0; trd = 0; wins = 0; rets = []
         for i in range(len(df)):
             if pos == 0 and signals.iloc[i] == 1: 
@@ -651,7 +736,9 @@ def display_card(placeholder, row, config, unique_id, show_signals):
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
         st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
         
-        with st.expander("🎙️ AI 法說會工具箱 (Groq 強力驅動)", expanded=False):
+        st.warning(f"💰 **建議倉位 (Risk {st.session_state.get('user_risk', 1.0)}%)**: {row['Position']}")
+        
+        with st.expander("🎙️ AI 法說會工具箱 (手動版)", expanded=False):
             mode = st.radio("輸入模式", ["貼上逐字稿", "上傳錄音檔(mp3)"], horizontal=True, key=f"mode_{unique_id}")
             groq_client = st.session_state.get('groq_client_obj', None)
             
@@ -659,7 +746,7 @@ def display_card(placeholder, row, config, unique_id, show_signals):
                 txt_input = st.text_area("請貼上法說會內容...", height=150, key=f"txt_{unique_id}")
                 if st.button("🧠 AI 分析文字", key=f"btn_txt_{unique_id}"):
                     if groq_client and txt_input:
-                        with st.spinner("Groq 正在研讀..."):
+                        with st.spinner("AI 正在研讀..."):
                             analysis = analyze_earnings_text(groq_client, row['Symbol'], txt_input)
                             st.markdown(analysis)
                     else: st.warning("請輸入內容並設定 Groq Key")
@@ -667,7 +754,7 @@ def display_card(placeholder, row, config, unique_id, show_signals):
                 aud_file = st.file_uploader("上傳錄音檔 (25MB內)", type=['mp3', 'wav', 'm4a'], key=f"aud_{unique_id}")
                 if st.button("👂 AI 聽音辨位", key=f"btn_aud_{unique_id}"):
                     if groq_client and aud_file:
-                        with st.spinner("Groq 正在聆聽..."):
+                        with st.spinner("AI 正在聆聽..."):
                             analysis, trans = analyze_earnings_audio(groq_client, aud_file)
                             st.markdown(analysis)
                             with st.expander("原始逐字稿"): st.text(trans[:1000]+"...")
@@ -693,59 +780,35 @@ def display_card(placeholder, row, config, unique_id, show_signals):
         st.text(f"籌碼: {row['Chip']} | 波動: {row['Pred']}")
 
 # ==========================================
-# 7. 策略與個股清單 (完整版)
-# ==========================================
-strategies = {
-    # === 1. 指數與外匯 ===
-    "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
-    "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
-    "QLD": { "symbol": "QLD", "name": "QLD (那斯達克 2倍做多)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
-    "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (那斯達克 3倍做多)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
-    "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 狙擊)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
-    "SOXL_F": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 快攻)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 10, "exit_k": 75 },
-    "EDZ": { "symbol": "EDZ", "name": "EDZ (新興市場 3倍做空 - 避險)", "category": "📊 指數/外匯", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
-
-    # === 2. 數位資產 ===
-    "BTC_W": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 波段)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
-    "BTC_F": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 閃電)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
-
-    # === 3. AI 核心硬體/晶片 ===
-    "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
-    "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
-    "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200 },
-    "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100 },
-    "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100 },
-    "GLW": { "symbol": "GLW", "name": "GLW (康寧 - 玻璃基板/光通訊)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-    "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖 - CoWoS 檢測設備)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
-
-    # === 4. 大型科技/軟體 ===
-    "META": { "symbol": "META", "name": "META (臉書 - 廣告與元宇宙)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-    "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (谷歌 - 搜尋與 Gemini)", "category": "💻 軟體/巨頭", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
-
-    # === 5. 電力/能源/散熱 ===
-    "ETN": { "symbol": "ETN", "name": "ETN (伊頓 - 電網與電力管理)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
-    "VRT": { "symbol": "VRT", "name": "VRT (維諦 - AI 伺服器液冷)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
-    "OKLO": { "symbol": "OKLO", "name": "OKLO (核能 - 微型反應堆)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 50, "exit_rsi": 95, "ma_trend": 0 },
-    "SMR": { "symbol": "SMR", "name": "SMR (NuScale - 模組化核能)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 45, "exit_rsi": 90, "ma_trend": 0 },
-
-    # === 6. 防禦/消費/傳統 ===
-    "KO": { "symbol": "KO", "name": "KO (可口可樂 - 消費必需品)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-    "JNJ": { "symbol": "JNJ", "name": "JNJ (嬌生 - 醫療與製藥)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200 },
-    "PG": { "symbol": "PG", "name": "PG (寶僑 - 日用品龍頭)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0 },
-    "BA": { "symbol": "BA", "name": "BA (波音 - 航太製造)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 15, "exit_rsi": 60, "ma_trend": 0 },
-    
-    # === 7. 台股 ===
-    "CHT": { "symbol": "2412.TW", "name": "中華電 (台灣電信龍頭)", "category": "🇹🇼 台股", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70, "ma_trend": 0 }
-}
-
-# ==========================================
 # 8. 執行區 (UI 與 邏輯)
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ 雙核心 AI 設定")
-    groq_key_input = st.text_input("Groq API Key (快速分析)", value="", type="password")
-    gemini_key_input = st.text_input("Gemini API Key (深度推理)", value="", type="password")
-    if gemini_key_input: st.session_state['gemini_api_key'] = gemini_key_input
+    st.header("⚙️ 設定")
+    
+    # 1. AI 模型選擇與 Key 輸入
+    st.subheader("🤖 AI 模型選擇")
+    ai_provider = st.selectbox("請選擇 AI 供應商", ["不使用", "Groq (Llama-3)", "Gemini (User Defined)"])
+    
+    groq_key = ""
+    gemini_key = ""
+    gemini_model_name = "gemini-2.0-flash" # Default
+    
+    if ai_provider == "Groq (Llama-3)":
+        groq_key = st.text_input("Groq API Key", type="password")
+        if groq_key: st.session_state['groq_client_obj'] = Groq(api_key=groq_key)
+        
+    elif ai_provider == "Gemini (User Defined)":
+        gemini_key = st.text_input("Gemini API Key", type="password")
+        gemini_model_name = st.text_input("Gemini Model Name", value="models/gemini-2.0-flash")
+        st.caption("例如: models/gemini-2.0-flash 或 models/gemini-3-flash-preview")
+
+    st.divider()
+    st.header("💰 資金管理設定")
+    capital_input = st.number_input("總操作資金 (USD)", min_value=1000, value=10000, step=1000)
+    risk_input = st.number_input("單筆最大風險 (%)", min_value=0.1, max_value=5.0, value=1.0, step=0.1)
+    
+    st.session_state['user_capital'] = capital_input
+    st.session_state['user_risk'] = risk_input
     
     st.divider()
     st.header("🕵️‍♀️ 隱藏寶石掃描")
@@ -755,22 +818,45 @@ with st.sidebar:
 
     st.divider()
     st.header("🎛️ 顯示設定")
+    
     market_filter = st.radio("市場區域：", ["全部", "美股", "台股"], horizontal=True)
     all_categories = sorted(list(set(s.get('category', '未分類') for s in strategies.values())))
     category_options = ["📂 全部產業"] + all_categories
     selected_category = st.selectbox("產業分類篩選：", category_options)
+
     show_signals = st.checkbox("顯示買賣訊號 (Buy/Sell)", value=True)
     tx_fee = st.number_input("單邊交易成本 (%)", min_value=0.0, max_value=5.0, value=0.05, step=0.01) / 100
     st.session_state['tx_fee'] = tx_fee
 
-groq_client = None
-if HAS_GROQ and groq_key_input and len(groq_key_input) > 10:
-    try: 
-        from groq import Groq
-        groq_client = Groq(api_key=groq_key_input)
-        st.session_state['groq_client_obj'] = groq_client
-    except Exception as e: pass
+# ★★★ 側邊欄：日韓股早盤雷達 ★★★
+st.sidebar.divider()
+st.sidebar.header("🌏 亞股早盤雷達 (08:00)")
 
+def get_market_status(symbol, name):
+    try:
+        data = yf.download(symbol, period="2d", interval="1d", progress=False)
+        if len(data) >= 2:
+            prev_close = float(data['Close'].iloc[-2])
+            curr_price = get_real_live_price(symbol)
+            if curr_price is None: curr_price = float(data['Close'].iloc[-1])
+            change = curr_price - prev_close
+            pct_change = (change / prev_close) * 100
+            icon = "🔺" if change >= 0 else "🔻"
+            return f"{name}", f"{curr_price:,.0f}", f"{icon} {pct_change:.2f}%"
+        return name, "N/A", "N/A"
+    except: return name, "連線失敗", "---"
+
+m1, m2 = st.sidebar.columns(2)
+with m1:
+    n_name, n_price, n_chg = get_market_status("^N225", "🇯🇵 日經")
+    st.metric(n_name, n_price, n_chg)
+with m2:
+    k_name, k_price, k_chg = get_market_status("^KS11", "🇰🇷 韓綜")
+    st.metric(k_name, k_price, k_chg)
+
+# ==========================================
+# 9. 執行區
+# ==========================================
 if run_scan and custom_input:
     st.subheader("🔍 自選股掃描結果")
     tickers = [t.strip().upper() for t in custom_input.split(",") if t.strip()]
@@ -780,7 +866,7 @@ if run_scan and custom_input:
         with cols[i % 2]:
             st.text(f"⏳ 分析 {sym}...")
             def_cfg = {"symbol": sym, "name": sym, "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70}
-            row = analyze_ticker(def_cfg, groq_client)
+            row = analyze_ticker(def_cfg, ai_provider, groq_key, gemini_key, gemini_model_name)
             display_card(st.empty(), row, def_cfg, f"scan_{sym}", show_signals)
             
             if enable_opt and row['Raw_DF'] is not None:
@@ -799,18 +885,16 @@ for k, v in strategies.items():
     is_tw = ".TW" in v['symbol'] or "TWD" in v['symbol']
     if market_filter == "美股" and is_tw: continue
     if market_filter == "台股" and not is_tw: continue
-    if selected_category != "📂 全部產業" and v.get('category') != selected_category: continue
+    if selected_category != "📂 全部產業":
+        if v.get('category') != selected_category: continue
     visible_strategies.append((k, v))
 
 analysis_results = []
 prog_bar = st.progress(0, text="正在分析全市場與排序中...")
 
 for i, (k, cfg) in enumerate(visible_strategies):
-    # ★★★ 關鍵修改：強制休息 2 秒，避免觸發 429 ★★★
-    time.sleep(2) 
-    
     prog_bar.progress((i + 1) / len(visible_strategies))
-    row = analyze_ticker(cfg, groq_client)
+    row = analyze_ticker(cfg, ai_provider, groq_key, gemini_key, gemini_model_name)
     analysis_results.append((k, cfg, row))
     
 prog_bar.empty()
@@ -830,4 +914,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (v6.1 智能重試版)")
+st.success("✅ 全市場掃描與排序完成 (v7.0 解鎖 Gemini 3 版)")
