@@ -41,8 +41,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v7.0)",
-    page_icon="🚀",
+    page_title="2026 量化戰情室 (Ultimate v7.1 Debug)",
+    page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -61,18 +61,18 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🚀 量化交易 (Ultimate v7.0)")
-st.caption("未來版：解鎖 Gemini 3 / 2.5 / 2.0 模型 | 資金控管 | AI 風險濾網")
+st.title("🔧 量化交易 (Ultimate v7.1 Debug)")
+st.caption("除錯版：強制顯示 Gemini 錯誤訊息 | 不自動隱藏報錯")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
     st.rerun()
 
 if not HAS_GEMINI:
-    st.warning("⚠️ 尚未安裝 google-generativeai，請執行 `pip install google-generativeai`")
+    st.error("❌ 嚴重錯誤：google-generativeai 套件未安裝。Gemini 無法運作。")
 
 # ==========================================
-# ★★★ 策略清單 (Global Config) ★★★
+# ★★★ 策略清單 ★★★
 # ==========================================
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
@@ -105,7 +105,7 @@ strategies = {
 }
 
 # ==========================================
-# 1. 核心函數 (資料獲取)
+# 1. 核心函數
 # ==========================================
 def get_real_live_price(symbol):
     try:
@@ -227,7 +227,7 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. LLM 邏輯分析 (Groq & Gemini)
+# 3. AI 邏輯分析 (強制顯示錯誤版)
 # ==========================================
 
 # ★ 3.1 Groq 風險濾網
@@ -252,20 +252,19 @@ def check_risk_with_groq(client, symbol, rsi_val, tech_signal):
         )
         res = json.loads(completion.choices[0].message.content)
         return res.get("decision", "PASS"), res.get("reason", "AI 判斷無重大風險")
-    except: return "PASS", "Groq 連線略過"
+    except Exception as e: return "PASS", f"Groq Error: {str(e)[:20]}"
 
-# ★ 3.2 Gemini 風險濾網 (彈性模型版)
+# ★ 3.2 Gemini 風險濾網
 def check_risk_with_gemini(api_key, symbol, rsi_val, tech_signal, model_name):
     if "BUY" not in tech_signal: return "PASS", "非買訊，免審查"
     if not HAS_GEMINI: return "PASS", "Gemini 套件未安裝"
     
     try:
         genai.configure(api_key=api_key)
-        # ★★★ 使用側邊欄指定的模型名稱 ★★★
         model = genai.GenerativeModel(model_name) 
         
         news_list = yf.Ticker(symbol).news
-        if not news_list: return "PASS", "無新聞"
+        if not news_list: return "PASS", "無新聞 (yfinance 空白)"
         news_text = "\n".join([f"- {n['title']}" for n in news_list[:3]])
         
         prompt = f"""
@@ -280,7 +279,8 @@ def check_risk_with_gemini(api_key, symbol, rsi_val, tech_signal, model_name):
         return res.get("decision", "PASS"), res.get("reason", "Gemini 判斷無風險")
         
     except Exception as e:
-        return "PASS", f"Gemini 連線失敗: {str(e)[:20]}"
+        # ★ 重點：直接回傳錯誤訊息，不要吞掉
+        return "PASS", f"Gemini 濾網錯誤: {str(e)}"
 
 # ★ 3.3 LLM 通用分析 (Groq)
 def analyze_logic_groq(client, symbol, news_titles, tech_signal):
@@ -298,14 +298,15 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal):
         return resp.choices[0].message.content, "🤖", True
     except Exception as e: return f"Groq Error: {str(e)}", "⚠️", False
 
-# ★ 3.4 LLM 通用分析 (Gemini 彈性模型版)
+# ★ 3.4 LLM 通用分析 (Gemini) - 強制除錯版
 def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, model_name):
     if not HAS_GEMINI: return "Gemini 套件未安裝", "⚠️", False
-    if not news_titles: return "無新聞可分析", "⚪", False
+    
+    # ★ 檢查點 1: 是否有新聞
+    if not news_titles: return f"⚠️ {symbol} 抓不到新聞 (yfinance 回傳空白)，Gemini 無法分析。", "⚪", False
     
     try:
         genai.configure(api_key=api_key)
-        # ★★★ 使用側邊欄指定的模型名稱 ★★★
         model = genai.GenerativeModel(model_name)
         news_text = "\n".join(news_titles)
         prompt = f"""
@@ -314,8 +315,9 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, model_name):
         """
         response = model.generate_content(prompt)
         return response.text, "⚡", True
-    except:
-        return "Gemini 分析失敗", "⚠️", False
+    except Exception as e:
+        # ★ 檢查點 2: 回傳真實錯誤
+        return f"❌ Gemini 連線失敗: {str(e)}", "⚠️", False
 
 def analyze_earnings_text(client, symbol, text):
     if not client: return "請先設定 Groq Key"
@@ -341,7 +343,7 @@ def analyze_earnings_audio(client, uploaded_file):
     except Exception as e: return f"語音分析失敗: {str(e)}", ""
 
 # ==========================================
-# 4. 技術指標與倉位計算 (修正回測 Bug)
+# 4. 技術指標與倉位計算
 # ==========================================
 def optimize_rsi_strategy(df, symbol):
     if df is None or df.empty: return None
@@ -429,7 +431,7 @@ def calculate_position_size(price, df, capital, risk_pct):
     except: return "計算失敗"
 
 # ==========================================
-# 5. 主分析邏輯 (更新版)
+# 5. 主分析邏輯 (v7.1 除錯版)
 # ==========================================
 def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_model_name):
     symbol = config['symbol']
@@ -552,7 +554,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         elif lp < vwap and curr_cmf < -0.05: act += " | 🔻空頭確認"
     except: pass
 
-    # ★★★ 雙引擎風險濾網 ★★★
+    # ★★★ 雙引擎風險濾網 (強制回傳錯誤版) ★★★
     ai_decision = "PASS"
     ai_reason = ""
     
@@ -566,7 +568,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
             except: pass
             
         elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
-             # ★★★ 傳入用戶自訂模型 ★★★
+             # ★ Gemini 可能回傳錯誤訊息字串，這裡要處理
              ai_decision, ai_reason = check_risk_with_gemini(api_key_gemini, symbol, current_rsi, sig, gemini_model_name)
         
         if ai_decision == "BLOCK":
@@ -584,7 +586,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     logs = [] 
     news = get_news_content(symbol)
     
-    # ★★★ 雙引擎邏輯分析 ★★★
+    # ★★★ 雙引擎邏輯分析 (強制顯示錯誤版) ★★★
     if ai_provider == "Groq (Llama-3)" and api_key_groq:
         try:
             groq_c = Groq(api_key=api_key_groq)
@@ -595,9 +597,14 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         
     elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
-        # ★★★ 傳入用戶自訂模型 ★★★
         llm_res, icon, success = analyze_logic_gemini(api_key_gemini, symbol, news, tech_ctx, gemini_model_name)
-        if success: is_llm = True
+        
+        if success:
+            is_llm = True
+        else:
+            # ★ 關鍵修改：就算失敗 (success=False)，也要設 is_llm=True
+            # 這樣 UI 才會展開，顯示 "❌ Gemini 連線失敗..." 讓用戶看到
+            is_llm = True 
             
     if not is_llm:
         score, _, logs = analyze_sentiment_finbert(symbol)
@@ -607,7 +614,6 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     chip_msg = analyze_chips_volume(df, fund['inst'] if fund else 0, fund['short'] if fund else 0)
 
-    # ★ 計算建議部位
     user_capital = st.session_state.get('user_capital', 10000)
     user_risk = st.session_state.get('user_risk', 1.0)
     pos_msg = calculate_position_size(lp, df, user_capital, user_risk)
@@ -791,7 +797,7 @@ with st.sidebar:
     
     groq_key = ""
     gemini_key = ""
-    gemini_model_name = "gemini-2.0-flash" # Default
+    gemini_model_name = "models/gemini-2.0-flash" # Default
     
     if ai_provider == "Groq (Llama-3)":
         groq_key = st.text_input("Groq API Key", type="password")
@@ -820,6 +826,7 @@ with st.sidebar:
     st.header("🎛️ 顯示設定")
     
     market_filter = st.radio("市場區域：", ["全部", "美股", "台股"], horizontal=True)
+    
     all_categories = sorted(list(set(s.get('category', '未分類') for s in strategies.values())))
     category_options = ["📂 全部產業"] + all_categories
     selected_category = st.selectbox("產業分類篩選：", category_options)
@@ -914,4 +921,4 @@ for i, (k, cfg, row) in enumerate(sorted_results):
     with holders[i]:
         display_card(st.empty(), row, cfg, k, show_signals)
 
-st.success("✅ 全市場掃描與排序完成 (v7.0 解鎖 Gemini 3 版)")
+st.success("✅ 全市場掃描與排序完成 (v7.1 Debug 版)")
