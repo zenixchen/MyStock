@@ -41,7 +41,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v7.7)",
+    page_title="2026 量化戰情室 (Ultimate v7.8)",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -61,8 +61,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🧠 量化交易 (Ultimate v7.7)")
-st.caption("智囊版：AI 自動解讀籌碼圖形 (OBV+CMF) | 智慧緩存 | 單發射擊")
+st.title("🧠 量化交易 (Ultimate v7.8)")
+st.caption("巔峰版：數學視覺化 AI (讀懂 OBV/CMF 走勢) | 垃圾新聞過濾 | 智慧緩存防爆")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -74,7 +74,7 @@ if not HAS_GEMINI:
     st.warning("⚠️ 系統提示：google-generativeai 未安裝，無法使用 Gemini。")
 
 # ==========================================
-# ★★★ 策略清單 (保持不變) ★★★
+# ★★★ 策略清單 (Global Config) ★★★
 # ==========================================
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
@@ -142,6 +142,7 @@ def clean_text_for_llm(text):
     if not isinstance(text, str): return ""
     return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', text)
 
+# ★★★ 智慧過濾新聞 (垃圾過濾器) ★★★
 def get_news_content(symbol):
     try:
         if "=" in symbol or "^" in symbol: return []
@@ -153,16 +154,19 @@ def get_news_content(symbol):
         BLACKLIST_SOURCES = ["Motley Fool", "Zacks", "InvestorPlace", "TheStreet", "Simply Wall St"]
         BAD_KEYWORDS = ["implied volatility", "put option", "call option", "zacks rank", "better buy", "forget", "prediction", "forecast", "10 stocks", "price target", "alert", "why is moving"]
         
-        for n in news[:10]: 
+        for n in news[:10]: # 掃描前 10 則
             title = n.get('title', n.get('content', {}).get('title', ''))
             publisher = n.get('publisher', 'Unknown')
+            
             if any(bad_src in publisher for bad_src in BLACKLIST_SOURCES): continue
             title_lower = title.lower()
             if any(bad_wd in title_lower for bad_wd in BAD_KEYWORDS): continue
             if len(title) < 15: continue
+            
             title = clean_text_for_llm(title)
             full_text = f"標題: {title}"
             clean_news.append(full_text)
+            
             if len(clean_news) >= 3: break
             
         return clean_news
@@ -230,7 +234,7 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯分析 (★ v7.7: 含籌碼解讀 Prompt ★)
+# 3. AI 邏輯分析 (★ v7.8: 數學視覺版 ★)
 # ==========================================
 
 def ai_retry_wrapper(func, *args):
@@ -248,6 +252,7 @@ def ai_retry_wrapper(func, *args):
             else:
                 return {"risk_decision": "PASS", "risk_reason": "AI錯誤", "analysis_text": f"❌ AI 錯誤: {str(e)[:50]}"}
 
+# ★★★ v7.8 關鍵更新：傳送數據序列給 AI ★★★
 def get_chip_features(df):
     try:
         if df is None or len(df) < 30: return "Data insufficient"
@@ -258,19 +263,15 @@ def get_chip_features(df):
         
         if obv is None or cmf is None: return "Calc Error"
         
-        # 2. ★★★ 關鍵：提取最近 10 天的「數值序列」 ★★★
-        # 這讓 Gemini 能看到「線的形狀」，而不只是最後一個點
+        # 2. 提取最近 10 天的「數值序列」 (讓 AI 腦補畫圖)
         obv_seq = obv.tail(10).tolist()
         cmf_seq = cmf.tail(10).tolist()
+        curr_cmf = cmf.iloc[-1]
         
-        # 為了節省 Token，將數值簡化 (OBV取整數, CMF留2位小數)
+        # 轉成字串
         obv_str = ", ".join([f"{x:.0f}" for x in obv_seq])
         cmf_str = ", ".join([f"{x:.2f}" for x in cmf_seq])
         
-        # 計算簡單趨勢供參考
-        curr_cmf = cmf.iloc[-1]
-        
-        # 3. 組合給 AI 的「數據視覺包」
         feature_text = f"""
         - CMF (Last 10 days): [{cmf_str}]
         - OBV (Last 10 days): [{obv_str}]
@@ -280,7 +281,7 @@ def get_chip_features(df):
     except Exception as e:
         return f"Feature Error: {str(e)}"
 
-# ★★★ Prompt 大升級：教 Gemini 讀懂數列 ★★★
+# ★ Gemini 二合一核心 (Prompt 加入數列解讀)
 def _analyze_gemini_unified_core(api_key, symbol, news_titles, tech_signal, chip_context, rsi_val, model_name):
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(model_name)
@@ -291,12 +292,11 @@ def _analyze_gemini_unified_core(api_key, symbol, news_titles, tech_signal, chip
     news_text = "\n".join(news_titles)
     
     prompt = f"""
-    Role: Senior Quantitative Analyst.
-    Task: Analyze stock {symbol} based on raw data sequences.
+    Role: Professional Hedge Fund Manager. Task: Analyze stock {symbol}.
     
-    [TECHNICAL DATA]
-    1. Indicators: {tech_signal} (RSI: {rsi_val})
-    2. CHIP STRUCTURE (CRITICAL):
+    [DATA CONTEXT]
+    1. Technical: {tech_signal} (RSI: {rsi_val})
+    2. CHIP STRUCTURE (CRITICAL - Raw Sequence):
     {chip_context}
     
     [INSTRUCTIONS]
@@ -329,7 +329,7 @@ def _analyze_gemini_unified_core(api_key, symbol, news_titles, tech_signal, chip
         clean_text = response.text.replace("```json", "").replace("```", "")
         return json.loads(clean_text)
 
-# 包裝後的呼叫函數 (傳入 chip_context)
+# 包裝後的呼叫函數
 def analyze_stock_unified(api_provider, api_key, symbol, news_titles, tech_signal, chip_context, rsi_val, model_name):
     if not news_titles:
         return "PASS", "無新聞", "⚪ 無新聞資料", False
@@ -372,7 +372,7 @@ def analyze_earnings_audio(client, uploaded_file):
     except Exception as e: return f"語音分析失敗: {str(e)}", ""
 
 # ==========================================
-# 4. 技術指標與倉位計算
+# 4. 技術指標與倉位計算 (含 v7.6 OBV/CMF 強化)
 # ==========================================
 def optimize_rsi_strategy(df, symbol):
     if df is None or df.empty: return None
@@ -417,16 +417,17 @@ def predict_volatility(df):
         return df['Close'].iloc[-1] + atr.iloc[-1], df['Close'].iloc[-1] - atr.iloc[-1]
     except: return None, None
 
+# ★★★ v7.6 強化版：OBV + CMF 綜合判讀 ★★★
 def analyze_chips_volume(df, inst_percent, short_percent):
     try:
         if df is None or len(df) < 30: return "資料不足"
         
-        # 1. OBV (長期趨勢 - 水庫水位)
+        # 1. OBV
         obv = ta.obv(df['Close'], df['Volume'])
         obv_ma = ta.sma(obv, length=20)
         if obv is None or obv_ma is None: return "OBV計算失敗"
         
-        # 2. CMF (短期資金 - 水龍頭流速)
+        # 2. CMF
         cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
         curr_cmf = cmf.iloc[-1] if cmf is not None else 0
         
@@ -472,12 +473,12 @@ def calculate_position_size(price, df, capital, risk_pct):
     except: return "計算失敗"
 
 # ==========================================
-# 5. 主分析邏輯 (v7.7 智慧緩存 + 籌碼解讀)
+# 5. 主分析邏輯 (v7.8 智慧緩存 + 數列視覺)
 # ==========================================
 def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_model_name):
     symbol = config['symbol']
     
-    # 1. 基礎數據
+    # 1. 基礎數據 (每次都要抓最新的)
     df = get_safe_data(symbol)
     if df is None: return None
 
@@ -489,7 +490,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     calc_df = pd.concat([df.copy(), new_row])
     c, h, l = calc_df['Close'], calc_df['High'], calc_df['Low']
     
-    # 2. 技術指標
+    # 2. 技術指標計算 (本機運算)
     sig = "WAIT"; act = "觀望"; buy_at = "---"; sell_at = "---"; sig_type = "WAIT"; strategy_desc = ""
     
     if "RSI" in config['mode'] or config['mode'] == "FUSION":
@@ -499,9 +500,9 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         strategy_desc = f"{config['mode']} (RSI:{rsi:.1f})"
         if rsi < config['entry_rsi']: sig = "🔥 BUY"; act = "RSI低檔"; sig_type="BUY"
         elif rsi > config['exit_rsi']: sig = "💰 SELL"; act = "RSI高檔"; sig_type="SELL"
-    # ... 其他策略請保留 ...
+    # ... 其他策略省略 (請保留) ...
 
-    # 3. ★★★ 智慧 AI 緩存 (v7.7 升級版) ★★★
+    # 3. ★★★ 智慧 AI 緩存 ★★★
     cache_key = f"{symbol}_{ai_provider}_{gemini_model_name}"
     
     if 'ai_cache' not in st.session_state:
@@ -515,12 +516,12 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         
         current_rsi = ta.rsi(c, length=14).iloc[-1] if len(c) > 14 else 50
         
-        # ★ 計算籌碼特徵
+        # ★ 計算籌碼特徵 (數列)
         chip_context = get_chip_features(df)
         
         tech_ctx = f"Price: ${lp:.2f}. Signal: {sig}. Action: {act}."
         
-        # 呼叫二合一 AI (傳入 chip_context)
+        # 呼叫二合一 AI
         decision, reason, text, is_llm = analyze_stock_unified(
             ai_provider, api_key_gemini if "Gemini" in ai_provider else api_key_groq,
             symbol, news, tech_ctx, chip_context, current_rsi, gemini_model_name
@@ -732,21 +733,40 @@ with st.sidebar:
     st.session_state['tx_fee'] = st.number_input("交易成本 (%)", value=0.05) / 100
     show_signals = st.checkbox("顯示訊號", value=True)
 
+# ★★★ 側邊欄：日韓股早盤雷達 (已修復 NameError) ★★★
 st.sidebar.divider()
-st.sidebar.header("🌏 早盤雷達")
+st.sidebar.header("🌏 亞股早盤雷達 (08:00)")
+
+def get_market_status(symbol, name):
+    try:
+        data = yf.download(symbol, period="2d", interval="1d", progress=False)
+        if len(data) >= 2:
+            prev_close = float(data['Close'].iloc[-2])
+            curr_price = get_real_live_price(symbol)
+            if curr_price is None: curr_price = float(data['Close'].iloc[-1])
+            change = curr_price - prev_close
+            pct_change = (change / prev_close) * 100
+            icon = "🔺" if change >= 0 else "🔻"
+            return f"{name}", f"{curr_price:,.0f}", f"{icon} {pct_change:.2f}%"
+        return name, "N/A", "N/A"
+    except: return name, "連線失敗", "---"
+
 m1, m2 = st.sidebar.columns(2)
 with m1:
-    n_n, n_p, n_c = get_market_status("^N225", "日經")
+    n_n, n_p, n_c = get_market_status("^N225", "🇯🇵 日經")
     st.metric(n_n, n_p, n_c)
 with m2:
-    k_n, k_p, k_c = get_market_status("^KS11", "韓綜")
+    k_n, k_p, k_c = get_market_status("^KS11", "🇰🇷 韓綜")
     st.metric(k_n, k_p, k_c)
 
+# ==========================================
+# 9. 執行區 (改為單股分析)
+# ==========================================
 if target_key:
     st.subheader(f"📊 {target_config['name']} 深度分析")
     
     # 這裡會自動使用智慧緩存 (不會重複呼叫 API)
-    with st.spinner(f"正在分析 {target_config['symbol']} (已啟用智慧緩存)..."):
+    with st.spinner(f"正在連線 {ai_provider} 分析 {target_config['symbol']} (已啟用智慧緩存)..."):
         row = analyze_ticker(target_config, ai_provider, groq_key, gemini_key, gemini_model_name)
         if row: display_card(st.empty(), row, target_config, target_key, show_signals)
         else: st.error("資料載入失敗")
@@ -758,4 +778,4 @@ if target_key:
                 if opt is not None: st.dataframe(opt.sort_values(by="Return", ascending=False).head(3))
 
 st.divider()
-st.success("✅ 分析完成 (v7.7 籌碼智囊版)")
+st.success("✅ 分析完成 (v7.8 最終修正版)")
