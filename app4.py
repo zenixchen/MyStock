@@ -41,8 +41,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v7.5)",
-    page_icon="🕯️",
+    page_title="2026 量化戰情室 (Ultimate v7.6)",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -61,8 +61,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("👆 量化交易 (Ultimate v7.5)")
-st.caption("點播版：K線型態識別 | Gemini 籌碼背離偵測 | 雙引擎 AI")
+st.title("🚀 量化戰情室 (Ultimate v7.6)")
+st.caption("全功能版：MACD/ADX趨勢判斷 | K線型態 | Gemini 籌碼背離 | 雙引擎 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -307,18 +307,19 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, k_pattern, m
         model = genai.GenerativeModel(model_name)
         news_text = "\n".join(news_titles)
         
-        # ★ 更新 Prompt：加入 K 線型態
+        # ★ 更新 Prompt：加入 K 線型態與進階指標判讀
         prompt = f"""
         請擔任華爾街資深操盤手，分析 {symbol}。
         
-        【技術面訊號】：{tech_signal}
-        【K線型態】：{k_pattern} (這非常重要，請結合技術指標解讀)
+        【綜合技術訊號】：{tech_signal}
+        【K線型態】：{k_pattern} (請特別注意是否有反轉訊號)
         【最新新聞】：{news_text}
         
         請用繁體中文回答：
-        1. **多空邏輯**：結合訊號與K線型態 (例如: RSI低檔 + 吞噬 = 強力反轉)。
+        1. **深度多空邏輯**：請綜合 RSI, MACD, ADX 以及 K線型態 進行交叉比對。
+           (例如: RSI低檔 + MACD翻紅 + ADX強趨勢 = 高勝率買點)。
         2. **情緒評分**：(-10~10)。
-        3. **操作建議**：給出具體的進出場思路。
+        3. **操作建議**：給出具體的進出場思路 (保守者/積極者)。
         """
         response = model.generate_content(prompt)
         return response.text, "⚡", True
@@ -434,7 +435,53 @@ def predict_volatility(df):
     except: return None, None
 
 # ==========================================
-# 新增：K 線型態識別 (純數學邏輯，不依賴 TA-Lib)
+# ★ 新增：進階技術指標 (MACD, ADX, CCI)
+# ==========================================
+def calculate_advanced_indicators(df):
+    try:
+        if df is None or len(df) < 30: return {}
+        
+        # 1. MACD
+        macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
+        if macd is None: return {}
+        # 取出 MACD 柱狀圖 (Histogram) 通常在第 1 欄 (index 1)
+        macd_hist = macd.iloc[:, 1].iloc[-1] 
+        prev_hist = macd.iloc[:, 1].iloc[-2]
+        
+        # 2. ADX
+        adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
+        adx_val = adx_df.iloc[:, 0].iloc[-1] if adx_df is not None else 0
+        
+        # 3. CCI
+        cci_val = ta.cci(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
+        
+        # --- 簡易邏輯判斷 ---
+        macd_sig = "🔴 空方"
+        if macd_hist > 0 and prev_hist < 0: macd_sig = "🔥 翻紅起漲"
+        elif macd_hist > 0: macd_sig = "🔴 多方格局"
+        elif macd_hist < 0 and prev_hist > 0: macd_sig = "💀 翻綠起跌"
+        
+        trend_strength = "💤 盤整"
+        if adx_val > 25: trend_strength = "🚀 強趨勢"
+        elif adx_val > 50: trend_strength = "💥 極強趨勢"
+        
+        cci_sig = "⚪ 中性"
+        if cci_val < -100: cci_sig = "💎 超賣(背離?)"
+        elif cci_val > 100: cci_sig = "⚠️ 超買"
+
+        return {
+            "MACD_Hist": round(macd_hist, 3),
+            "MACD_Signal": macd_sig,
+            "ADX": round(adx_val, 1),
+            "Trend_Strength": trend_strength,
+            "CCI": round(cci_val, 1),
+            "CCI_Signal": cci_sig
+        }
+    except:
+        return {}
+
+# ==========================================
+# ★ 新增：K 線型態識別 (純數學邏輯，不依賴 TA-Lib)
 # ==========================================
 def identify_k_pattern(df):
     try:
@@ -480,7 +527,7 @@ def identify_k_pattern(df):
     except: return "計算錯誤"
 
 # ==========================================
-# 修改版：analyze_chips_volume (打包 10 天趨勢數據)
+# ★ 修改版：analyze_chips_volume (打包 10 天趨勢數據)
 # ==========================================
 def analyze_chips_volume(df, inst_percent, short_percent):
     try:
@@ -695,20 +742,29 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     p_high, p_low = predict_volatility(df)
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     
-    # ★★★ K線型態分析 ★★★
+    # ★★★ 1. 計算 K線型態 ★★★
     k_pattern = identify_k_pattern(df)
+    
+    # ★★★ 2. 計算進階指標 (MACD, ADX, CCI) ★★★
+    adv_data = calculate_advanced_indicators(df)
 
-    # ★★★ 雙引擎邏輯分析 ★★★
+    # ★★★ 3. 雙引擎邏輯分析 ★★★
     if ai_provider == "Groq (Llama-3)" and api_key_groq:
         try:
             groq_c = Groq(api_key=api_key_groq)
-            tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
+            tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。\n"
+            if adv_data:
+                tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), CCI({adv_data['CCI']})。\n"
+                
             llm_res, icon, success = analyze_logic_groq(groq_c, symbol, news, tech_ctx, k_pattern)
             if success: is_llm = True
         except: pass
         
     elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
-        tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
+        tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。\n"
+        if adv_data:
+            tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), CCI({adv_data['CCI']})。\n"
+            
         llm_res, icon, success = analyze_logic_gemini(api_key_gemini, symbol, news, tech_ctx, k_pattern, gemini_model_name)
         if success:
             is_llm = True
@@ -720,7 +776,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         llm_res = f"情緒分: {score:.2f} (未連線 AI)"
 
     
-    # ★★★ 籌碼分析 (含 AI 解讀) ★★★
+    # ★★★ 4. 籌碼分析 (含 AI 解讀) ★★★
     chip_msg_display, chip_raw_data = analyze_chips_volume(df, fund['inst'] if fund else 0, fund['short'] if fund else 0)
     
     if ai_provider == "Gemini (User Defined)" and api_key_gemini and chip_raw_data:
@@ -1013,4 +1069,4 @@ if target_key:
                     st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
 
 st.divider()
-st.success("✅ 分析完成 (v7.5 點播版 - K Pattern + Gemini Divergence)")
+st.success("✅ 分析完成 (v7.6 Ultimate - Full Features)")
