@@ -41,8 +41,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v7.4)",
-    page_icon="👆",
+    page_title="2026 量化戰情室 (Ultimate v7.5)",
+    page_icon="🕯️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -61,8 +61,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("👆 量化交易 (Ultimate v7.4)")
-st.caption("點播版：單股即時分析 | Gemini 籌碼背離偵測 | 雙引擎 AI")
+st.title("👆 量化交易 (Ultimate v7.5)")
+st.caption("點播版：K線型態識別 | Gemini 籌碼背離偵測 | 雙引擎 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -282,13 +282,13 @@ def check_risk_with_gemini(api_key, symbol, rsi_val, tech_signal, model_name):
         return "PASS", f"Gemini 濾網錯誤: {str(e)}"
 
 # ★ 3.3 LLM 通用分析 (Groq)
-def analyze_logic_groq(client, symbol, news_titles, tech_signal):
+def analyze_logic_groq(client, symbol, news_titles, tech_signal, k_pattern):
     if not news_titles: return "無新聞可分析", "⚪", False
     try:
         news_text = "\n".join([f"{i+1}. {t}" for i, t in enumerate(news_titles)])
         prompt = f"""
-        分析 {symbol}。新聞：{news_text}。訊號：{tech_signal}。
-        請用繁體中文回答：1.多空邏輯 2.情緒評分(-10~10) 3.操作建議。
+        分析 {symbol}。訊號：{tech_signal}。K線型態: {k_pattern}。新聞：{news_text}。
+        請用繁體中文回答：1.多空邏輯 (結合K線與指標) 2.情緒評分(-10~10) 3.操作建議。
         """
         resp = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -298,7 +298,7 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal):
     except Exception as e: return f"Groq Error: {str(e)}", "⚠️", False
 
 # ★ 3.4 LLM 通用分析 (Gemini)
-def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, model_name):
+def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, k_pattern, model_name):
     if not HAS_GEMINI: return "Gemini 套件未安裝", "⚠️", False
     if not news_titles: return f"⚠️ {symbol} 抓不到新聞，無法分析。", "⚪", False
     
@@ -306,9 +306,19 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, model_name):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
         news_text = "\n".join(news_titles)
+        
+        # ★ 更新 Prompt：加入 K 線型態
         prompt = f"""
-        分析 {symbol}。新聞：{news_text}。訊號：{tech_signal}。
-        請用繁體中文回答：1.多空邏輯 2.情緒評分(-10~10) 3.操作建議。
+        請擔任華爾街資深操盤手，分析 {symbol}。
+        
+        【技術面訊號】：{tech_signal}
+        【K線型態】：{k_pattern} (這非常重要，請結合技術指標解讀)
+        【最新新聞】：{news_text}
+        
+        請用繁體中文回答：
+        1. **多空邏輯**：結合訊號與K線型態 (例如: RSI低檔 + 吞噬 = 強力反轉)。
+        2. **情緒評分**：(-10~10)。
+        3. **操作建議**：給出具體的進出場思路。
         """
         response = model.generate_content(prompt)
         return response.text, "⚡", True
@@ -424,34 +434,76 @@ def predict_volatility(df):
     except: return None, None
 
 # ==========================================
+# 新增：K 線型態識別 (純數學邏輯，不依賴 TA-Lib)
+# ==========================================
+def identify_k_pattern(df):
+    try:
+        if df is None or len(df) < 3: return "無特殊型態"
+        
+        c = df['Close'].iloc[-1]; o = df['Open'].iloc[-1]
+        h = df['High'].iloc[-1]; l = df['Low'].iloc[-1]
+        prev_c = df['Close'].iloc[-2]; prev_o = df['Open'].iloc[-2]
+        
+        # 計算實體與影線
+        body = abs(c - o)
+        upper_shadow = h - max(c, o)
+        lower_shadow = min(c, o) - l
+        total_range = h - l
+        
+        is_up = c > o
+        is_prev_down = prev_c < prev_o
+        patterns = []
+        
+        # 1. 吞噬
+        if is_up and is_prev_down and c > prev_o and o < prev_c: patterns.append("🔥 多頭吞噬")
+        elif not is_up and not is_prev_down and c < prev_o and o > prev_c: patterns.append("💀 空頭吞噬")
+        
+        # 2. 錘頭 (下影線長)
+        if lower_shadow > body * 2 and upper_shadow < body * 0.5:
+            if is_prev_down: patterns.append("🔨 錘頭 (底部反轉?)")
+            else: patterns.append("🪢 吊人 (頭部示警?)")
+            
+        # 3. 流星 (上影線長)
+        if upper_shadow > body * 2 and lower_shadow < body * 0.5: patterns.append("🌠 流星 (壓力罩頂)")
+        
+        # 4. 十字線
+        if body < total_range * 0.1 and total_range > 0: patterns.append("➕ 十字線 (變盤)")
+
+        # 5. 紅三兵
+        if len(df) >= 3:
+            c3, c2, c1 = df['Close'].iloc[-3:]
+            o3, o2, o1 = df['Open'].iloc[-3:]
+            if c3 > o3 and c2 > o2 and c1 > o1 and c1 > c2 > c3: patterns.append("💂‍♂️ 紅三兵 (強攻)")
+
+        if not patterns: return "一般波動"
+        return " | ".join(patterns)
+    except: return "計算錯誤"
+
+# ==========================================
 # 修改版：analyze_chips_volume (打包 10 天趨勢數據)
 # ==========================================
 def analyze_chips_volume(df, inst_percent, short_percent):
     try:
         if df is None or len(df) < 30: return "資料不足", None
         
-        # 1. 計算指標序列
         obv = ta.obv(df['Close'], df['Volume'])
         cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
         mfi = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
         
-        # 2. 取得最近 10 天的數據 (用於 AI 判斷趨勢)
         recent_days = 10
         price_seq = df['Close'].tail(recent_days).values.tolist()
         obv_seq = obv.tail(recent_days).values.tolist()
         cmf_seq = cmf.tail(recent_days).values.tolist()
         
-        # 3. 為了讓 AI 好讀，做簡單的格式化處理
         data_pack = {
-            "price_trend": [round(p, 2) for p in price_seq],  # 股價走勢
-            "obv_trend": [round(o, 0) for o in obv_seq],      # OBV 走勢
-            "cmf_trend": [round(c, 3) for c in cmf_seq],      # CMF 走勢
+            "price_trend": [round(p, 2) for p in price_seq],
+            "obv_trend": [round(o, 0) for o in obv_seq],
+            "cmf_trend": [round(c, 3) for c in cmf_seq],
             "curr_mfi": round(mfi.iloc[-1], 1),
             "inst": round(inst_percent * 100, 1),
             "short": round(short_percent * 100, 1)
         }
 
-        # 4. 原本的機械式顯示文字 (備用)
         curr_cmf = cmf.iloc[-1]
         obv_ma = ta.sma(obv, length=20).iloc[-1]
         obv_state = "上升" if obv.iloc[-1] > obv_ma else "下降"
@@ -494,7 +546,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
             "Symbol": symbol, "Name": config['name'], "Signal": "ERR", "Action": "資料下載失敗",
             "Price": 0, "Prev_Close": 0, "Raw_DF": None, "Type": "ERR", "Strat_Desc": "無數據",
             "Is_LLM": False, "LLM_Analysis": "無法分析", "Chip": "N/A", "Pred": "N/A",
-            "Buy_At": "---", "Sell_At": "---", "Logs": [], "Position": "---"
+            "Buy_At": "---", "Sell_At": "---", "Logs": [], "Position": "---", "K_Pattern": ""
         }
 
     lp = get_real_live_price(symbol)
@@ -640,18 +692,24 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     logs = [] 
     news = get_news_content(symbol)
     
+    p_high, p_low = predict_volatility(df)
+    pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
+    
+    # ★★★ K線型態分析 ★★★
+    k_pattern = identify_k_pattern(df)
+
     # ★★★ 雙引擎邏輯分析 ★★★
     if ai_provider == "Groq (Llama-3)" and api_key_groq:
         try:
             groq_c = Groq(api_key=api_key_groq)
             tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
-            llm_res, icon, success = analyze_logic_groq(groq_c, symbol, news, tech_ctx)
+            llm_res, icon, success = analyze_logic_groq(groq_c, symbol, news, tech_ctx, k_pattern)
             if success: is_llm = True
         except: pass
         
     elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
         tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。"
-        llm_res, icon, success = analyze_logic_gemini(api_key_gemini, symbol, news, tech_ctx, gemini_model_name)
+        llm_res, icon, success = analyze_logic_gemini(api_key_gemini, symbol, news, tech_ctx, k_pattern, gemini_model_name)
         if success:
             is_llm = True
         else:
@@ -661,13 +719,10 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         score, _, logs = analyze_sentiment_finbert(symbol)
         llm_res = f"情緒分: {score:.2f} (未連線 AI)"
 
-    p_high, p_low = predict_volatility(df)
-    pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     
     # ★★★ 籌碼分析 (含 AI 解讀) ★★★
     chip_msg_display, chip_raw_data = analyze_chips_volume(df, fund['inst'] if fund else 0, fund['short'] if fund else 0)
     
-    # 如果有開 Gemini，就嘗試用 AI 翻譯籌碼數據
     if ai_provider == "Gemini (User Defined)" and api_key_gemini and chip_raw_data:
         ai_chip_explanation = explain_chips_with_gemini(api_key_gemini, symbol, lp, chip_raw_data, gemini_model_name)
         if ai_chip_explanation:
@@ -682,7 +737,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         "Signal": sig, "Action": act, "Type": sig_type, "Buy_At": buy_at, "Sell_At": sell_at,
         "Fund": fund_msg, "LLM_Analysis": llm_res, "Is_LLM": is_llm, 
         "Raw_DF": df, "Pred": pred_msg, "Chip": chip_msg_display, "Strat_Desc": strategy_desc,
-        "Logs": logs, "Position": pos_msg
+        "Logs": logs, "Position": pos_msg, "K_Pattern": k_pattern
     }
 
 # ==========================================
@@ -842,7 +897,7 @@ def display_card(placeholder, row, config, unique_id, show_signals):
                 st.plotly_chart(plot_chart(row['Raw_DF'], config, sig, show_signals), use_container_width=True)
                 if perf: st.caption(f"模擬績效 (成本{fee_rate*100}%): 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
         
-        st.text(f"籌碼: {row['Chip']} | 波動: {row['Pred']}")
+        st.text(f"型態: {row['K_Pattern']} | 波動: {row['Pred']} | 籌碼: {row['Chip']}")
 
 # ==========================================
 # 8. 執行區 (UI 與 邏輯)
@@ -958,4 +1013,4 @@ if target_key:
                     st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
 
 st.divider()
-st.success("✅ 分析完成 (v7.4 點播版 - Gemini Trend)")
+st.success("✅ 分析完成 (v7.5 點播版 - K Pattern + Gemini Divergence)")
