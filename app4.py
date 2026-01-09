@@ -435,27 +435,42 @@ def predict_volatility(df):
     except: return None, None
 
 # ==========================================
-# ★ 新增：進階技術指標 (MACD, ADX, CCI)
+# 修正版：進階技術指標 (含 CCI 數據清洗防呆)
 # ==========================================
 def calculate_advanced_indicators(df):
     try:
         if df is None or len(df) < 30: return {}
         
+        # ★ 數據清洗：防止 High/Low 為 0 導致 CCI 暴衝
+        # 使用 copy() 避免修改到原始 df
+        clean_df = df.copy()
+        
+        # 如果 High 或 Low 是 0，用 Close 取代 (修復 yfinance 盤中 bad tick)
+        cols_to_fix = ['High', 'Low', 'Close']
+        for col in cols_to_fix:
+            # 把 0 或 負數 視為 NaN，然後用前一天的資料填補
+            clean_df[col] = clean_df[col].replace(0, np.nan)
+            if clean_df[col].isnull().any():
+                clean_df[col] = clean_df[col].ffill()
+        
         # 1. MACD
-        macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
+        macd = ta.macd(clean_df['Close'], fast=12, slow=26, signal=9)
         if macd is None: return {}
-        # 取出 MACD 柱狀圖 (Histogram) 通常在第 1 欄 (index 1)
-        macd_hist = macd.iloc[:, 1].iloc[-1] 
+        macd_hist = macd.iloc[:, 1].iloc[-1]
         prev_hist = macd.iloc[:, 1].iloc[-2]
         
         # 2. ADX
-        adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
+        adx_df = ta.adx(clean_df['High'], clean_df['Low'], clean_df['Close'], length=14)
         adx_val = adx_df.iloc[:, 0].iloc[-1] if adx_df is not None else 0
         
-        # 3. CCI
-        cci_val = ta.cci(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
+        # 3. CCI (使用清洗後的數據)
+        cci_val = ta.cci(clean_df['High'], clean_df['Low'], clean_df['Close'], length=14).iloc[-1]
         
-        # --- 簡易邏輯判斷 ---
+        # ★ 防呆：如果還是算出天文數字，強制校正顯示
+        if cci_val > 1000: cci_val = 1000
+        elif cci_val < -1000: cci_val = -1000
+        
+        # --- 邏輯判斷 ---
         macd_sig = "🔴 空方"
         if macd_hist > 0 and prev_hist < 0: macd_sig = "🔥 翻紅起漲"
         elif macd_hist > 0: macd_sig = "🔴 多方格局"
@@ -466,7 +481,7 @@ def calculate_advanced_indicators(df):
         elif adx_val > 50: trend_strength = "💥 極強趨勢"
         
         cci_sig = "⚪ 中性"
-        if cci_val < -100: cci_sig = "💎 超賣(背離?)"
+        if cci_val < -100: cci_sig = "💎 超賣"
         elif cci_val > 100: cci_sig = "⚠️ 超買"
 
         return {
@@ -477,7 +492,8 @@ def calculate_advanced_indicators(df):
             "CCI": round(cci_val, 1),
             "CCI_Signal": cci_sig
         }
-    except:
+    except Exception as e:
+        # print(f"指標計算錯誤: {e}") # Debug 用
         return {}
 
 # ==========================================
@@ -743,10 +759,12 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     
     # ★★★ 1. 計算 K線型態 ★★★
-    k_pattern = identify_k_pattern(df)
+    k_pattern = identify_k_pattern(calc_df) # 建議這裡也改成 calc_df
     
     # ★★★ 2. 計算進階指標 (MACD, ADX, CCI) ★★★
-    adv_data = calculate_advanced_indicators(df)
+    # 🔴 原本是: adv_data = calculate_advanced_indicators(df)
+    # 🟢 改成用 calc_df (包含最新即時價格)
+    adv_data = calculate_advanced_indicators(calc_df)
 
     # ★★★ 3. 雙引擎邏輯分析 ★★★
     if ai_provider == "Groq (Llama-3)" and api_key_groq:
