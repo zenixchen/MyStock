@@ -301,56 +301,61 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal, k_pattern):
         return resp.choices[0].message.content, "🤖", True
     except Exception as e: return f"Groq Error: {str(e)}", "⚠️", False
 
-# ★★★ 新增：AI 委員會辯論系統 (The Council) ★★★
+# ==========================================
+# 修正版：省錢三合一辯論 (只消耗 1 次 API)
+# ==========================================
 def run_ai_debate(api_key, symbol, news_titles, tech_ctx, k_pattern, model_name):
     if not HAS_GEMINI: return "Gemini 套件未安裝", "⚠️", False, None
     if not news_titles: return f"⚠️ {symbol} 抓不到新聞，無法分析。", "⚪", False, None
 
     try:
         genai.configure(api_key=api_key)
+        # 建議改回 1.5-flash，限制較寬鬆
+        # model = genai.GenerativeModel("models/gemini-1.5-flash") 
         model = genai.GenerativeModel(model_name)
+        
         news_text = "\n".join(news_titles)
         data_feed = f"【標的】{symbol}\n【技術面】{tech_ctx}\n【型態】{k_pattern}\n【新聞】{news_text}"
 
-        # 1. 激進多頭 (The Bull)
-        prompt_bull = f"""
-        你現在是華爾街最激進的「多頭分析師 (The Bull)」。
-        請忽略小風險，專注於 {symbol} 的上漲潛力、動能、題材與想像空間。
+        # ★ 關鍵修改：一次扮演三個角色，並要求輸出 JSON
+        prompt_all_in_one = f"""
+        你現在是一個「AI 投資委員會」。請閱讀以下市場數據，並同時扮演三個角色進行內部辯論。
         
         {data_feed}
         
-        任務：請用激昂的語氣，列出 3 個「非買不可」的理由。限制 100 字以內。
-        """
-        res_bull = model.generate_content(prompt_bull).text
+        請依序執行以下任務，並嚴格按照 JSON 格式輸出：
 
-        # 2. 保守空頭 (The Bear)
-        prompt_bear = f"""
-        你現在是華爾街最嚴格的「空頭分析師 (The Bear)」。
-        請忽略題材，專注於 {symbol} 的風險、估值過高、背離訊號與總經逆風。
-        
-        {data_feed}
-        
-        任務：請用冷酷的語氣，列出 3 個「絕對不能買」或「應該賣出」的理由。限制 100 字以內。
-        """
-        res_bear = model.generate_content(prompt_bear).text
+        1. **角色 A (激進多頭 The Bull)**：忽視風險，專注於動能與題材，列出 3 個「非買不可」的理由 (激昂語氣)。
+        2. **角色 B (保守空頭 The Bear)**：忽視題材，專注於風險與乖離，列出 3 個「絕對要賣」的理由 (冷酷語氣)。
+        3. **角色 C (投資長 The Judge)**：綜合上述兩者，給出最終裁決 (買/賣/觀望) 與情緒分數 (-10~10)。
 
-        # 3. 投資長裁決 (The Judge)
-        prompt_judge = f"""
-        你是一間避險基金的投資長 (CIO)。你剛聽完兩位分析師的辯論。
-        
-        【多頭觀點】：{res_bull}
-        【空頭觀點】：{res_bear}
-        【客觀數據】：{data_feed}
-        
-        任務：
-        1. 評論誰更有道理？(多頭 vs 空頭)
-        2. 給出最終操作指令 (Aggressive Buy / Buy / Hold / Sell / Strong Sell)。
-        3. 給出一個「情緒分數」(-10 到 10)。
-        請用繁體中文，專業且冷靜地回答。
+        【輸出格式要求】：
+        請僅輸出純 JSON 字串，不要有 markdown 標記 (```json)，格式如下：
+        {{
+            "bull": "多頭的觀點內容...",
+            "bear": "空頭的觀點內容...",
+            "judge": "投資長的最終裁決..."
+        }}
         """
-        res_judge = model.generate_content(prompt_judge).text
+        
+        # 發送請求 (只消耗 1 次 Quota)
+        response = model.generate_content(prompt_all_in_one)
+        text_res = response.text.strip()
+        
+        # 清洗數據：有時候 AI 會雞婆加上 ```json ... ```，要把它去掉
+        if "```json" in text_res:
+            text_res = text_res.replace("```json", "").replace("```", "")
+        elif "```" in text_res:
+            text_res = text_res.replace("```", "")
+            
+        # 解析 JSON
+        debate_json = json.loads(text_res)
+        
+        # 提取結果
+        res_bull = debate_json.get("bull", "解析失敗")
+        res_bear = debate_json.get("bear", "解析失敗")
+        res_judge = debate_json.get("judge", "解析失敗")
 
-        # 打包辯論結果
         debate_transcript = {
             "bull": res_bull,
             "bear": res_bear,
@@ -360,7 +365,8 @@ def run_ai_debate(api_key, symbol, news_titles, tech_ctx, k_pattern, model_name)
         return res_judge, "⚖️", True, debate_transcript
 
     except Exception as e:
-        return f"❌ 辯論失敗: {str(e)}", "⚠️", False, None
+        # 如果 JSON 解析失敗或 API 報錯，回傳錯誤訊息
+        return f"❌ 辯論失敗 (API 限制或解析錯誤): {str(e)}", "⚠️", False, None
 
 # ★ 3.5 新增：Gemini 籌碼翻譯官 (包含背離判斷)
 def explain_chips_with_gemini(api_key, symbol, price, chip_data, model_name):
