@@ -41,8 +41,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v9.1)",
-    page_icon="💎",
+    page_title="2026 量化戰情室 (Ultimate v9.2)",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -65,8 +65,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化戰情室 (Ultimate v9.1)")
-st.caption("最終修復版：CCI 真實數據 (去除重複K線) | 混合辯論模式 | 3日型態")
+st.title("🛡️ 量化戰情室 (Ultimate v9.2)")
+st.caption("穩定版：修復 NameError | ADX 邏輯優化 | CCI 數據清洗 | 雙引擎 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -487,7 +487,7 @@ def predict_volatility(df):
     except: return None, None
 
 # ==========================================
-# ★ 修正版 v9.1：進階技術指標 (移除強制邊界)
+# ★ 修正版 v9.2：進階技術指標 (ADX 邏輯優化 + CCI清洗)
 # ==========================================
 def calculate_advanced_indicators(df):
     try:
@@ -507,8 +507,6 @@ def calculate_advanced_indicators(df):
         
         # 3. CCI
         cci_val = ta.cci(work_df['High'], work_df['Low'], work_df['Close'], length=14).iloc[-1]
-        
-        # 如果是 NaN (計算失敗)，補 0
         if np.isnan(cci_val) or np.isinf(cci_val):
             cci_val = 0
             
@@ -518,9 +516,10 @@ def calculate_advanced_indicators(df):
         elif macd_hist > 0: macd_sig = "🔴 多方格局"
         elif macd_hist < 0 and prev_hist > 0: macd_sig = "💀 翻綠起跌"
         
+        # ★ ADX 判斷順序修正 (先判斷極強，再判斷強)
         trend_strength = "💤 盤整"
-        if adx_val > 25: trend_strength = "🚀 強趨勢"
-        elif adx_val > 50: trend_strength = "💥 極強趨勢"
+        if adx_val > 50: trend_strength = "💥 極強趨勢"
+        elif adx_val > 25: trend_strength = "🚀 強趨勢"
         
         cci_sig = "⚪ 中性"
         if cci_val < -100: cci_sig = "💎 超賣"
@@ -546,9 +545,9 @@ def identify_k_pattern(df):
         
         last_5 = df.tail(5).copy().reset_index(drop=True)
         
-        c4, o4, h4, l4 = last_5.loc[4, ['Close', 'Open', 'High', 'Low']] # 今天 (即時)
-        c3, o3, h3, l3 = last_5.loc[3, ['Close', 'Open', 'High', 'Low']] # 昨天
-        c2, o2, h2, l2 = last_5.loc[2, ['Close', 'Open', 'High', 'Low']] # 前天
+        c4, o4, h4, l4 = last_5.loc[4, ['Close', 'Open', 'High', 'Low']] 
+        c3, o3, h3, l3 = last_5.loc[3, ['Close', 'Open', 'High', 'Low']] 
+        c2, o2, h2, l2 = last_5.loc[2, ['Close', 'Open', 'High', 'Low']] 
         
         body4 = abs(c4 - o4); is_green4 = c4 > o4
         body3 = abs(c3 - o3); is_red3 = c3 < o3
@@ -659,9 +658,9 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     if lp is None: lp = df['Close'].iloc[-1]
     prev_c = df['Close'].iloc[-1]
     
+    # ★ K 線防呆
     last_h = df['High'].iloc[-1]
     last_l = df['Low'].iloc[-1]
-    
     valid_h = last_h if last_h > (lp * 0.1) else lp
     valid_l = last_l if last_l > (lp * 0.1) else lp
     
@@ -676,16 +675,13 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         'Volume': [0]
     }, index=[pd.Timestamp.now()])
     
-    # -------------------------------------------------------
-    # ★ v9.1 關鍵修正：防止「今天」的 K 線重複出現
-    # -------------------------------------------------------
+    # ★ 防止「今天」的 K 線重複
     clean_history = df.copy()
     today_date = pd.Timestamp.now().date()
-    
     if not clean_history.empty:
         last_history_date = clean_history.index[-1].date()
         if last_history_date == today_date:
-            clean_history = clean_history.iloc[:-1] # 刪除最後一列
+            clean_history = clean_history.iloc[:-1] 
             
     calc_df = pd.concat([clean_history, new_row])
     
@@ -813,7 +809,6 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
             except: pass
             
         elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
-             # ★ Gemini 可能回傳錯誤訊息字串
              ai_decision, ai_reason = check_risk_with_gemini(api_key_gemini, symbol, current_rsi, sig, gemini_model_name)
              if isinstance(ai_decision, str) and "Error" in ai_decision:
                  ai_decision = "PASS"
@@ -886,18 +881,182 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     }
 
 # ==========================================
+# 6. 視覺化
+# ==========================================
+def plot_chart(df, config, signals=None, show_signals=True):
+    if df is None: return None
+    
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.6, 0.2, 0.2], specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]])
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price', increasing_line_color='#089981', increasing_fillcolor='#089981', decreasing_line_color='#f23645', decreasing_fillcolor='#f23645'), row=1, col=1)
+    
+    vwap_line = ta.vwma(df['Close'], df['Volume'], length=20)
+    if vwap_line is not None: fig.add_trace(go.Scatter(x=df.index, y=vwap_line, name='VWAP', line=dict(color='#FFD700', width=1.5)), row=1, col=1)
+
+    if config.get('ma_trend', 0) > 0:
+        ma_trend = ta.ema(df['Close'], length=config['ma_trend'])
+        fig.add_trace(go.Scatter(x=df.index, y=ma_trend, name=f"EMA {config['ma_trend']}", line=dict(color='purple', width=2)), row=1, col=1)
+
+    if config['mode'] == "SUPERTREND":
+        st = ta.supertrend(df['High'], df['Low'], df['Close'], length=config['period'], multiplier=config['multiplier'])
+        if st is not None: fig.add_trace(go.Scatter(x=df.index, y=st[st.columns[0]], name='SuperTrend', mode='lines', line=dict(color='#2962ff', width=2)), row=1, col=1)
+
+    elif config['mode'] == "MA_CROSS":
+        f = ta.sma(df['Close'], config['fast_ma']); s = ta.sma(df['Close'], config['slow_ma'])
+        fig.add_trace(go.Scatter(x=df.index, y=f, name=f'MA{config["fast_ma"]}', line=dict(color='#ff9800', width=1.5)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=s, name=f'MA{config["slow_ma"]}', line=dict(color='#2962ff', width=2)), row=1, col=1)
+        
+    if "RSI" in config['mode'] or config['mode'] == "FUSION" or config['mode'] == "BOLL_RSI":
+        rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
+        fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='#b39ddb', width=2)), row=2, col=1)
+        fig.add_hrect(y0=config.get('entry_rsi', 30), y1=config.get('exit_rsi', 70), fillcolor="rgba(255, 255, 255, 0.05)", line_width=0, row=2, col=1)
+        fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color='#089981', row=2, col=1)
+        fig.add_hline(y=config.get('exit_rsi', 70), line_dash="dash", line_color='#f23645', row=2, col=1)
+
+    elif config['mode'] == "KD":
+        k = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
+        if k is not None:
+            fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 0], name='K', line=dict(color='#ffeb3b', width=1.5)), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 1], name='D', line=dict(color='#2962ff', width=1.5)), row=2, col=1)
+            fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", line_color='#089981', row=2, col=1)
+            fig.add_hline(y=config.get('exit_k', 80), line_dash="dash", line_color='#f23645', row=2, col=1)
+
+    cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
+    if cmf is not None:
+        colors = ['#089981' if v >= 0 else '#f23645' for v in cmf] 
+        fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF', marker_color=colors), row=3, col=1)
+
+    if show_signals and signals is not None:
+        buy_pts = df.loc[signals == 1]; sell_pts = df.loc[signals == -1]
+        if not buy_pts.empty: fig.add_trace(go.Scatter(x=buy_pts.index, y=buy_pts['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', size=12, color='#089981', line=dict(width=1, color='black')), name='Buy'), row=1, col=1)
+        if not sell_pts.empty: fig.add_trace(go.Scatter(x=sell_pts.index, y=sell_pts['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', size=12, color='#f23645', line=dict(width=1, color='black')), name='Sell'), row=1, col=1)
+
+    fig.update_layout(height=600, margin=dict(t=30, b=0, l=0, r=0), paper_bgcolor='#131722', plot_bgcolor='#131722', font=dict(color='#d1d4dc', family="Roboto"), showlegend=False, xaxis=dict(showgrid=True, gridcolor='#2a2e39'), yaxis=dict(showgrid=True, gridcolor='#2a2e39'))
+    return fig
+
+# ★★★ 修正回測邏輯 (支援所有策略) ★★★
+def quick_backtest(df, config, fee=0.0005):
+    if df is None or len(df) < 50: return None, None
+    close = df['Close']; high = df['High']; low = df['Low']
+    signals = pd.Series(0, index=df.index)
+    
+    try:
+        if config['mode'] in ["RSI_RSI", "FUSION"]:
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            signals[rsi < config['entry_rsi']] = 1
+            signals[rsi > config['exit_rsi']] = -1
+
+        elif config['mode'] == "RSI_MA":
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            ma_exit = ta.sma(close, length=config['exit_ma'])
+            signals[rsi < config['entry_rsi']] = 1
+            signals[close > ma_exit] = -1
+
+        elif config['mode'] == "BOLL_RSI":
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            bb = ta.bbands(close, length=20, std=2)
+            lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
+            signals[(close < lower) & (rsi < config['entry_rsi'])] = 1
+            signals[close > upper] = -1
+
+        elif config['mode'] == "KD":
+            k = ta.stoch(high, low, close, k=9, d=3).iloc[:, 0]
+            signals[k < config['entry_k']] = 1
+            signals[k > config['exit_k']] = -1
+
+        elif config['mode'] == "SUPERTREND":
+            st = ta.supertrend(high, low, close, length=config['period'], multiplier=config['multiplier'])
+            dr = st.iloc[:, 1]
+            signals[(dr == 1) & (dr.shift(1) == -1)] = 1
+            signals[(dr == -1) & (dr.shift(1) == 1)] = -1
+
+        elif config['mode'] == "MA_CROSS":
+            f = ta.sma(close, config['fast_ma']); s = ta.sma(close, config['slow_ma'])
+            signals[(f > s) & (f.shift(1) <= s.shift(1))] = 1; signals[(f < s) & (f.shift(1) >= s.shift(1))] = -1
+            
+        pos = 0; ent = 0; trd = 0; wins = 0; rets = []
+        for i in range(len(df)):
+            if pos == 0 and signals.iloc[i] == 1: 
+                pos = 1; ent = close.iloc[i]
+            elif pos == 1 and signals.iloc[i] == -1:
+                pos = 0; raw_r = (close.iloc[i] - ent) / ent
+                net_r = raw_r - (fee * 2)
+                rets.append(net_r); trd += 1
+                if net_r > 0: wins += 1
+        return signals, {"Total_Return": sum(rets)*100, "Win_Rate": (wins/trd*100) if trd else 0, "Trades": trd}
+    except: return None, None
+
+def display_card(placeholder, row, config, unique_id, show_signals):
+    with placeholder.container(border=True):
+        st.subheader(f"{row['Name']}")
+        c1, c2 = st.columns(2)
+        c1.metric("昨日收盤", f"${row['Prev_Close']:,.2f}")
+        c2.metric("即時價格", f"${row['Price']:,.2f}", f"{row['Price']-row['Prev_Close']:.2f}")
+        
+        sig_col = "green" if "BUY" in row['Signal'] else "red" if "SELL" in row['Signal'] else "gray"
+        st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
+        st.info(f"🛠️ **目前策略**: {row['Strat_Desc']}")
+        
+        st.warning(f"💰 **建議倉位 (Risk {st.session_state.get('user_risk', 1.0)}%)**: {row['Position']}")
+        
+        with st.expander("🎙️ AI 法說會工具箱 (手動版)", expanded=False):
+            mode = st.radio("輸入模式", ["貼上逐字稿", "上傳錄音檔(mp3)"], horizontal=True, key=f"mode_{unique_id}")
+            groq_client = st.session_state.get('groq_client_obj', None)
+            
+            if mode == "貼上逐字稿":
+                txt_input = st.text_area("請貼上法說會內容...", height=150, key=f"txt_{unique_id}")
+                if st.button("🧠 AI 分析文字", key=f"btn_txt_{unique_id}"):
+                    if groq_client and txt_input:
+                        with st.spinner("AI 正在研讀..."):
+                            analysis = analyze_earnings_text(groq_client, row['Symbol'], txt_input)
+                            st.markdown(analysis)
+                    else: st.warning("請輸入內容並設定 Groq Key")
+            else:
+                aud_file = st.file_uploader("上傳錄音檔 (25MB內)", type=['mp3', 'wav', 'm4a'], key=f"aud_{unique_id}")
+                if st.button("👂 AI 聽音辨位", key=f"btn_aud_{unique_id}"):
+                    if groq_client and aud_file:
+                        with st.spinner("AI 正在聆聽..."):
+                            analysis, trans = analyze_earnings_audio(groq_client, aud_file)
+                            st.markdown(analysis)
+                            with st.expander("原始逐字稿"): st.text(trans[:1000]+"...")
+                    else: st.warning("請上傳檔案並設定 Groq Key")
+
+        if row.get('Debate'):
+            with st.expander("⚖️ AI 委員會辯論紀錄 (三方會談)", expanded=True):
+                st.markdown(f"<div class='bull-box'><b>🕵️‍♂️ 多頭觀點 (The Bull)</b><br>{row['Debate']['bull']}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='bear-box'><b>🛡️ 空頭觀點 (The Bear)</b><br>{row['Debate']['bear']}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='judge-box'><b>⚖️ 投資長裁決 (The CIO)</b><br>{row['Debate']['judge']}</div>", unsafe_allow_html=True)
+        
+        elif row['Is_LLM']:
+            with st.expander("🧠 AI 觀點 (單一模型)", expanded=True):
+                st.markdown(row['LLM_Analysis'])
+        else:
+            st.caption(f"FinBERT: {row['LLM_Analysis']}")
+            if row.get('Logs'):
+                with st.expander("📊 FinBERT 詳細情緒列表", expanded=False):
+                    for log in row['Logs']:
+                        st.text(log)
+
+        if row['Raw_DF'] is not None:
+            with st.expander("📊 K線與回測 (Pro Charts)", expanded=False):
+                fee_rate = st.session_state.get('tx_fee', 0.0005)
+                sig, perf = quick_backtest(row['Raw_DF'], config, fee_rate)
+                st.plotly_chart(plot_chart(row['Raw_DF'], config, sig, show_signals), use_container_width=True)
+                if perf: st.caption(f"模擬績效 (成本{fee_rate*100}%): 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
+        
+        st.text(f"型態: {row['K_Pattern']} | 波動: {row['Pred']} | 籌碼: {row['Chip']}")
+
+# ==========================================
 # 8. 執行區 (UI 與 邏輯)
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 設定")
     
-    # 1. AI 模型選擇與 Key 輸入
     st.subheader("🤖 AI 模型選擇")
     ai_provider = st.selectbox("請選擇 AI 供應商", ["不使用", "Groq (Llama-3)", "Gemini (User Defined)"])
     
     groq_key = ""
     gemini_key = ""
-    gemini_model_name = "models/gemini-2.0-flash" # Default
+    gemini_model_name = "models/gemini-2.0-flash" 
     enable_debate_mode = False
     
     if ai_provider == "Groq (Llama-3)":
@@ -908,7 +1067,6 @@ with st.sidebar:
         gemini_key = st.text_input("Gemini API Key", type="password")
         gemini_model_name = st.text_input("Gemini Model Name", value="models/gemini-2.0-flash")
         st.caption("例如: models/gemini-2.0-flash 或 models/gemini-3-flash-preview")
-        
         enable_debate_mode = st.checkbox("✅ 啟動「AI 委員會辯論」模式 (深度分析/耗額度)", value=False)
         if enable_debate_mode:
             st.caption("⚠️ 警告：此模式會進行三方角色扮演，建議使用額度較高的 Key。")
@@ -923,17 +1081,12 @@ with st.sidebar:
     
     st.divider()
     
-    # ---------------------------------------------
-    # ★★★ 改用「點菜模式 (Selectbox)」 ★★★
-    # ---------------------------------------------
     st.header("👆 選擇分析目標")
-    
     market_filter = st.radio("市場區域：", ["全部", "美股", "台股"], horizontal=True)
     all_categories = sorted(list(set(s.get('category', '未分類') for s in strategies.values())))
     category_options = ["📂 全部產業"] + all_categories
     selected_category = st.selectbox("產業分類篩選：", category_options)
 
-    # 1. 篩選出符合條件的股票清單
     filtered_strategies = {}
     for k, v in strategies.items():
         is_tw = ".TW" in v['symbol'] or "TWD" in v['symbol']
@@ -943,11 +1096,9 @@ with st.sidebar:
             if v.get('category') != selected_category: continue
         filtered_strategies[k] = v
 
-    # 2. 製作選單 (顯示名稱而非代碼)
     option_map = {f"{v['symbol']} - {v['name']}": k for k, v in filtered_strategies.items()}
     selected_option = st.selectbox("請選擇要分析的股票：", list(option_map.keys()))
     
-    # 3. 取得選中的 key
     target_key = option_map[selected_option]
     target_config = strategies[target_key]
 
@@ -957,7 +1108,6 @@ with st.sidebar:
     tx_fee = st.number_input("單邊交易成本 (%)", min_value=0.0, max_value=5.0, value=0.05, step=0.01) / 100
     st.session_state['tx_fee'] = tx_fee
 
-# ★★★ 側邊欄：日韓股早盤雷達 ★★★
 st.sidebar.divider()
 st.sidebar.header("🌏 亞股早盤雷達 (08:00)")
 
@@ -989,19 +1139,29 @@ with m2:
 if target_key:
     st.subheader(f"📊 {target_config['name']} 深度分析")
     
-    # 直接執行單股分析
-    with st.spinner(f"正在連線 {ai_provider} 分析 {target_config['symbol']}..."):
-        row = analyze_ticker(target_config, ai_provider, groq_key, gemini_key, gemini_model_name, enable_debate_mode)
-        display_card(st.empty(), row, target_config, target_key, show_signals)
+    try:
+        # 初始化 row，避免 NameError
+        row = None
         
-    # 如果有開啟參數優化，才跑這段
-    if st.checkbox("🧪 執行 Grid Search 參數優化 (耗時)", value=False):
-        if row['Raw_DF'] is not None:
-            with st.expander(f"🧪 {target_config['symbol']} 最佳參數"):
-                opt_res = optimize_rsi_strategy(row['Raw_DF'], target_config['symbol'])
-                if opt_res is not None and not opt_res.empty:
-                    best = opt_res.sort_values(by="Return", ascending=False).iloc[0]
-                    st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
+        with st.spinner(f"正在連線 {ai_provider} 分析 {target_config['symbol']}..."):
+            row = analyze_ticker(target_config, ai_provider, groq_key, gemini_key, gemini_model_name, enable_debate_mode)
+            
+        if row:
+            display_card(st.empty(), row, target_config, target_key, show_signals)
+            
+            if st.checkbox("🧪 執行 Grid Search 參數優化 (耗時)", value=False):
+                if row['Raw_DF'] is not None:
+                    with st.expander(f"🧪 {target_config['symbol']} 最佳參數"):
+                        opt_res = optimize_rsi_strategy(row['Raw_DF'], target_config['symbol'])
+                        if opt_res is not None and not opt_res.empty:
+                            best = opt_res.sort_values(by="Return", ascending=False).iloc[0]
+                            st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
+        else:
+            st.error("分析失敗，無法取得數據。")
+            
+    except Exception as e:
+        st.error(f"執行時發生錯誤: {str(e)}")
+        # st.exception(e) # 開發者模式可打開
 
 st.divider()
-st.success("✅ 分析完成 (v9.1 Ultimate - CCI & K-Line Full Fix)")
+st.success("✅ 分析完成 (v9.2 Ultimate - NameError Fixed + Stable ADX)")
