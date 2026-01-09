@@ -41,8 +41,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v10.5)",
-    page_icon="🛡️",
+    page_title="2026 量化戰情室 (Ultimate v10.6)",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -64,8 +64,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ 量化戰情室 (Ultimate v10.5)")
-st.caption("完美修復版：補回 Backtest/Plot | KD指標 | K線識別 | 雙引擎 AI")
+st.title("💎 量化戰情室 (Ultimate v10.6)")
+st.caption("完整版：所有函式皆已補齊 | KD指標 | K線識別 | 倉位計算 | 雙引擎 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -484,9 +484,6 @@ def predict_volatility(df):
         return df['Close'].iloc[-1] + atr.iloc[-1], df['Close'].iloc[-1] - atr.iloc[-1]
     except: return None, None
 
-# ==========================================
-# ★ 修正版 v10.4：進階技術指標 (KD取代CCI)
-# ==========================================
 def calculate_advanced_indicators(df):
     try:
         if df is None or len(df) < 30: return {}
@@ -496,8 +493,8 @@ def calculate_advanced_indicators(df):
         # 1. MACD
         macd = ta.macd(work_df['Close'], fast=12, slow=26, signal=9)
         if macd is None: return {}
-        macd_hist = float(macd.iloc[:, 1].iloc[-1]) 
-        prev_hist = float(macd.iloc[:, 1].iloc[-2]) 
+        macd_hist = float(macd.iloc[:, 1].iloc[-1]) # Force float
+        prev_hist = float(macd.iloc[:, 1].iloc[-2]) # Force float
         
         # 2. ADX
         adx_df = ta.adx(work_df['High'], work_df['Low'], work_df['Close'], length=14)
@@ -532,9 +529,6 @@ def calculate_advanced_indicators(df):
     except Exception as e:
         return {}
 
-# ==========================================
-# ★ 補回遺失的：智慧 K 線型態識別
-# ==========================================
 def identify_k_pattern(df):
     try:
         if df is None or len(df) < 10: return "資料不足"
@@ -631,6 +625,23 @@ def analyze_chips_volume(df, inst_percent, short_percent):
         
     except Exception as e:
         return f"籌碼錯誤: {str(e)}", None
+
+# ==========================================
+# ★ 補回遺失的：calculate_position_size (本次修復)
+# ==========================================
+def calculate_position_size(price, df, capital, risk_pct):
+    try:
+        if df is None or len(df) < 15: return "N/A"
+        atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
+        stop_loss_dist = 2 * atr
+        risk_amount = capital * (risk_pct / 100)
+        shares = risk_amount / stop_loss_dist
+        total_cost = shares * price
+        if total_cost > capital:
+            shares = capital / price
+            return f"{int(shares)}股 (滿倉)"
+        return f"{int(shares)}股 (約${total_cost:.0f})"
+    except: return "計算失敗"
 
 # ==========================================
 # ★ 補回遺失的：quick_backtest
@@ -941,7 +952,10 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     p_high, p_low = predict_volatility(df)
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     
+    # ★★★ 1. 計算 K線型態 ★★★
     k_pattern = identify_k_pattern(calc_df)
+    
+    # ★★★ 2. 計算進階指標 ★★★
     adv_data = calculate_advanced_indicators(calc_df)
 
     tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。\n"
@@ -972,6 +986,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         llm_res = f"情緒分: {score:.2f} (未連線 AI)"
 
     
+    # ★★★ 4. 籌碼分析 ★★★
     chip_msg_display, chip_raw_data = analyze_chips_volume(df, fund['inst'] if fund else 0, fund['short'] if fund else 0)
     
     if ai_provider == "Gemini (User Defined)" and api_key_gemini and chip_raw_data:
@@ -1227,4 +1242,4 @@ if target_key:
         # st.exception(e) # 開發者模式可打開
 
 st.divider()
-st.success("✅ 分析完成 (v10.5 Ultimate - All Functions Restored)")
+st.success("✅ 分析完成 (v10.6 Ultimate - Full Restoration)")
