@@ -41,7 +41,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v9.4)",
+    page_title="2026 量化戰情室 (Ultimate v10.0)",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -64,8 +64,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ 量化戰情室 (Ultimate v9.4)")
-st.caption("完整版：修復 Missing Function | Series Ambiguous Fix | CCI & K-Line")
+st.title("🛡️ 量化戰情室 (Ultimate v10.0)")
+st.caption("穩定版：替換為 Williams %R (絕對防呆) | ADX 趨勢 | 雙引擎 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -108,7 +108,7 @@ strategies = {
 }
 
 # ==========================================
-# 1. 核心函數 (資料獲取 - 含防呆)
+# 1. 核心函數 (資料獲取)
 # ==========================================
 def get_real_live_price(symbol):
     try:
@@ -142,9 +142,7 @@ def get_safe_data(ticker):
         if isinstance(df.columns, pd.MultiIndex): 
             df.columns = df.columns.get_level_values(0)
         
-        # ★ 去重防護：移除重複欄位
         df = df.loc[:, ~df.columns.duplicated()]
-        
         df.index = pd.to_datetime(df.index)
         return df
     except: return None
@@ -324,8 +322,8 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, k_pattern, m
         【最新新聞】：{news_text}
         
         請用繁體中文回答：
-        1. **深度多空邏輯**：請綜合 RSI, MACD, ADX 以及 K線型態 進行交叉比對。
-           (例如: RSI低檔 + MACD翻紅 + ADX強趨勢 = 高勝率買點)。
+        1. **深度多空邏輯**：請綜合 RSI, MACD, ADX 以及 WillR (威廉指標) 進行交叉比對。
+           (注意: WillR -80以下為超賣，-20以上為超買)。
         2. **情緒評分**：(-10~10)。
         3. **操作建議**：給出具體的進出場思路 (保守者/積極者)。
         """
@@ -491,7 +489,7 @@ def predict_volatility(df):
     except: return None, None
 
 # ==========================================
-# ★ 修正版 v9.3：進階技術指標 (ADX 邏輯優化 + CCI清洗)
+# ★ 修正版 v10.0 (Final)：移除 CCI，替換為 Williams %R (絕對防呆)
 # ==========================================
 def calculate_advanced_indicators(df):
     try:
@@ -507,18 +505,15 @@ def calculate_advanced_indicators(df):
         
         # 2. ADX
         adx_df = ta.adx(work_df['High'], work_df['Low'], work_df['Close'], length=14)
-        adx_val = float(adx_df.iloc[:, 0].iloc[-1]) if adx_df is not None else 0.0 # Force float
+        adx_val = float(adx_df.iloc[:, 0].iloc[-1]) if adx_df is not None else 0.0
         
-        # 3. CCI
-        cci_val = ta.cci(work_df['High'], work_df['Low'], work_df['Close'], length=14).iloc[-1]
-        try:
-            cci_val = float(cci_val)
-        except:
-            cci_val = 0.0
-            
-        if np.isnan(cci_val) or np.isinf(cci_val):
-            cci_val = 0.0
-            
+        # ★ 3. Williams %R (替代 CCI)
+        # WillR Range: 0 to -100.
+        # -80 to -100: Oversold (Green)
+        # 0 to -20: Overbought (Red)
+        willr = ta.willr(work_df['High'], work_df['Low'], work_df['Close'], length=14)
+        willr_val = float(willr.iloc[-1]) if willr is not None else -50.0 # Default mid
+        
         # --- 邏輯判斷 ---
         macd_sig = "🔴 空方"
         if macd_hist > 0 and prev_hist < 0: macd_sig = "🔥 翻紅起漲"
@@ -529,17 +524,17 @@ def calculate_advanced_indicators(df):
         if adx_val > 50: trend_strength = "💥 極強趨勢"
         elif adx_val > 25: trend_strength = "🚀 強趨勢"
         
-        cci_sig = "⚪ 中性"
-        if cci_val < -100: cci_sig = "💎 超賣"
-        elif cci_val > 100: cci_sig = "⚠️ 超買"
+        willr_sig = "⚪ 中性"
+        if willr_val < -80: willr_sig = "💎 超賣 (WillR)"
+        elif willr_val > -20: willr_sig = "⚠️ 超買 (WillR)"
 
         return {
             "MACD_Hist": round(macd_hist, 3),
             "MACD_Signal": macd_sig,
             "ADX": round(adx_val, 1),
             "Trend_Strength": trend_strength,
-            "CCI": round(cci_val, 2),
-            "CCI_Signal": cci_sig
+            "CCI": round(willr_val, 1), # Key: using WillR value here
+            "CCI_Signal": willr_sig # Key: using WillR signal
         }
     except Exception as e:
         return {}
@@ -854,7 +849,8 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
 
     tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。\n"
     if adv_data:
-        tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), CCI({adv_data['CCI']})。\n"
+        # ★★★ 更新 Prompt: 把 CCI 改成 WillR
+        tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), WillR({adv_data['CCI']})。\n"
 
     if ai_provider == "Groq (Llama-3)" and api_key_groq:
         try:
@@ -960,6 +956,7 @@ def display_card(placeholder, row, config, unique_id, show_signals):
                 st.plotly_chart(plot_chart(row['Raw_DF'], config, sig, show_signals), use_container_width=True)
                 if perf: st.caption(f"模擬績效 (成本{fee_rate*100}%): 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
         
+        # ★★★ 顯示新的 WillR 指標 (原本是 CCI) ★★★
         st.text(f"型態: {row['K_Pattern']} | 波動: {row['Pred']} | 籌碼: {row['Chip']}")
 
 def plot_chart(df, config, signals=None, show_signals=True):
@@ -1023,7 +1020,7 @@ with st.sidebar:
     
     groq_key = ""
     gemini_key = ""
-    gemini_model_name = "models/gemini-2.0-flash" 
+    gemini_model_name = "models/gemini-3-flash-preview" 
     enable_debate_mode = False
     
     if ai_provider == "Groq (Llama-3)":
@@ -1131,4 +1128,4 @@ if target_key:
         # st.exception(e) # 開發者模式可打開
 
 st.divider()
-st.success("✅ 分析完成 (v9.4 Ultimate - All Fixed)")
+st.success("✅ 分析完成 (v10.0 Ultimate - WillR + All Fixes)")
