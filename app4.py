@@ -41,8 +41,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v7.6)",
-    page_icon="🚀",
+    page_title="2026 量化戰情室 (Ultimate v8.1)",
+    page_icon="🛠️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -58,11 +58,15 @@ st.markdown("""
         .stButton > button { background-color: #2962ff; color: white; border: none; border-radius: 4px; font-weight: 600; }
         .stButton > button:hover { background-color: #1e4bd1; }
         .streamlit-expanderHeader { background-color: #1c202a !important; color: #d1d4dc !important; border: 1px solid #2a2e39; }
+        /* 辯論區塊樣式 */
+        .bull-box { background-color: #1a2e1a; padding: 10px; border-left: 5px solid #00ff00; margin-bottom: 5px; border-radius: 5px; }
+        .bear-box { background-color: #2e1a1a; padding: 10px; border-left: 5px solid #ff0000; margin-bottom: 5px; border-radius: 5px; }
+        .judge-box { background-color: #1a1a2e; padding: 10px; border-left: 5px solid #00aaff; margin-bottom: 5px; border-radius: 5px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🚀 量化戰情室 (Ultimate v7.6)")
-st.caption("全功能版：MACD/ADX趨勢判斷 | K線型態 | Gemini 籌碼背離 | 雙引擎 AI")
+st.title("🛠️ 量化戰情室 (Ultimate v8.1)")
+st.caption("修正版：CCI 數據強效去污 | AI 委員會辯論 | 雙引擎架構")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -227,7 +231,7 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯分析
+# 3. AI 邏輯分析 (含多代理人辯論)
 # ==========================================
 
 # ★ 3.1 Groq 風險濾網
@@ -297,34 +301,66 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal, k_pattern):
         return resp.choices[0].message.content, "🤖", True
     except Exception as e: return f"Groq Error: {str(e)}", "⚠️", False
 
-# ★ 3.4 LLM 通用分析 (Gemini)
-def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, k_pattern, model_name):
-    if not HAS_GEMINI: return "Gemini 套件未安裝", "⚠️", False
-    if not news_titles: return f"⚠️ {symbol} 抓不到新聞，無法分析。", "⚪", False
-    
+# ★★★ 新增：AI 委員會辯論系統 (The Council) ★★★
+def run_ai_debate(api_key, symbol, news_titles, tech_ctx, k_pattern, model_name):
+    if not HAS_GEMINI: return "Gemini 套件未安裝", "⚠️", False, None
+    if not news_titles: return f"⚠️ {symbol} 抓不到新聞，無法分析。", "⚪", False, None
+
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
         news_text = "\n".join(news_titles)
+        data_feed = f"【標的】{symbol}\n【技術面】{tech_ctx}\n【型態】{k_pattern}\n【新聞】{news_text}"
+
+        # 1. 激進多頭 (The Bull)
+        prompt_bull = f"""
+        你現在是華爾街最激進的「多頭分析師 (The Bull)」。
+        請忽略小風險，專注於 {symbol} 的上漲潛力、動能、題材與想像空間。
         
-        # ★ 更新 Prompt：加入 K 線型態與進階指標判讀
-        prompt = f"""
-        請擔任華爾街資深操盤手，分析 {symbol}。
+        {data_feed}
         
-        【綜合技術訊號】：{tech_signal}
-        【K線型態】：{k_pattern} (請特別注意是否有反轉訊號)
-        【最新新聞】：{news_text}
-        
-        請用繁體中文回答：
-        1. **深度多空邏輯**：請綜合 RSI, MACD, ADX 以及 K線型態 進行交叉比對。
-           (例如: RSI低檔 + MACD翻紅 + ADX強趨勢 = 高勝率買點)。
-        2. **情緒評分**：(-10~10)。
-        3. **操作建議**：給出具體的進出場思路 (保守者/積極者)。
+        任務：請用激昂的語氣，列出 3 個「非買不可」的理由。限制 100 字以內。
         """
-        response = model.generate_content(prompt)
-        return response.text, "⚡", True
+        res_bull = model.generate_content(prompt_bull).text
+
+        # 2. 保守空頭 (The Bear)
+        prompt_bear = f"""
+        你現在是華爾街最嚴格的「空頭分析師 (The Bear)」。
+        請忽略題材，專注於 {symbol} 的風險、估值過高、背離訊號與總經逆風。
+        
+        {data_feed}
+        
+        任務：請用冷酷的語氣，列出 3 個「絕對不能買」或「應該賣出」的理由。限制 100 字以內。
+        """
+        res_bear = model.generate_content(prompt_bear).text
+
+        # 3. 投資長裁決 (The Judge)
+        prompt_judge = f"""
+        你是一間避險基金的投資長 (CIO)。你剛聽完兩位分析師的辯論。
+        
+        【多頭觀點】：{res_bull}
+        【空頭觀點】：{res_bear}
+        【客觀數據】：{data_feed}
+        
+        任務：
+        1. 評論誰更有道理？(多頭 vs 空頭)
+        2. 給出最終操作指令 (Aggressive Buy / Buy / Hold / Sell / Strong Sell)。
+        3. 給出一個「情緒分數」(-10 到 10)。
+        請用繁體中文，專業且冷靜地回答。
+        """
+        res_judge = model.generate_content(prompt_judge).text
+
+        # 打包辯論結果
+        debate_transcript = {
+            "bull": res_bull,
+            "bear": res_bear,
+            "judge": res_judge
+        }
+        
+        return res_judge, "⚖️", True, debate_transcript
+
     except Exception as e:
-        return f"❌ Gemini 連線失敗: {str(e)}", "⚠️", False
+        return f"❌ 辯論失敗: {str(e)}", "⚠️", False, None
 
 # ★ 3.5 新增：Gemini 籌碼翻譯官 (包含背離判斷)
 def explain_chips_with_gemini(api_key, symbol, price, chip_data, model_name):
@@ -435,40 +471,44 @@ def predict_volatility(df):
     except: return None, None
 
 # ==========================================
-# 修正版：進階技術指標 (含 CCI 數據清洗防呆)
+# ★ 修正版 v2：進階技術指標 (強效去污 - 修復 CCI 異常)
 # ==========================================
 def calculate_advanced_indicators(df):
     try:
         if df is None or len(df) < 30: return {}
         
-        # ★ 數據清洗：防止 High/Low 為 0 導致 CCI 暴衝
+        # ★ 1. 深度數據清洗 (Deep Cleaning)
         # 使用 copy() 避免修改到原始 df
         clean_df = df.copy()
         
-        # 如果 High 或 Low 是 0，用 Close 取代 (修復 yfinance 盤中 bad tick)
-        cols_to_fix = ['High', 'Low', 'Close']
-        for col in cols_to_fix:
-            # 把 0 或 負數 視為 NaN，然後用前一天的資料填補
-            clean_df[col] = clean_df[col].replace(0, np.nan)
-            if clean_df[col].isnull().any():
-                clean_df[col] = clean_df[col].ffill()
+        # 針對 High 和 Low 進行暴力校正：
+        # 如果 High 或 Low 小於股價的 10% (通常是數據錯誤，例如抓到 0 或 0.01)
+        # 我們就強制把它設定為當天的 Close，這樣 CCI 計算就會正常。
         
-        # 1. MACD
+        # 修正 High
+        clean_df['High'] = clean_df['High'].fillna(clean_df['Close'])
+        clean_df.loc[clean_df['High'] < (clean_df['Close'] * 0.1), 'High'] = clean_df['Close']
+        
+        # 修正 Low
+        clean_df['Low'] = clean_df['Low'].fillna(clean_df['Close'])
+        clean_df.loc[clean_df['Low'] < (clean_df['Close'] * 0.1), 'Low'] = clean_df['Close']
+
+        # 確保 High >= Low (修復邏輯矛盾)
+        clean_df['High'] = np.maximum(clean_df['High'], clean_df['Close'])
+        clean_df['Low'] = np.minimum(clean_df['Low'], clean_df['Close'])
+        
+        # 2. MACD
         macd = ta.macd(clean_df['Close'], fast=12, slow=26, signal=9)
         if macd is None: return {}
-        macd_hist = macd.iloc[:, 1].iloc[-1]
+        macd_hist = macd.iloc[:, 1].iloc[-1] 
         prev_hist = macd.iloc[:, 1].iloc[-2]
         
-        # 2. ADX
+        # 3. ADX
         adx_df = ta.adx(clean_df['High'], clean_df['Low'], clean_df['Close'], length=14)
         adx_val = adx_df.iloc[:, 0].iloc[-1] if adx_df is not None else 0
         
-        # 3. CCI (使用清洗後的數據)
+        # 4. CCI (使用清洗後的數據)
         cci_val = ta.cci(clean_df['High'], clean_df['Low'], clean_df['Close'], length=14).iloc[-1]
-        
-        # ★ 防呆：如果還是算出天文數字，強制校正顯示
-        if cci_val > 1000: cci_val = 1000
-        elif cci_val < -1000: cci_val = -1000
         
         # --- 邏輯判斷 ---
         macd_sig = "🔴 空方"
@@ -493,7 +533,6 @@ def calculate_advanced_indicators(df):
             "CCI_Signal": cci_sig
         }
     except Exception as e:
-        # print(f"指標計算錯誤: {e}") # Debug 用
         return {}
 
 # ==========================================
@@ -609,14 +648,34 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
             "Symbol": symbol, "Name": config['name'], "Signal": "ERR", "Action": "資料下載失敗",
             "Price": 0, "Prev_Close": 0, "Raw_DF": None, "Type": "ERR", "Strat_Desc": "無數據",
             "Is_LLM": False, "LLM_Analysis": "無法分析", "Chip": "N/A", "Pred": "N/A",
-            "Buy_At": "---", "Sell_At": "---", "Logs": [], "Position": "---", "K_Pattern": ""
+            "Buy_At": "---", "Sell_At": "---", "Logs": [], "Position": "---", "K_Pattern": "", "Debate": None
         }
 
     lp = get_real_live_price(symbol)
     if lp is None: lp = df['Close'].iloc[-1]
     prev_c = df['Close'].iloc[-1]
     
-    new_row = pd.DataFrame({'Close': [lp], 'High': [max(lp, df['High'].iloc[-1])], 'Low': [min(lp, df['Low'].iloc[-1])], 'Open': [lp], 'Volume': [0]}, index=[pd.Timestamp.now()])
+    # ★ 修改這裡：更保守的即時 K 線生成
+    # 如果 yfinance 的最後一筆 High/Low 是壞掉的 (0 或 異常小)，我們就不要用它
+    last_h = df['High'].iloc[-1]
+    last_l = df['Low'].iloc[-1]
+    
+    # 檢查歷史資料是否壞掉 (如果 High < 股價的 10%，視為壞資料)
+    valid_h = last_h if last_h > (lp * 0.1) else lp
+    valid_l = last_l if last_l > (lp * 0.1) else lp
+    
+    # 合成最新一根 K 線
+    current_high = max(lp, valid_h)
+    current_low = min(lp, valid_l)
+    
+    new_row = pd.DataFrame({
+        'Close': [lp], 
+        'High': [current_high], 
+        'Low': [current_low], 
+        'Open': [lp], 
+        'Volume': [0]
+    }, index=[pd.Timestamp.now()])
+    
     calc_df = pd.concat([df.copy(), new_row])
     c, h, l = calc_df['Close'], calc_df['High'], calc_df['Low']
     
@@ -751,7 +810,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     fund = get_fundamentals(symbol)
     fund_msg = f"PE: {fund['pe']:.1f}" if fund and fund['pe'] else "N/A"
     
-    llm_res = "Init"; is_llm = False
+    llm_res = "Init"; is_llm = False; debate_res = None
     logs = [] 
     news = get_news_content(symbol)
     
@@ -759,31 +818,26 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     
     # ★★★ 1. 計算 K線型態 ★★★
-    k_pattern = identify_k_pattern(calc_df) # 建議這裡也改成 calc_df
+    k_pattern = identify_k_pattern(calc_df)
     
     # ★★★ 2. 計算進階指標 (MACD, ADX, CCI) ★★★
-    # 🔴 原本是: adv_data = calculate_advanced_indicators(df)
-    # 🟢 改成用 calc_df (包含最新即時價格)
     adv_data = calculate_advanced_indicators(calc_df)
 
-    # ★★★ 3. 雙引擎邏輯分析 ★★★
+    # ★★★ 3. 雙引擎邏輯分析 (含委員會辯論) ★★★
+    tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。\n"
+    if adv_data:
+        tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), CCI({adv_data['CCI']})。\n"
+
     if ai_provider == "Groq (Llama-3)" and api_key_groq:
         try:
             groq_c = Groq(api_key=api_key_groq)
-            tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。\n"
-            if adv_data:
-                tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), CCI({adv_data['CCI']})。\n"
-                
             llm_res, icon, success = analyze_logic_groq(groq_c, symbol, news, tech_ctx, k_pattern)
             if success: is_llm = True
         except: pass
         
     elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
-        tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。\n"
-        if adv_data:
-            tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), CCI({adv_data['CCI']})。\n"
-            
-        llm_res, icon, success = analyze_logic_gemini(api_key_gemini, symbol, news, tech_ctx, k_pattern, gemini_model_name)
+        # ★★★ 改用辯論模式 ★★★
+        llm_res, icon, success, debate_res = run_ai_debate(api_key_gemini, symbol, news, tech_ctx, k_pattern, gemini_model_name)
         if success:
             is_llm = True
         else:
@@ -811,7 +865,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         "Signal": sig, "Action": act, "Type": sig_type, "Buy_At": buy_at, "Sell_At": sell_at,
         "Fund": fund_msg, "LLM_Analysis": llm_res, "Is_LLM": is_llm, 
         "Raw_DF": df, "Pred": pred_msg, "Chip": chip_msg_display, "Strat_Desc": strategy_desc,
-        "Logs": logs, "Position": pos_msg, "K_Pattern": k_pattern
+        "Logs": logs, "Position": pos_msg, "K_Pattern": k_pattern, "Debate": debate_res
     }
 
 # ==========================================
@@ -954,8 +1008,15 @@ def display_card(placeholder, row, config, unique_id, show_signals):
                             with st.expander("原始逐字稿"): st.text(trans[:1000]+"...")
                     else: st.warning("請上傳檔案並設定 Groq Key")
 
-        if row['Is_LLM']:
-            with st.expander("🧠 AI 觀點 (Gemini/Groq)", expanded=True):
+        # ★★★ 顯示 AI 辯論結果 ★★★
+        if row.get('Debate'):
+            with st.expander("⚖️ AI 委員會辯論紀錄 (三方會談)", expanded=True):
+                st.markdown(f"<div class='bull-box'><b>🕵️‍♂️ 多頭觀點 (The Bull)</b><br>{row['Debate']['bull']}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='bear-box'><b>🛡️ 空頭觀點 (The Bear)</b><br>{row['Debate']['bear']}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='judge-box'><b>⚖️ 投資長裁決 (The CIO)</b><br>{row['Debate']['judge']}</div>", unsafe_allow_html=True)
+        
+        elif row['Is_LLM']:
+            with st.expander("🧠 AI 觀點 (單一模型)", expanded=True):
                 st.markdown(row['LLM_Analysis'])
         else:
             st.caption(f"FinBERT: {row['LLM_Analysis']}")
@@ -1087,4 +1148,4 @@ if target_key:
                     st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
 
 st.divider()
-st.success("✅ 分析完成 (v7.6 Ultimate - Full Features)")
+st.success("✅ 分析完成 (v8.1 Ultimate - CCI Fixed + Debate)")
