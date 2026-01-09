@@ -41,8 +41,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v8.1)",
-    page_icon="🛠️",
+    page_title="2026 量化戰情室 (Ultimate v8.2)",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -65,8 +65,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🛠️ 量化戰情室 (Ultimate v8.1)")
-st.caption("修正版：CCI 數據強效去污 | AI 委員會辯論 | 雙引擎架構")
+st.title("🧠 量化戰情室 (Ultimate v8.2)")
+st.caption("混合模式：預設單一 AI (省額度) | 可切換委員會辯論 (深度) | CCI修正版")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -231,7 +231,7 @@ def analyze_sentiment_finbert(symbol):
         return 0, f"分析錯誤: {str(e)}", []
 
 # ==========================================
-# 3. AI 邏輯分析 (含多代理人辯論)
+# 3. AI 邏輯分析 (單一模式 vs 辯論模式)
 # ==========================================
 
 # ★ 3.1 Groq 風險濾網
@@ -301,23 +301,48 @@ def analyze_logic_groq(client, symbol, news_titles, tech_signal, k_pattern):
         return resp.choices[0].message.content, "🤖", True
     except Exception as e: return f"Groq Error: {str(e)}", "⚠️", False
 
-# ==========================================
-# 修正版：省錢三合一辯論 (只消耗 1 次 API)
-# ==========================================
+# ★ 3.4 LLM 通用分析 (Gemini - 單一模式)
+def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, k_pattern, model_name):
+    if not HAS_GEMINI: return "Gemini 套件未安裝", "⚠️", False
+    if not news_titles: return f"⚠️ {symbol} 抓不到新聞，無法分析。", "⚪", False
+    
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(model_name)
+        news_text = "\n".join(news_titles)
+        
+        prompt = f"""
+        請擔任華爾街資深操盤手，分析 {symbol}。
+        
+        【綜合技術訊號】：{tech_signal}
+        【K線型態】：{k_pattern} (請特別注意是否有反轉訊號)
+        【最新新聞】：{news_text}
+        
+        請用繁體中文回答：
+        1. **深度多空邏輯**：請綜合 RSI, MACD, ADX 以及 K線型態 進行交叉比對。
+           (例如: RSI低檔 + MACD翻紅 + ADX強趨勢 = 高勝率買點)。
+        2. **情緒評分**：(-10~10)。
+        3. **操作建議**：給出具體的進出場思路 (保守者/積極者)。
+        """
+        response = model.generate_content(prompt)
+        return response.text, "⚡", True
+    except Exception as e:
+        return f"❌ Gemini 連線失敗: {str(e)}", "⚠️", False
+
+# ★★★ 3.5 AI 委員會辯論系統 (省錢三合一版) ★★★
 def run_ai_debate(api_key, symbol, news_titles, tech_ctx, k_pattern, model_name):
     if not HAS_GEMINI: return "Gemini 套件未安裝", "⚠️", False, None
     if not news_titles: return f"⚠️ {symbol} 抓不到新聞，無法分析。", "⚪", False, None
 
     try:
         genai.configure(api_key=api_key)
-        # 建議改回 1.5-flash，限制較寬鬆
-        # model = genai.GenerativeModel("models/gemini-1.5-flash") 
+        # model = genai.GenerativeModel("models/gemini-1.5-flash") # 強制指定省錢模型
         model = genai.GenerativeModel(model_name)
         
         news_text = "\n".join(news_titles)
         data_feed = f"【標的】{symbol}\n【技術面】{tech_ctx}\n【型態】{k_pattern}\n【新聞】{news_text}"
 
-        # ★ 關鍵修改：一次扮演三個角色，並要求輸出 JSON
+        # 一次扮演三個角色，並要求輸出 JSON
         prompt_all_in_one = f"""
         你現在是一個「AI 投資委員會」。請閱讀以下市場數據，並同時扮演三個角色進行內部辯論。
         
@@ -338,37 +363,26 @@ def run_ai_debate(api_key, symbol, news_titles, tech_ctx, k_pattern, model_name)
         }}
         """
         
-        # 發送請求 (只消耗 1 次 Quota)
         response = model.generate_content(prompt_all_in_one)
         text_res = response.text.strip()
         
-        # 清洗數據：有時候 AI 會雞婆加上 ```json ... ```，要把它去掉
-        if "```json" in text_res:
-            text_res = text_res.replace("```json", "").replace("```", "")
-        elif "```" in text_res:
-            text_res = text_res.replace("```", "")
+        if "```json" in text_res: text_res = text_res.replace("```json", "").replace("```", "")
+        elif "```" in text_res: text_res = text_res.replace("```", "")
             
-        # 解析 JSON
         debate_json = json.loads(text_res)
         
-        # 提取結果
-        res_bull = debate_json.get("bull", "解析失敗")
-        res_bear = debate_json.get("bear", "解析失敗")
-        res_judge = debate_json.get("judge", "解析失敗")
-
         debate_transcript = {
-            "bull": res_bull,
-            "bear": res_bear,
-            "judge": res_judge
+            "bull": debate_json.get("bull", "解析失敗"),
+            "bear": debate_json.get("bear", "解析失敗"),
+            "judge": debate_json.get("judge", "解析失敗")
         }
         
-        return res_judge, "⚖️", True, debate_transcript
+        return debate_json.get("judge", "無結論"), "⚖️", True, debate_transcript
 
     except Exception as e:
-        # 如果 JSON 解析失敗或 API 報錯，回傳錯誤訊息
         return f"❌ 辯論失敗 (API 限制或解析錯誤): {str(e)}", "⚠️", False, None
 
-# ★ 3.5 新增：Gemini 籌碼翻譯官 (包含背離判斷)
+# ★ 3.6 Gemini 籌碼翻譯官
 def explain_chips_with_gemini(api_key, symbol, price, chip_data, model_name):
     if not HAS_GEMINI or not chip_data: return None
     
@@ -376,7 +390,6 @@ def explain_chips_with_gemini(api_key, symbol, price, chip_data, model_name):
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
         
-        # 將列表轉為字串方便 AI 閱讀
         p_str = str(chip_data['price_trend'])
         c_str = str(chip_data['cmf_trend'])
         o_str = str(chip_data['obv_trend'])
@@ -487,10 +500,6 @@ def calculate_advanced_indicators(df):
         # 使用 copy() 避免修改到原始 df
         clean_df = df.copy()
         
-        # 針對 High 和 Low 進行暴力校正：
-        # 如果 High 或 Low 小於股價的 10% (通常是數據錯誤，例如抓到 0 或 0.01)
-        # 我們就強制把它設定為當天的 Close，這樣 CCI 計算就會正常。
-        
         # 修正 High
         clean_df['High'] = clean_df['High'].fillna(clean_df['Close'])
         clean_df.loc[clean_df['High'] < (clean_df['Close'] * 0.1), 'High'] = clean_df['Close']
@@ -499,7 +508,7 @@ def calculate_advanced_indicators(df):
         clean_df['Low'] = clean_df['Low'].fillna(clean_df['Close'])
         clean_df.loc[clean_df['Low'] < (clean_df['Close'] * 0.1), 'Low'] = clean_df['Close']
 
-        # 確保 High >= Low (修復邏輯矛盾)
+        # 確保 High >= Low
         clean_df['High'] = np.maximum(clean_df['High'], clean_df['Close'])
         clean_df['Low'] = np.minimum(clean_df['Low'], clean_df['Close'])
         
@@ -513,7 +522,7 @@ def calculate_advanced_indicators(df):
         adx_df = ta.adx(clean_df['High'], clean_df['Low'], clean_df['Close'], length=14)
         adx_val = adx_df.iloc[:, 0].iloc[-1] if adx_df is not None else 0
         
-        # 4. CCI (使用清洗後的數據)
+        # 4. CCI
         cci_val = ta.cci(clean_df['High'], clean_df['Low'], clean_df['Close'], length=14).iloc[-1]
         
         # --- 邏輯判斷 ---
@@ -542,7 +551,7 @@ def calculate_advanced_indicators(df):
         return {}
 
 # ==========================================
-# ★ 新增：K 線型態識別 (純數學邏輯，不依賴 TA-Lib)
+# ★ 新增：K 線型態識別
 # ==========================================
 def identify_k_pattern(df):
     try:
@@ -552,7 +561,6 @@ def identify_k_pattern(df):
         h = df['High'].iloc[-1]; l = df['Low'].iloc[-1]
         prev_c = df['Close'].iloc[-2]; prev_o = df['Open'].iloc[-2]
         
-        # 計算實體與影線
         body = abs(c - o)
         upper_shadow = h - max(c, o)
         lower_shadow = min(c, o) - l
@@ -562,22 +570,17 @@ def identify_k_pattern(df):
         is_prev_down = prev_c < prev_o
         patterns = []
         
-        # 1. 吞噬
         if is_up and is_prev_down and c > prev_o and o < prev_c: patterns.append("🔥 多頭吞噬")
         elif not is_up and not is_prev_down and c < prev_o and o > prev_c: patterns.append("💀 空頭吞噬")
         
-        # 2. 錘頭 (下影線長)
         if lower_shadow > body * 2 and upper_shadow < body * 0.5:
             if is_prev_down: patterns.append("🔨 錘頭 (底部反轉?)")
             else: patterns.append("🪢 吊人 (頭部示警?)")
             
-        # 3. 流星 (上影線長)
         if upper_shadow > body * 2 and lower_shadow < body * 0.5: patterns.append("🌠 流星 (壓力罩頂)")
         
-        # 4. 十字線
         if body < total_range * 0.1 and total_range > 0: patterns.append("➕ 十字線 (變盤)")
 
-        # 5. 紅三兵
         if len(df) >= 3:
             c3, c2, c1 = df['Close'].iloc[-3:]
             o3, o2, o1 = df['Open'].iloc[-3:]
@@ -588,7 +591,7 @@ def identify_k_pattern(df):
     except: return "計算錯誤"
 
 # ==========================================
-# ★ 修改版：analyze_chips_volume (打包 10 天趨勢數據)
+# ★ 修改版：analyze_chips_volume
 # ==========================================
 def analyze_chips_volume(df, inst_percent, short_percent):
     try:
@@ -645,7 +648,7 @@ def calculate_position_size(price, df, capital, risk_pct):
 # ==========================================
 # 5. 主分析邏輯
 # ==========================================
-def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_model_name):
+def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_model_name, enable_debate):
     symbol = config['symbol']
     df = get_safe_data(symbol)
     
@@ -661,16 +664,14 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     if lp is None: lp = df['Close'].iloc[-1]
     prev_c = df['Close'].iloc[-1]
     
-    # ★ 修改這裡：更保守的即時 K 線生成
-    # 如果 yfinance 的最後一筆 High/Low 是壞掉的 (0 或 異常小)，我們就不要用它
+    # ★ 更保守的即時 K 線生成 (防呆)
     last_h = df['High'].iloc[-1]
     last_l = df['Low'].iloc[-1]
     
-    # 檢查歷史資料是否壞掉 (如果 High < 股價的 10%，視為壞資料)
+    # 檢查歷史資料是否壞掉
     valid_h = last_h if last_h > (lp * 0.1) else lp
     valid_l = last_l if last_l > (lp * 0.1) else lp
     
-    # 合成最新一根 K 線
     current_high = max(lp, valid_h)
     current_low = min(lp, valid_l)
     
@@ -823,13 +824,10 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     p_high, p_low = predict_volatility(df)
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     
-    # ★★★ 1. 計算 K線型態 ★★★
     k_pattern = identify_k_pattern(calc_df)
-    
-    # ★★★ 2. 計算進階指標 (MACD, ADX, CCI) ★★★
     adv_data = calculate_advanced_indicators(calc_df)
 
-    # ★★★ 3. 雙引擎邏輯分析 (含委員會辯論) ★★★
+    # ★★★ 3. 雙引擎邏輯分析 (混合模式) ★★★
     tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。\n"
     if adv_data:
         tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), CCI({adv_data['CCI']})。\n"
@@ -842,8 +840,12 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         except: pass
         
     elif ai_provider == "Gemini (User Defined)" and api_key_gemini:
-        # ★★★ 改用辯論模式 ★★★
-        llm_res, icon, success, debate_res = run_ai_debate(api_key_gemini, symbol, news, tech_ctx, k_pattern, gemini_model_name)
+        # ★★★ 智慧分流：根據 Checkbox 決定要不要跑辯論 ★★★
+        if enable_debate:
+             llm_res, icon, success, debate_res = run_ai_debate(api_key_gemini, symbol, news, tech_ctx, k_pattern, gemini_model_name)
+        else:
+             llm_res, icon, success = analyze_logic_gemini(api_key_gemini, symbol, news, tech_ctx, k_pattern, gemini_model_name)
+        
         if success:
             is_llm = True
         else:
@@ -1053,6 +1055,7 @@ with st.sidebar:
     groq_key = ""
     gemini_key = ""
     gemini_model_name = "models/gemini-2.0-flash" # Default
+    enable_debate_mode = False
     
     if ai_provider == "Groq (Llama-3)":
         groq_key = st.text_input("Groq API Key", type="password")
@@ -1062,6 +1065,11 @@ with st.sidebar:
         gemini_key = st.text_input("Gemini API Key", type="password")
         gemini_model_name = st.text_input("Gemini Model Name", value="models/gemini-2.0-flash")
         st.caption("例如: models/gemini-2.0-flash 或 models/gemini-3-flash-preview")
+        
+        # ★★★ 新增：辯論模式開關 ★★★
+        enable_debate_mode = st.checkbox("✅ 啟動「AI 委員會辯論」模式 (深度分析/耗額度)", value=False)
+        if enable_debate_mode:
+            st.caption("⚠️ 警告：此模式會進行三方角色扮演，建議使用額度較高的 Key。")
 
     st.divider()
     st.header("💰 資金管理設定")
@@ -1141,7 +1149,7 @@ if target_key:
     
     # 直接執行單股分析
     with st.spinner(f"正在連線 {ai_provider} 分析 {target_config['symbol']}..."):
-        row = analyze_ticker(target_config, ai_provider, groq_key, gemini_key, gemini_model_name)
+        row = analyze_ticker(target_config, ai_provider, groq_key, gemini_key, gemini_model_name, enable_debate_mode)
         display_card(st.empty(), row, target_config, target_key, show_signals)
         
     # 如果有開啟參數優化，才跑這段
@@ -1154,4 +1162,4 @@ if target_key:
                     st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
 
 st.divider()
-st.success("✅ 分析完成 (v8.1 Ultimate - CCI Fixed + Debate)")
+st.success("✅ 分析完成 (v8.2 Ultimate - Hybrid Mode)")
