@@ -41,7 +41,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v10.2)",
+    page_title="2026 量化戰情室 (Ultimate v10.3)",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -64,8 +64,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ 量化戰情室 (Ultimate v10.2)")
-st.caption("智慧版：時區自動校正 (消除幽靈K線) | KD 指標 | 雙引擎 AI")
+st.title("🛡️ 量化戰情室 (Ultimate v10.3)")
+st.caption("終極修復版：補回 K線識別函數 | KD 指標 | 時區校正 | 雙引擎 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -114,6 +114,7 @@ def get_real_live_price(symbol):
     try:
         ticker = yf.Ticker(symbol)
         price = ticker.fast_info.get('last_price')
+        
         if price is None or np.isnan(price) or float(price) <= 0:
             if symbol.endswith(".TW"):
                  df_rt = yf.download(symbol, period="5d", interval="1m", progress=False)
@@ -532,6 +533,65 @@ def calculate_advanced_indicators(df):
         }
     except Exception as e:
         return {}
+
+# ==========================================
+# ★ 新增：智慧 K 線型態識別 (v8.3 含3日型態)
+# ==========================================
+def identify_k_pattern(df):
+    try:
+        if df is None or len(df) < 10: return "資料不足"
+        
+        last_5 = df.tail(5).copy().reset_index(drop=True)
+        
+        c4 = float(last_5.loc[4, 'Close'])
+        o4 = float(last_5.loc[4, 'Open'])
+        h4 = float(last_5.loc[4, 'High'])
+        l4 = float(last_5.loc[4, 'Low'])
+        
+        c3 = float(last_5.loc[3, 'Close'])
+        o3 = float(last_5.loc[3, 'Open'])
+        h3 = float(last_5.loc[3, 'High'])
+        l3 = float(last_5.loc[3, 'Low'])
+        
+        c2 = float(last_5.loc[2, 'Close'])
+        o2 = float(last_5.loc[2, 'Open'])
+        h2 = float(last_5.loc[2, 'High'])
+        l2 = float(last_5.loc[2, 'Low'])
+        
+        body4 = abs(c4 - o4); is_green4 = c4 > o4
+        body3 = abs(c3 - o3); is_red3 = c3 < o3
+        body2 = abs(c2 - o2); is_red2 = c2 < o2
+        
+        ma10 = float(df['Close'].rolling(10).mean().iloc[-1])
+        is_uptrend = c4 > ma10
+        is_downtrend = c4 < ma10
+        
+        patterns = []
+
+        if is_downtrend and is_red2 and (body3 < body2 * 0.3) and is_green4 and (c4 > (o2 + c2)/2): patterns.append("✨ 晨星")
+        if is_uptrend and (c2 > o2) and (body3 < body2 * 0.3) and (c4 < o4) and (c4 < (o2 + c2)/2): patterns.append("🌑 夜星")
+        if (c4 > o4 > c3 > o3 > c2 > o2) and (c4 > c3 > c2): patterns.append("💂‍♂️ 紅三兵")
+        if is_downtrend and is_red3 and is_green4 and (c4 > o3) and (o4 < c3): patterns.append("🔥 多頭吞噬")
+        if is_uptrend and (c3 > o3) and (c4 < o4) and (c4 < o3) and (o4 > c3): patterns.append("💀 空頭吞噬")
+        if body4 < body3 * 0.3 and h4 < h3 and l4 > l3: patterns.append("🤰 母子孕育")
+        
+        total_range4 = h4 - l4
+        lower_shadow4 = min(c4, o4) - l4
+        upper_shadow4 = h4 - max(c4, o4)
+        
+        if total_range4 > 0 and lower_shadow4 > body4 * 2 and upper_shadow4 < body4 * 0.5:
+            if is_downtrend: patterns.append("🔨 錘頭")
+            elif is_uptrend: patterns.append("🪢 吊人")
+            
+        if total_range4 > 0 and upper_shadow4 > body4 * 2 and lower_shadow4 < body4 * 0.5:
+            if is_uptrend: patterns.append("🌠 流星")
+            elif is_downtrend: patterns.append("⚓ 倒錘")
+
+        if not patterns: return "一般波動"
+        return " | ".join(patterns)
+        
+    except Exception as e:
+        return "型態計算中..."
 
 # ==========================================
 # 5. 主分析邏輯 (含時區校正)
@@ -1038,4 +1098,4 @@ if target_key:
         # st.exception(e) # 開發者模式可打開
 
 st.divider()
-st.success("✅ 分析完成 (v10.2 Ultimate - Timezone Fix + KD)")
+st.success("✅ 分析完成 (v10.3 Ultimate - Missing Function Restored)")
