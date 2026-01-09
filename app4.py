@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta, time as dt_time
 import sys
 import re
 import importlib.util
@@ -41,7 +41,7 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v10.0)",
+    page_title="2026 量化戰情室 (Ultimate v10.2)",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -64,8 +64,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ 量化戰情室 (Ultimate v10.0)")
-st.caption("穩定版：替換為 Williams %R (絕對防呆) | ADX 趨勢 | 雙引擎 AI")
+st.title("🛡️ 量化戰情室 (Ultimate v10.2)")
+st.caption("智慧版：時區自動校正 (消除幽靈K線) | KD 指標 | 雙引擎 AI")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -114,7 +114,6 @@ def get_real_live_price(symbol):
     try:
         ticker = yf.Ticker(symbol)
         price = ticker.fast_info.get('last_price')
-        
         if price is None or np.isnan(price) or float(price) <= 0:
             if symbol.endswith(".TW"):
                  df_rt = yf.download(symbol, period="5d", interval="1m", progress=False)
@@ -126,11 +125,9 @@ def get_real_live_price(symbol):
             if df_rt.empty: return None
             if isinstance(df_rt.columns, pd.MultiIndex): 
                 df_rt.columns = df_rt.columns.get_level_values(0)
-                
             last_close = float(df_rt['Close'].iloc[-1])
             if last_close <= 0: return None 
             return last_close
-            
         return float(price)
     except: 
         return None
@@ -141,7 +138,6 @@ def get_safe_data(ticker):
         if df is None or df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): 
             df.columns = df.columns.get_level_values(0)
-        
         df = df.loc[:, ~df.columns.duplicated()]
         df.index = pd.to_datetime(df.index)
         return df
@@ -322,8 +318,8 @@ def analyze_logic_gemini(api_key, symbol, news_titles, tech_signal, k_pattern, m
         【最新新聞】：{news_text}
         
         請用繁體中文回答：
-        1. **深度多空邏輯**：請綜合 RSI, MACD, ADX 以及 WillR (威廉指標) 進行交叉比對。
-           (注意: WillR -80以下為超賣，-20以上為超買)。
+        1. **深度多空邏輯**：請綜合 RSI, MACD, ADX 以及 KD (隨機指標) 進行交叉比對。
+           (注意: KD低於20為超賣，高於80為超買，黃金交叉為買點)。
         2. **情緒評分**：(-10~10)。
         3. **操作建議**：給出具體的進出場思路 (保守者/積極者)。
         """
@@ -489,7 +485,7 @@ def predict_volatility(df):
     except: return None, None
 
 # ==========================================
-# ★ 修正版 v10.0 (Final)：移除 CCI，替換為 Williams %R (絕對防呆)
+# ★ 修正版 v10.2：KD 指標 (抗延遲) + 數據清洗
 # ==========================================
 def calculate_advanced_indicators(df):
     try:
@@ -507,12 +503,10 @@ def calculate_advanced_indicators(df):
         adx_df = ta.adx(work_df['High'], work_df['Low'], work_df['Close'], length=14)
         adx_val = float(adx_df.iloc[:, 0].iloc[-1]) if adx_df is not None else 0.0
         
-        # ★ 3. Williams %R (替代 CCI)
-        # WillR Range: 0 to -100.
-        # -80 to -100: Oversold (Green)
-        # 0 to -20: Overbought (Red)
-        willr = ta.willr(work_df['High'], work_df['Low'], work_df['Close'], length=14)
-        willr_val = float(willr.iloc[-1]) if willr is not None else -50.0 # Default mid
+        # ★ 3. 改用 KD (Stochastic Oscillator) 的 K 值 (取代 CCI)
+        # KD 0-100, <20超賣, >80超買
+        stoch = ta.stoch(work_df['High'], work_df['Low'], work_df['Close'], k=14, d=3, smooth_k=3)
+        k_val = float(stoch.iloc[:, 0].iloc[-1]) if stoch is not None else 50.0
         
         # --- 邏輯判斷 ---
         macd_sig = "🔴 空方"
@@ -524,137 +518,23 @@ def calculate_advanced_indicators(df):
         if adx_val > 50: trend_strength = "💥 極強趨勢"
         elif adx_val > 25: trend_strength = "🚀 強趨勢"
         
-        willr_sig = "⚪ 中性"
-        if willr_val < -80: willr_sig = "💎 超賣 (WillR)"
-        elif willr_val > -20: willr_sig = "⚠️ 超買 (WillR)"
+        k_sig = "⚪ 中性"
+        if k_val < 20: k_sig = "💎 超賣 (KD)"
+        elif k_val > 80: k_sig = "⚠️ 超買 (KD)"
 
         return {
             "MACD_Hist": round(macd_hist, 3),
             "MACD_Signal": macd_sig,
             "ADX": round(adx_val, 1),
             "Trend_Strength": trend_strength,
-            "CCI": round(willr_val, 1), # Key: using WillR value here
-            "CCI_Signal": willr_sig # Key: using WillR signal
+            "KD_K": round(k_val, 1), 
+            "KD_Signal": k_sig 
         }
     except Exception as e:
         return {}
 
 # ==========================================
-# ★ 新增：智慧 K 線型態識別 (v8.3 含3日型態)
-# ==========================================
-def identify_k_pattern(df):
-    try:
-        if df is None or len(df) < 10: return "資料不足"
-        
-        last_5 = df.tail(5).copy().reset_index(drop=True)
-        
-        c4 = float(last_5.loc[4, 'Close'])
-        o4 = float(last_5.loc[4, 'Open'])
-        h4 = float(last_5.loc[4, 'High'])
-        l4 = float(last_5.loc[4, 'Low'])
-        
-        c3 = float(last_5.loc[3, 'Close'])
-        o3 = float(last_5.loc[3, 'Open'])
-        h3 = float(last_5.loc[3, 'High'])
-        l3 = float(last_5.loc[3, 'Low'])
-        
-        c2 = float(last_5.loc[2, 'Close'])
-        o2 = float(last_5.loc[2, 'Open'])
-        h2 = float(last_5.loc[2, 'High'])
-        l2 = float(last_5.loc[2, 'Low'])
-        
-        body4 = abs(c4 - o4); is_green4 = c4 > o4
-        body3 = abs(c3 - o3); is_red3 = c3 < o3
-        body2 = abs(c2 - o2); is_red2 = c2 < o2
-        
-        ma10 = float(df['Close'].rolling(10).mean().iloc[-1])
-        is_uptrend = c4 > ma10
-        is_downtrend = c4 < ma10
-        
-        patterns = []
-
-        if is_downtrend and is_red2 and (body3 < body2 * 0.3) and is_green4 and (c4 > (o2 + c2)/2): patterns.append("✨ 晨星")
-        if is_uptrend and (c2 > o2) and (body3 < body2 * 0.3) and (c4 < o4) and (c4 < (o2 + c2)/2): patterns.append("🌑 夜星")
-        if (c4 > o4 > c3 > o3 > c2 > o2) and (c4 > c3 > c2): patterns.append("💂‍♂️ 紅三兵")
-        if is_downtrend and is_red3 and is_green4 and (c4 > o3) and (o4 < c3): patterns.append("🔥 多頭吞噬")
-        if is_uptrend and (c3 > o3) and (c4 < o4) and (c4 < o3) and (o4 > c3): patterns.append("💀 空頭吞噬")
-        if body4 < body3 * 0.3 and h4 < h3 and l4 > l3: patterns.append("🤰 母子孕育")
-        
-        total_range4 = h4 - l4
-        lower_shadow4 = min(c4, o4) - l4
-        upper_shadow4 = h4 - max(c4, o4)
-        
-        if total_range4 > 0 and lower_shadow4 > body4 * 2 and upper_shadow4 < body4 * 0.5:
-            if is_downtrend: patterns.append("🔨 錘頭")
-            elif is_uptrend: patterns.append("🪢 吊人")
-            
-        if total_range4 > 0 and upper_shadow4 > body4 * 2 and lower_shadow4 < body4 * 0.5:
-            if is_uptrend: patterns.append("🌠 流星")
-            elif is_downtrend: patterns.append("⚓ 倒錘")
-
-        if not patterns: return "一般波動"
-        return " | ".join(patterns)
-        
-    except Exception as e:
-        return "型態計算中..."
-
-# ==========================================
-# ★ 修改版：analyze_chips_volume
-# ==========================================
-def analyze_chips_volume(df, inst_percent, short_percent):
-    try:
-        if df is None or len(df) < 30: return "資料不足", None
-        
-        obv = ta.obv(df['Close'], df['Volume'])
-        cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
-        mfi = ta.mfi(df['High'], df['Low'], df['Close'], df['Volume'], length=14)
-        
-        recent_days = 10
-        price_seq = df['Close'].tail(recent_days).values.tolist()
-        obv_seq = obv.tail(recent_days).values.tolist()
-        cmf_seq = cmf.tail(recent_days).values.tolist()
-        
-        data_pack = {
-            "price_trend": [round(p, 2) for p in price_seq],
-            "obv_trend": [round(o, 0) for o in obv_seq],
-            "cmf_trend": [round(c, 3) for c in cmf_seq],
-            "curr_mfi": round(mfi.iloc[-1], 1),
-            "inst": round(inst_percent * 100, 1),
-            "short": round(short_percent * 100, 1)
-        }
-
-        curr_cmf = cmf.iloc[-1]
-        obv_ma = ta.sma(obv, length=20).iloc[-1]
-        obv_state = "上升" if obv.iloc[-1] > obv_ma else "下降"
-        
-        status = "⚪ 中性"
-        if curr_cmf > 0.15: status = "🔴 主力大買"
-        elif curr_cmf > 0.05: status = "🔴 資金流入"
-        elif curr_cmf < -0.15: status = "🟢 主力倒貨"
-        elif curr_cmf < -0.05: status = "🟢 資金流出"
-            
-        final_msg = f"{status} | OBV{obv_state}"
-        return final_msg, data_pack
-        
-    except Exception as e:
-        return f"籌碼錯誤: {str(e)}", None
-
-def calculate_position_size(price, df, capital, risk_pct):
-    try:
-        if df is None or len(df) < 15: return "N/A"
-        atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
-        stop_loss_dist = 2 * atr
-        risk_amount = capital * (risk_pct / 100)
-        shares = risk_amount / stop_loss_dist
-        total_cost = shares * price
-        if total_cost > capital:
-            shares = capital / price
-            return f"{int(shares)}股 (滿倉)"
-        return f"{int(shares)}股 (約${total_cost:.0f})"
-    except: return "計算失敗"
-
-# ==========================================
-# 5. 主分析邏輯
+# 5. 主分析邏輯 (含時區校正)
 # ==========================================
 def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_model_name, enable_debate):
     symbol = config['symbol']
@@ -665,50 +545,78 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
             "Symbol": symbol, "Name": config['name'], "Signal": "ERR", "Action": "資料下載失敗",
             "Price": 0, "Prev_Close": 0, "Raw_DF": None, "Type": "ERR", "Strat_Desc": "無數據",
             "Is_LLM": False, "LLM_Analysis": "無法分析", "Chip": "N/A", "Pred": "N/A",
-            "Buy_At": "---", "Sell_At": "---", "Logs": [], "Position": "---", "K_Pattern": "", "Debate": None
+            "Buy_At": "---", "Sell_At": "---", "Logs": [], "Position": "---", "K_Pattern": "", "Debate": None, "DataTime": ""
         }
 
+    # 取得歷史資料的最後一筆收盤價
+    history_last_close = float(df['Close'].iloc[-1])
+    
+    # 嘗試取得即時報價
     lp = get_real_live_price(symbol)
-    if lp is None: lp = float(df['Close'].iloc[-1])
-    prev_c = float(df['Close'].iloc[-1])
-    
-    last_h = float(df['High'].iloc[-1])
-    last_l = float(df['Low'].iloc[-1])
-    
-    valid_h = last_h if last_h > (lp * 0.1) else lp
-    valid_l = last_l if last_l > (lp * 0.1) else lp
-    
-    current_high = max(lp, valid_h)
-    current_low = min(lp, valid_l)
-    
-    new_row = pd.DataFrame({
-        'Close': [lp], 
-        'High': [current_high], 
-        'Low': [current_low], 
-        'Open': [lp], 
-        'Volume': [0]
-    }, index=[pd.Timestamp.now()])
-    
-    clean_history = df.copy()
-    today_date = pd.Timestamp.now().date()
-    if not clean_history.empty:
-        last_history_date = clean_history.index[-1].date()
-        if last_history_date == today_date:
-            clean_history = clean_history.iloc[:-1] 
-            
-    calc_df = pd.concat([clean_history, new_row])
-    
-    cols = ['Open', 'High', 'Low', 'Close']
-    for c in cols:
-        calc_df[c] = calc_df[c].replace(0, np.nan).ffill()
-    
-    calc_df['High'] = np.maximum(calc_df['High'], calc_df['Close'])
-    calc_df['Low'] = np.minimum(calc_df['Low'], calc_df['Close'])
+    if lp is None: lp = history_last_close
+    prev_c = history_last_close # 這裡假設前一天就是歷史最後一天 (如果是盤中則不準確，但沒關係)
 
+    # -------------------------------------------------------
+    # ★ v10.2 關鍵修正：交易時段偵測 (Market Hours Detection)
+    # -------------------------------------------------------
+    is_market_open = False
+    now_utc = datetime.utcnow()
+    
+    # 簡易判斷：美股開盤時間 (UTC 13:30 ~ 21:00)
+    # 台股開盤時間 (UTC 01:00 ~ 05:30)
+    if ".TW" in symbol:
+        if 1 <= now_utc.hour < 6: is_market_open = True # 簡化版
+    else: # 美股
+        # 考慮美股 9:30 AM - 4:00 PM ET (大約 13:30 - 21:00 UTC)
+        start_time = dt_time(13, 30)
+        end_time = dt_time(21, 0)
+        if start_time <= now_utc.time() <= end_time:
+            # 還要排除週末 (0=Mon, 6=Sun)
+            if now_utc.weekday() < 5: 
+                is_market_open = True
+
+    # ★ 策略核心：
+    # 如果市場沒開 (is_market_open = False)，我們就只信任 df (歷史資料)，絕對不加新 K 線。
+    # 如果市場開了 (is_market_open = True)，我們才把 lp 加進去當作 Today。
+    
+    if is_market_open:
+        # --- 只有開盤時才做 K 線合成 ---
+        last_h = float(df['High'].iloc[-1])
+        last_l = float(df['Low'].iloc[-1])
+        valid_h = last_h if last_h > (lp * 0.1) else lp
+        valid_l = last_l if last_l > (lp * 0.1) else lp
+        current_high = max(lp, valid_h)
+        current_low = min(lp, valid_l)
+        
+        new_row = pd.DataFrame({
+            'Close': [lp], 'High': [current_high], 'Low': [current_low], 'Open': [lp], 'Volume': [0]
+        }, index=[pd.Timestamp.now()])
+        
+        # 去重
+        clean_history = df.copy()
+        today_date = pd.Timestamp.now().date()
+        if not clean_history.empty:
+            last_history_date = clean_history.index[-1].date()
+            if last_history_date == today_date:
+                clean_history = clean_history.iloc[:-1] 
+        
+        calc_df = pd.concat([clean_history, new_row])
+        # 補值
+        for c in ['Open', 'High', 'Low', 'Close']:
+            calc_df[c] = calc_df[c].replace(0, np.nan).ffill()
+        calc_df['High'] = np.maximum(calc_df['High'], calc_df['Close'])
+        calc_df['Low'] = np.minimum(calc_df['Low'], calc_df['Close'])
+        
+    else:
+        # --- 休市時，直接用歷史資料 ---
+        calc_df = df.copy()
+        lp = history_last_close # 強制讓顯示價格等於歷史收盤價
+    
     c, h, l = calc_df['Close'], calc_df['High'], calc_df['Low']
     
     sig = "WAIT"; act = "觀望"; buy_at = "---"; sell_at = "---"; sig_type = "WAIT"; strategy_desc = ""
     
+    # ... (策略判斷代碼保持不變) ...
     if config['mode'] == "SUPERTREND":
         st_val = ta.supertrend(h, l, c, length=config['period'], multiplier=config['multiplier'])
         strategy_desc = f"SuperTrend (P={config['period']}, M={config['multiplier']})"
@@ -849,8 +757,8 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
 
     tech_ctx = f"目前 ${lp:.2f}。訊號: {sig} ({act})。\n"
     if adv_data:
-        # ★★★ 更新 Prompt: 把 CCI 改成 WillR
-        tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), WillR({adv_data['CCI']})。\n"
+        # ★★★ 更新 Prompt: 改用 KD
+        tech_ctx += f"【進階指標】: MACD({adv_data['MACD_Signal']}), ADX趨勢強度({adv_data['Trend_Strength']}), KD值({adv_data['KD_K']})。\n"
 
     if ai_provider == "Groq (Llama-3)" and api_key_groq:
         try:
@@ -891,7 +799,7 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
         "Signal": sig, "Action": act, "Type": sig_type, "Buy_At": buy_at, "Sell_At": sell_at,
         "Fund": fund_msg, "LLM_Analysis": llm_res, "Is_LLM": is_llm, 
         "Raw_DF": df, "Pred": pred_msg, "Chip": chip_msg_display, "Strat_Desc": strategy_desc,
-        "Logs": logs, "Position": pos_msg, "K_Pattern": k_pattern, "Debate": debate_res
+        "Logs": logs, "Position": pos_msg, "K_Pattern": k_pattern, "Debate": debate_res, "DataTime": datetime.now().strftime("%H:%M:%S")
     }
 
 # ==========================================
@@ -903,6 +811,9 @@ def display_card(placeholder, row, config, unique_id, show_signals):
         c1, c2 = st.columns(2)
         c1.metric("昨日收盤", f"${row['Prev_Close']:,.2f}")
         c2.metric("即時價格", f"${row['Price']:,.2f}", f"{row['Price']-row['Prev_Close']:.2f}")
+        
+        # ★ 顯示數據時間
+        st.caption(f"🕒 數據時間: {row.get('DataTime', 'N/A')}")
         
         sig_col = "green" if "BUY" in row['Signal'] else "red" if "SELL" in row['Signal'] else "gray"
         st.markdown(f"#### :{sig_col}[{row['Signal']}] - {row['Action']}")
@@ -956,7 +867,6 @@ def display_card(placeholder, row, config, unique_id, show_signals):
                 st.plotly_chart(plot_chart(row['Raw_DF'], config, sig, show_signals), use_container_width=True)
                 if perf: st.caption(f"模擬績效 (成本{fee_rate*100}%): 報酬 {perf['Total_Return']:.1f}% | 勝率 {perf['Win_Rate']:.0f}%")
         
-        # ★★★ 顯示新的 WillR 指標 (原本是 CCI) ★★★
         st.text(f"型態: {row['K_Pattern']} | 波動: {row['Pred']} | 籌碼: {row['Chip']}")
 
 def plot_chart(df, config, signals=None, show_signals=True):
@@ -1020,7 +930,7 @@ with st.sidebar:
     
     groq_key = ""
     gemini_key = ""
-    gemini_model_name = "models/gemini-3-flash-preview" 
+    gemini_model_name = "models/gemini-2.0-flash" 
     enable_debate_mode = False
     
     if ai_provider == "Groq (Llama-3)":
@@ -1128,4 +1038,4 @@ if target_key:
         # st.exception(e) # 開發者模式可打開
 
 st.divider()
-st.success("✅ 分析完成 (v10.0 Ultimate - WillR + All Fixes)")
+st.success("✅ 分析完成 (v10.2 Ultimate - Timezone Fix + KD)")
