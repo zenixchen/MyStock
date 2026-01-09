@@ -41,8 +41,8 @@ except ImportError:
 # 0. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v8.2)",
-    page_icon="🧠",
+    page_title="2026 量化戰情室 (Ultimate v9.0)",
+    page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -65,8 +65,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🧠 量化戰情室 (Ultimate v8.2)")
-st.caption("混合模式：預設單一 AI (省額度) | 可切換委員會辯論 (深度) | CCI修正版")
+st.title("🛡️ 量化戰情室 (Ultimate v9.0)")
+st.caption("防彈版：CCI數據清洗(Fix) | 3日K線型態 | 委員會辯論模式")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -109,27 +109,36 @@ strategies = {
 }
 
 # ==========================================
-# 1. 核心函數
+# 1. 核心函數 (資料獲取 - 含防呆)
 # ==========================================
 def get_real_live_price(symbol):
     try:
-        if symbol.endswith(".TW"):
-             df_rt = yf.download(symbol, period="5d", interval="1m", progress=False)
-        elif "-USD" in symbol or "=X" in symbol:
-            df_rt = yf.download(symbol, period="1d", interval="1m", progress=False)
-        else:
-            df_rt = yf.download(symbol, period="5d", interval="1m", prepost=True, progress=False)
+        # 1. 優先嘗試 fast_info
+        ticker = yf.Ticker(symbol)
+        price = ticker.fast_info.get('last_price')
+        
+        # ★ 防呆：如果 price 是 0 或 None，視為失敗
+        if price is None or np.isnan(price) or float(price) <= 0:
             
-        if df_rt.empty: return None
-        if isinstance(df_rt.columns, pd.MultiIndex): 
-            df_rt.columns = df_rt.columns.get_level_values(0)
+            # 2. 退回 download 模式
+            if symbol.endswith(".TW"):
+                 df_rt = yf.download(symbol, period="5d", interval="1m", progress=False)
+            elif "-USD" in symbol or "=X" in symbol:
+                df_rt = yf.download(symbol, period="1d", interval="1m", progress=False)
+            else:
+                df_rt = yf.download(symbol, period="5d", interval="1m", prepost=True, progress=False)
+                
+            if df_rt.empty: return None
+            if isinstance(df_rt.columns, pd.MultiIndex): 
+                df_rt.columns = df_rt.columns.get_level_values(0)
+                
+            last_close = float(df_rt['Close'].iloc[-1])
+            if last_close <= 0: return None # 如果還是 0，放棄
+            return last_close
             
-        return float(df_rt['Close'].iloc[-1])
+        return float(price)
     except: 
-        try:
-            return float(yf.Ticker(symbol).fast_info.get('last_price'))
-        except:
-            return None
+        return None
 
 def get_safe_data(ticker):
     try:
@@ -490,25 +499,24 @@ def predict_volatility(df):
     except: return None, None
 
 # ==========================================
-# ★ 修正版 v2：進階技術指標 (強效去污 - 修復 CCI 異常)
+# ★ 修正版 v3 (Final)：進階技術指標 (核彈級去污 - 修復 Close=0 問題)
 # ==========================================
 def calculate_advanced_indicators(df):
     try:
         if df is None or len(df) < 30: return {}
         
-        # ★ 1. 深度數據清洗 (Deep Cleaning)
-        # 使用 copy() 避免修改到原始 df
+        # ★ 1. 核彈級數據清洗 (Deep Cleaning)
+        # 解決 yfinance 有時候 Close=0 或 Low=0 的問題
         clean_df = df.copy()
         
-        # 修正 High
-        clean_df['High'] = clean_df['High'].fillna(clean_df['Close'])
-        clean_df.loc[clean_df['High'] < (clean_df['Close'] * 0.1), 'High'] = clean_df['Close']
-        
-        # 修正 Low
-        clean_df['Low'] = clean_df['Low'].fillna(clean_df['Close'])
-        clean_df.loc[clean_df['Low'] < (clean_df['Close'] * 0.1), 'Low'] = clean_df['Close']
-
-        # 確保 High >= Low
+        # 把所有欄位的 0 全部視為 NaN
+        cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+        for c in cols:
+            clean_df[c] = clean_df[c].replace(0, np.nan)
+            # 使用 forward fill 補前一天的值
+            clean_df[c] = clean_df[c].ffill()
+            
+        # 確保 High >= Low, High >= Close, Low <= Close (邏輯校正)
         clean_df['High'] = np.maximum(clean_df['High'], clean_df['Close'])
         clean_df['Low'] = np.minimum(clean_df['Low'], clean_df['Close'])
         
@@ -522,8 +530,12 @@ def calculate_advanced_indicators(df):
         adx_df = ta.adx(clean_df['High'], clean_df['Low'], clean_df['Close'], length=14)
         adx_val = adx_df.iloc[:, 0].iloc[-1] if adx_df is not None else 0
         
-        # 4. CCI
+        # 4. CCI (使用清洗後的數據)
         cci_val = ta.cci(clean_df['High'], clean_df['Low'], clean_df['Close'], length=14).iloc[-1]
+        
+        # ★ 防呆：如果還是算出天文數字，強制校正顯示
+        if cci_val > 1000: cci_val = 1000
+        elif cci_val < -1000: cci_val = -1000
         
         # --- 邏輯判斷 ---
         macd_sig = "🔴 空方"
@@ -551,44 +563,74 @@ def calculate_advanced_indicators(df):
         return {}
 
 # ==========================================
-# ★ 新增：K 線型態識別
+# ★ 新增：智慧 K 線型態識別 (v8.3 含3日型態)
 # ==========================================
 def identify_k_pattern(df):
     try:
-        if df is None or len(df) < 3: return "無特殊型態"
+        if df is None or len(df) < 10: return "資料不足"
         
-        c = df['Close'].iloc[-1]; o = df['Open'].iloc[-1]
-        h = df['High'].iloc[-1]; l = df['Low'].iloc[-1]
-        prev_c = df['Close'].iloc[-2]; prev_o = df['Open'].iloc[-2]
+        # 提取最近 5 天的數據
+        last_5 = df.tail(5).copy().reset_index(drop=True)
         
-        body = abs(c - o)
-        upper_shadow = h - max(c, o)
-        lower_shadow = min(c, o) - l
-        total_range = h - l
+        c4, o4, h4, l4 = last_5.loc[4, ['Close', 'Open', 'High', 'Low']] # 今天 (即時)
+        c3, o3, h3, l3 = last_5.loc[3, ['Close', 'Open', 'High', 'Low']] # 昨天
+        c2, o2, h2, l2 = last_5.loc[2, ['Close', 'Open', 'High', 'Low']] # 前天
         
-        is_up = c > o
-        is_prev_down = prev_c < prev_o
+        # 實體長度與方向
+        body4 = abs(c4 - o4); is_green4 = c4 > o4
+        body3 = abs(c3 - o3); is_red3 = c3 < o3
+        body2 = abs(c2 - o2); is_red2 = c2 < o2
+        
+        # 判斷趨勢 (看10日均線)
+        ma10 = df['Close'].rolling(10).mean().iloc[-1]
+        is_uptrend = c4 > ma10
+        is_downtrend = c4 < ma10
+        
         patterns = []
-        
-        if is_up and is_prev_down and c > prev_o and o < prev_c: patterns.append("🔥 多頭吞噬")
-        elif not is_up and not is_prev_down and c < prev_o and o > prev_c: patterns.append("💀 空頭吞噬")
-        
-        if lower_shadow > body * 2 and upper_shadow < body * 0.5:
-            if is_prev_down: patterns.append("🔨 錘頭 (底部反轉?)")
-            else: patterns.append("🪢 吊人 (頭部示警?)")
-            
-        if upper_shadow > body * 2 and lower_shadow < body * 0.5: patterns.append("🌠 流星 (壓力罩頂)")
-        
-        if body < total_range * 0.1 and total_range > 0: patterns.append("➕ 十字線 (變盤)")
 
-        if len(df) >= 3:
-            c3, c2, c1 = df['Close'].iloc[-3:]
-            o3, o2, o1 = df['Open'].iloc[-3:]
-            if c3 > o3 and c2 > o2 and c1 > o1 and c1 > c2 > c3: patterns.append("💂‍♂️ 紅三兵 (強攻)")
+        # 1. 晨星 (Morning Star) - 3日反轉
+        if is_downtrend and is_red2 and (body3 < body2 * 0.3) and is_green4 and (c4 > (o2 + c2)/2):
+            patterns.append("✨ 晨星 (3日底部反轉)")
+
+        # 2. 夜星 (Evening Star) - 3日反轉
+        if is_uptrend and (c2 > o2) and (body3 < body2 * 0.3) and (c4 < o4) and (c4 < (o2 + c2)/2):
+            patterns.append("🌑 夜星 (3日頭部反轉)")
+
+        # 3. 紅三兵
+        if (c4 > o4 > c3 > o3 > c2 > o2) and (c4 > c3 > c2):
+            patterns.append("💂‍♂️ 紅三兵 (強勢攻擊)")
+
+        # 4. 多頭吞噬
+        if is_downtrend and is_red3 and is_green4 and (c4 > o3) and (o4 < c3):
+            patterns.append("🔥 多頭吞噬 (破底翻)")
+
+        # 5. 空頭吞噬
+        if is_uptrend and (c3 > o3) and (c4 < o4) and (c4 < o3) and (o4 > c3):
+            patterns.append("💀 空頭吞噬 (假突破)")
+            
+        # 6. 母子變盤
+        if body4 < body3 * 0.3 and h4 < h3 and l4 > l3:
+            patterns.append("🤰 母子孕育 (變盤前兆)")
+        
+        # 7. 錘頭
+        total_range4 = h4 - l4
+        lower_shadow4 = min(c4, o4) - l4
+        upper_shadow4 = h4 - max(c4, o4)
+        
+        if total_range4 > 0 and lower_shadow4 > body4 * 2 and upper_shadow4 < body4 * 0.5:
+            if is_downtrend: patterns.append("🔨 錘頭 (底部支撐)")
+            elif is_uptrend: patterns.append("🪢 吊人 (高檔示警)")
+            
+        # 8. 流星
+        if total_range4 > 0 and upper_shadow4 > body4 * 2 and lower_shadow4 < body4 * 0.5:
+            if is_uptrend: patterns.append("🌠 流星 (高檔賣壓)")
+            elif is_downtrend: patterns.append("⚓ 倒錘 (低檔試盤)")
 
         if not patterns: return "一般波動"
         return " | ".join(patterns)
-    except: return "計算錯誤"
+        
+    except Exception as e:
+        return "型態計算中..."
 
 # ==========================================
 # ★ 修改版：analyze_chips_volume
@@ -664,11 +706,11 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     if lp is None: lp = df['Close'].iloc[-1]
     prev_c = df['Close'].iloc[-1]
     
-    # ★ 更保守的即時 K 線生成 (防呆)
+    # ★ 更保守的即時 K 線生成 (避免 0 污染)
     last_h = df['High'].iloc[-1]
     last_l = df['Low'].iloc[-1]
     
-    # 檢查歷史資料是否壞掉
+    # 如果歷史資料有 0，忽略它
     valid_h = last_h if last_h > (lp * 0.1) else lp
     valid_l = last_l if last_l > (lp * 0.1) else lp
     
@@ -824,7 +866,10 @@ def analyze_ticker(config, ai_provider, api_key_groq, api_key_gemini, gemini_mod
     p_high, p_low = predict_volatility(df)
     pred_msg = f"${p_low:.2f}~${p_high:.2f}" if p_high else ""
     
+    # ★★★ 1. 計算 K線型態 (v8.3) ★★★
     k_pattern = identify_k_pattern(calc_df)
+    
+    # ★★★ 2. 計算進階指標 (CCI修正版) ★★★
     adv_data = calculate_advanced_indicators(calc_df)
 
     # ★★★ 3. 雙引擎邏輯分析 (混合模式) ★★★
@@ -1162,4 +1207,4 @@ if target_key:
                     st.write(f"最佳回報參數: RSI {int(best['Length'])} ({int(best['Buy'])}/{int(best['Sell'])}) -> 報酬 {best['Return']:.1f}%")
 
 st.divider()
-st.success("✅ 分析完成 (v8.2 Ultimate - Hybrid Mode)")
+st.success("✅ 分析完成 (v9.0 Ultimate - Bulletproof)")
