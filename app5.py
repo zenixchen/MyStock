@@ -214,12 +214,14 @@ def get_macro_prediction(target_symbol, features_dict):
         return prob, acc
     except: return None, None
 
-# --- Module C: QQQ 通用腦 (針對科技股) ---
+# --- Module C: QQQ 通用腦 (修正版：升級為 5 年數據，同步 Colab) ---
 @st.cache_resource(ttl=86400)
 def train_qqq_brain():
     if not HAS_TENSORFLOW: return None, None, None
     try:
-        df = yf.download("QQQ", period="2y", interval="1d", progress=False)
+        # ★★★ 修正點：從 "2y" 改為 "5y" (讓模型看過多空循環，標準才會一致)
+        df = yf.download("QQQ", period="5y", interval="1d", progress=False)
+        
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         df['Return'] = df['Close'].pct_change()
@@ -242,15 +244,21 @@ def train_qqq_brain():
         model = Sequential()
         model.add(LSTM(64, input_shape=(20, 5))); model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-        model.fit(np.array(X), np.array(y), epochs=30, verbose=0)
+        
+        # 增加訓練次數以適應 5 年數據
+        model.fit(np.array(X), np.array(y), epochs=40, verbose=0)
         return model, scaler, features
     except: return None, None, None
 
 def scan_tech_stock(symbol, model, scaler, features):
     try:
+        # 下載 1 年數據
         df = yf.download(symbol, period="1y", interval="1d", progress=False)
         if len(df) < 60: return None, None, 0
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        
+        # ★ 強制清洗：確保沒有未來數據或錯誤的高價
+        df = df[df['Volume'] > 0].copy() 
         
         df['Return'] = df['Close'].pct_change()
         df['RSI'] = ta.rsi(df['Close'], 14)
@@ -566,3 +574,4 @@ elif app_mode == "📊 策略分析工具 (舊版)":
                 sigs, perf = quick_backtest(row['Raw_DF'], cfg)
                 st.plotly_chart(plot_chart(row['Raw_DF'], cfg, sigs), use_container_width=True)
                 if perf: st.caption(f"回測績效: {perf['Total_Return']:.1f}% (勝率 {perf['Win_Rate']:.0f}%)")
+
