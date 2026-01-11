@@ -61,7 +61,7 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v15.2)",
+    page_title="2026 量化戰情室 (Ultimate v15.3)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -270,7 +270,7 @@ def scan_tech_stock(symbol, model, scaler, features):
     except: return None, None, 0
 
 # ==========================================
-# 4. 傳統策略分析 (功能模組 - 修復版)
+# 4. 傳統策略分析 (功能模組)
 # ==========================================
 def get_safe_data(ticker):
     try:
@@ -302,27 +302,41 @@ def get_news(symbol):
         return [clean_text_for_llm(n['title']) for n in news[:3]]
     except: return []
 
-# ★★★ 凱利公式 + ATR 倉位控管 ★★★
-def calculate_kelly_position(df, capital, win_rate, risk_per_trade=0.01):
+# ★★★ 凱利公式 + 方向判斷 (修正版) ★★★
+def calculate_kelly_position(df, capital, win_rate, risk_per_trade, current_signal):
+    """
+    修正重點：
+    1. 加入 current_signal 參數，判斷多空方向。
+    2. 如果訊號是 SELL 或 WAIT，直接建議觀望或清倉。
+    """
     try:
+        # 如果當前訊號不是買進，勝率再高也沒用
+        if "BUY" not in current_signal:
+            if "SELL" in current_signal:
+                return "📉 訊號賣出，建議獲利了結/清倉", 0
+            else:
+                return "💤 訊號觀望，建議空手等待", 0
+
+        # 以下為 BUY 訊號時的計算
         atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
         price = df['Close'].iloc[-1]
         stop_loss_dist = 2 * atr
         
-        odds = 2.0
+        odds = 2.0 # 盈虧比假設 2:1
         kelly_pct = win_rate - ((1 - win_rate) / odds)
         safe_kelly = max(0, kelly_pct * 0.5) 
         
+        # 資金風控 (單筆虧損不超過總資金 N%)
         risk_money = capital * risk_per_trade
         shares_by_risk = risk_money / stop_loss_dist
         
         if win_rate < 0.45:
-            return "⛔ 勝率過低，建議觀望 (0股)", 0
+            return "⛔ 雖有買訊但勝率過低，建議觀望", 0
             
         shares = int(shares_by_risk)
         cost = shares * price
         
-        msg = f"{shares} 股 (約 ${cost:.0f})"
+        msg = f"🚀 建議買進 {shares} 股 (約 ${cost:.0f})"
         if safe_kelly > 0.2: msg += " 🔥重倉機會"
         
         return msg, shares
@@ -362,12 +376,12 @@ def identify_k_pattern(df):
         return pat
     except: return "N/A"
 
-# ★★★ 修正版回測邏輯 (修復 0% 勝率 bug) ★★★
+# ★★★ 修正版回測 (修復 0% 勝率 bug) ★★★
 def quick_backtest(df, config, fee=0.0005):
     try:
         close = df['Close']; sigs = pd.Series(0, index=df.index)
         
-        # 策略邏輯判斷
+        # 策略邏輯 (根據 config 動態調整)
         if "RSI" in config['mode']:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
@@ -392,24 +406,20 @@ def quick_backtest(df, config, fee=0.0005):
         
         pos=0; ent=0; wins=0; trds=0; rets=[]
         
-        # 修正迴圈邏輯
-        for i in range(1, len(df)):
-            # 進場
+        for i in range(len(df)):
             if pos == 0 and sigs.iloc[i] == 1: 
                 pos = 1; ent = close.iloc[i]
-            # 出場
             elif pos == 1 and sigs.iloc[i] == -1:
-                pos = 0
-                r = (close.iloc[i] - ent) / ent
-                rets.append(r)
-                trds += 1
+                pos = 0; 
+                # 手續費扣除 (買賣各一次)
+                r = (close.iloc[i] - ent) / ent - (fee * 2)
+                rets.append(r); trds += 1
                 if r > 0: wins += 1
         
-        # 避免除以零
-        win_rate = (wins / trds) if trds > 0 else 0.0
+        # 確保回傳 float
+        win_rate = float(wins / trds) if trds > 0 else 0.0
         return sigs, {"Total_Return": sum(rets)*100, "Win_Rate": win_rate * 100, "Raw_Win_Rate": win_rate}
     except Exception as e: 
-        print(e)
         return None, None
 
 def plot_chart(df, config, sigs):
@@ -426,11 +436,11 @@ def plot_chart(df, config, sigs):
     fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
     return fig
 
-# ★★★ 策略說明生成器 (新增) ★★★
+# ★★★ 策略說明生成器 ★★★
 def get_strategy_desc(cfg):
     mode = cfg['mode']
     if mode == "RSI_RSI":
-        return f"RSI 區間策略 (買 < {cfg['entry_rsi']} / 賣 > {cfg['exit_rsi']})"
+        return f"RSI 區間 (買 < {cfg['entry_rsi']} / 賣 > {cfg['exit_rsi']})"
     elif mode == "RSI_MA":
         return f"RSI + 均線 (RSI < {cfg['entry_rsi']} 買 / 破 MA{cfg['exit_ma']} 賣)"
     elif mode == "KD":
@@ -548,7 +558,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
 elif app_mode == "📊 策略分析工具 (單股)":
     st.header("📊 單股策略分析")
     
-    # ★★★ 您的全配版完整清單 (V15.2) ★★★
+    # ★★★ 全配策略清單 ★★★
     strategies = {
         "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
         "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
@@ -601,40 +611,43 @@ elif app_mode == "📊 策略分析工具 (單股)":
         chg = lp - prev_close
         pct_chg = (chg / prev_close) * 100
         
-        # 2. 執行回測 (為了拿勝率算凱利公式)
+        # 2. 計算 RSI/KD 等當下訊號 (這行很重要，要算給凱利看)
+        rsi_val = ta.rsi(df['Close'], 14).iloc[-1]
+        sig = "BUY" if rsi_val < cfg.get('entry_rsi', 30) else "SELL" if rsi_val > cfg.get('exit_rsi', 70) else "WAIT"
+        
+        # 3. 執行回測 (獲取歷史勝率)
         sigs, perf = quick_backtest(df, cfg)
         win_rate = perf['Raw_Win_Rate'] if perf else 0
         
-        # 3. 凱利公式計算
-        kelly_msg, kelly_shares = calculate_kelly_position(df, user_capital, win_rate, user_risk/100)
+        # 4. 凱利公式計算 (★ 修正點：傳入當前訊號 sig)
+        kelly_msg, kelly_shares = calculate_kelly_position(df, user_capital, win_rate, user_risk/100, sig)
         
-        # 4. K線與訊號
+        # 5. K線與訊號
         k_pat = identify_k_pattern(df)
-        rsi_val = ta.rsi(df['Close'], 14).iloc[-1]
         
-        # 5. UI 顯示 (恢復大字體儀表板)
+        # 6. UI 顯示
         with st.container(border=True):
             c1, c2, c3 = st.columns(3)
             c1.metric("即時價格", f"${lp:.2f}", f"{chg:.2f} ({pct_chg:.2f}%)")
             c2.metric("策略勝率 (回測)", f"{win_rate*100:.0f}%", delta="凱利參考" if win_rate > 0.5 else "偏低")
-            c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[-1] if '建議' not in kelly_msg else "觀望")
+            c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望")
             
             st.info(f"💡 凱利觀點: {kelly_msg}")
 
-        # 6. 策略詳細說明 (新增功能)
+        # 7. 策略詳細說明
         strat_desc = get_strategy_desc(cfg)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
 
-        # 7. Gemini 大腦分析 (恢復詳細版)
+        # 8. Gemini 大腦分析
         if ai_provider == "Gemini (User Defined)" and gemini_key:
             st.subheader("🧠 Gemini 首席分析師")
             with st.spinner("AI 正在閱讀新聞與 K 線..."):
                 news = get_news(cfg['symbol'])
-                tech_txt = f"RSI:{rsi_val:.1f} | 策略勝率:{win_rate*100:.0f}%"
+                tech_txt = f"RSI:{rsi_val:.1f} | 策略勝率:{win_rate*100:.0f}% | 訊號:{sig}"
                 analysis, _, _ = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news, tech_txt, k_pat, gemini_model)
                 st.markdown(analysis)
         
-        # 8. 圖表
+        # 9. 圖表
         st.plotly_chart(plot_chart(df, cfg, sigs), use_container_width=True)
 
     else:
