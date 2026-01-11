@@ -61,7 +61,7 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v17.0)",
+    page_title="2026 量化戰情室 (Ultimate v18.0)",
     page_icon="📒",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -84,89 +84,97 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# ★★★ 新增模組：AI 交易日記系統 (Ledger) ★★★
+# ★★★ 核心模組：AI 交易日記系統 ★★★
 # ==========================================
-LEDGER_FILE = "ai_prediction_history.csv"
+LEDGER_FILE = os.path.join(os.getcwd(), "ai_prediction_history.csv")
+
+def get_real_live_price(symbol):
+    try:
+        t = yf.Ticker(symbol)
+        price = t.fast_info.get('last_price')
+        if price is None or np.isnan(price):
+            df = yf.download(symbol, period='1d', interval='1m', progress=False)
+            if not df.empty:
+                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                return float(df['Close'].iloc[-1])
+        return float(price) if price else None
+    except: return None
 
 def save_prediction(symbol, direction, confidence, entry_price, target_days=5):
     """保存預測到 CSV"""
-    today = datetime.now().date()
-    target_date = today + timedelta(days=target_days)
-    
-    new_record = {
-        "Date": today,
-        "Symbol": symbol,
-        "Direction": direction, # Bull/Bear
-        "Confidence": round(confidence, 4),
-        "Entry_Price": round(entry_price, 2),
-        "Target_Date": target_date,
-        "Status": "Pending", # Pending/Win/Loss
-        "Exit_Price": 0.0,
-        "Return": 0.0
-    }
-    
-    if os.path.exists(LEDGER_FILE):
-        df = pd.read_csv(LEDGER_FILE)
-        # 避免重複儲存當天同標的
-        mask = (df['Date'] == str(today)) & (df['Symbol'] == symbol)
-        if not df[mask].empty:
-            return False # 已經存過了
-        df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
-    else:
-        df = pd.DataFrame([new_record])
+    try:
+        today = datetime.now().date()
+        target_date = today + timedelta(days=target_days)
         
-    df.to_csv(LEDGER_FILE, index=False)
-    return True
+        new_record = {
+            "Date": today,
+            "Symbol": symbol,
+            "Direction": direction, # Bull/Bear
+            "Confidence": round(float(confidence), 4),
+            "Entry_Price": round(float(entry_price), 2),
+            "Target_Date": target_date,
+            "Status": "Pending", # Pending/Win/Loss
+            "Exit_Price": 0.0,
+            "Return": 0.0
+        }
+        
+        if os.path.exists(LEDGER_FILE):
+            df = pd.read_csv(LEDGER_FILE)
+            # 避免重複儲存
+            mask = (df['Date'] == str(today)) & (df['Symbol'] == symbol)
+            if not df[mask].empty:
+                return False 
+            df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
+        else:
+            df = pd.DataFrame([new_record])
+            
+        df.to_csv(LEDGER_FILE, index=False)
+        return True
+    except Exception as e:
+        st.error(f"存檔失敗: {e}")
+        return False
 
 def verify_ledger():
-    """自動驗證過去的預測"""
+    """自動驗證預測結果"""
     if not os.path.exists(LEDGER_FILE): return None
-    
-    df = pd.read_csv(LEDGER_FILE)
-    df['Target_Date'] = pd.to_datetime(df['Target_Date']).dt.date
-    today = datetime.now().date()
-    
-    updated = False
-    
-    # 針對狀態為 Pending 且日期已到的資料進行驗證
-    for i, row in df.iterrows():
-        if row['Status'] == 'Pending':
-            # 如果今天 >= 目標日，或者想要隨時監控浮動損益，可以把這裡改成 True
-            # 這裡設定為：只要過了 T+1 就可以開始看目前損益
-            current_price = get_real_live_price(row['Symbol'])
-            
-            if current_price:
-                entry = row['Entry_Price']
-                ret = (current_price - entry) / entry
-                
-                # 更新目前價格與報酬
-                df.at[i, 'Exit_Price'] = current_price
-                df.at[i, 'Return'] = round(ret * 100, 2)
-                
-                # 判定勝負 (如果方向是 Bull，報酬>0 為勝)
-                if row['Direction'] == "Bull":
-                    status = "Win" if ret > 0 else "Loss"
-                else: # Bear
-                    status = "Win" if ret < 0 else "Loss"
-                
-                # 只有過期才鎖定狀態，否則標記為 Floating (浮動中)
-                if today >= row['Target_Date']:
-                    df.at[i, 'Status'] = status
-                else:
-                    df.at[i, 'Status'] = f"Run ({status})"
-                
-                updated = True
-                
-    if updated:
-        df.to_csv(LEDGER_FILE, index=False)
+    try:
+        df = pd.read_csv(LEDGER_FILE)
+        df['Target_Date'] = pd.to_datetime(df['Target_Date']).dt.date
+        today = datetime.now().date()
+        updated = False
         
-    return df
+        for i, row in df.iterrows():
+            if row['Status'] == 'Pending' or 'Run' in row['Status']:
+                current_price = get_real_live_price(row['Symbol'])
+                if current_price and current_price > 0:
+                    entry = row['Entry_Price']
+                    ret = (current_price - entry) / entry
+                    
+                    df.at[i, 'Exit_Price'] = current_price
+                    df.at[i, 'Return'] = round(ret * 100, 2)
+                    
+                    if row['Direction'] == "Bull":
+                        res = "Win" if ret > 0 else "Loss"
+                    else: # Bear
+                        res = "Win" if ret < 0 else "Loss"
+                    
+                    if today >= row['Target_Date']:
+                        df.at[i, 'Status'] = res
+                    else:
+                        df.at[i, 'Status'] = f"Run ({res})"
+                    updated = True
+        
+        if updated: df.to_csv(LEDGER_FILE, index=False)
+        return df
+    except Exception as e:
+        st.error(f"讀取日記失敗: {e}")
+        return None
 
 # ==========================================
 # ★★★ 3. AI 模型核心 ★★★
 # ==========================================
 
-# --- Module A: TSM 專用波段 AI ---
+# --- A. TSM ---
 @st.cache_resource(ttl=43200)
 def get_tsm_swing_prediction():
     if not HAS_TENSORFLOW: return None, None, "TF缺"
@@ -189,18 +197,16 @@ def get_tsm_swing_prediction():
         df['Bias'] = (df['Main_Close'] - ta.sma(df['Main_Close'], 20)) / ta.sma(df['Main_Close'], 20)
         df.dropna(inplace=True)
 
-        days_out = 5; threshold = 0.02
-        df['Target'] = ((df['Main_Close'].shift(-days_out) / df['Main_Close'] - 1) > threshold).astype(int)
-        df_train = df.iloc[:-days_out].copy()
+        df['Target'] = ((df['Main_Close'].shift(-5) / df['Main_Close'] - 1) > 0.02).astype(int)
+        df_train = df.iloc[:-5].copy()
         
         features = ['Main_Ret', 'Night_Ret', 'Rate_Chg', 'AI_Ret', 'RSI', 'Bias']
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[features])
         
         X, y = [], []
-        lookback = 20
-        for i in range(lookback, len(scaled_data)):
-            X.append(scaled_data[i-lookback:i])
+        for i in range(20, len(scaled_data)):
+            X.append(scaled_data[i-20:i])
             y.append(df_train['Target'].iloc[i])
         
         X, y = np.array(X), np.array(y)
@@ -209,22 +215,20 @@ def get_tsm_swing_prediction():
         
         model = Sequential()
         model.add(LSTM(64, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
-        model.add(Dropout(0.3))
-        model.add(LSTM(64))
-        model.add(Dropout(0.3))
+        model.add(Dropout(0.3)); model.add(LSTM(64)); model.add(Dropout(0.3))
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
         
-        early_stop = EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True)
-        model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early_stop])
+        early = EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True)
+        model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early])
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
-        last_seq = df[features].iloc[-lookback:].values
+        last_seq = df[features].iloc[-20:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         return prob, acc, df['Main_Close'].iloc[-1]
     except Exception as e: return None, None, str(e)
 
-# --- Module B: EDZ / 宏觀風險 AI ---
+# --- B. EDZ/Macro ---
 @st.cache_resource(ttl=43200)
 def get_macro_prediction(target_symbol, features_dict):
     if not HAS_TENSORFLOW: return None, None
@@ -249,17 +253,15 @@ def get_macro_prediction(target_symbol, features_dict):
         feat_cols.append('RSI')
         df.dropna(inplace=True)
         
-        days_out = 5
-        df['Target'] = ((df['Main'].shift(-days_out) / df['Main'] - 1) > 0.02).astype(int)
-        df_train = df.iloc[:-days_out].copy()
+        df['Target'] = ((df['Main'].shift(-5) / df['Main'] - 1) > 0.02).astype(int)
+        df_train = df.iloc[:-5].copy()
         
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[feat_cols])
         
         X, y = [], []
-        lookback = 20
-        for i in range(lookback, len(scaled_data)):
-            X.append(scaled_data[i-lookback:i])
+        for i in range(20, len(scaled_data)):
+            X.append(scaled_data[i-20:i])
             y.append(df_train['Target'].iloc[i])
         
         X, y = np.array(X), np.array(y)
@@ -267,23 +269,21 @@ def get_macro_prediction(target_symbol, features_dict):
         X_train, X_test, y_train, y_test = X[:split], X[split:], y[:split], y[split:]
             
         model = Sequential()
-        model.add(LSTM(64, return_sequences=True, input_shape=(lookback, len(feat_cols))))
-        model.add(Dropout(0.3))
-        model.add(LSTM(64))
-        model.add(Dropout(0.3))
+        model.add(LSTM(64, return_sequences=True, input_shape=(20, len(feat_cols))))
+        model.add(Dropout(0.3)); model.add(LSTM(64)); model.add(Dropout(0.3))
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
         
-        early_stop = EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True)
-        model.fit(X_train, y_train, epochs=40, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early_stop])
+        early = EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True)
+        model.fit(X_train, y_train, epochs=40, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early])
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
-        last_seq = df[feat_cols].iloc[-lookback:].values
+        last_seq = df[feat_cols].iloc[-20:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         return prob, acc
     except: return None, None
 
-# --- Module C: QQQ 通用腦 (5年版) ---
+# --- C. QQQ Scanner ---
 @st.cache_resource(ttl=86400)
 def train_qqq_brain():
     if not HAS_TENSORFLOW: return None, None, None
@@ -327,8 +327,6 @@ def scan_tech_stock(symbol, model, scaler, features):
         df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
         df['MA_Dist'] = (df['Close'] - ta.sma(df['Close'], 20)) / ta.sma(df['Close'], 20)
         df['ATR_Pct'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) / df['Close']
-        
-        df['Target'] = ((df['Close'].shift(-5) / df['Close'] - 1) > 0.02).astype(int)
         df.dropna(inplace=True)
         
         last_seq = df[features].iloc[-20:].values
@@ -374,18 +372,6 @@ def get_fundamentals(symbol):
             "margin": info.get('grossMargins', 0),
             "eps": info.get('trailingEps', None)
         }
-    except: return None
-
-def get_real_live_price(symbol):
-    try:
-        t = yf.Ticker(symbol)
-        price = t.fast_info.get('last_price')
-        if price is None or np.isnan(price):
-            df = yf.download(symbol, period='1d', interval='1m', progress=False)
-            if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                return float(df['Close'].iloc[-1])
-        return float(price) if price else None
     except: return None
 
 def clean_text_for_llm(text): return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', str(text))
@@ -452,6 +438,7 @@ def quick_backtest(df, config, fee=0.0005):
         close = df['Close']; sigs = pd.Series(0, index=df.index)
         mode = config['mode']
         
+        # 1. 優先判斷複合策略
         if mode == "RSI_MA":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             ma_exit = ta.sma(close, length=config['exit_ma'])
@@ -472,6 +459,7 @@ def quick_backtest(df, config, fee=0.0005):
             lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
             sigs[(close < lower) & (rsi < config['entry_rsi'])] = 1
             sigs[close > upper] = -1
+        # 2. 判斷通用關鍵字
         elif "RSI" in mode:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
@@ -530,8 +518,7 @@ def plot_chart(df, config, sigs):
 
 def get_strategy_desc(cfg, df=None):
     mode = cfg['mode']
-    desc = mode
-    current_val = ""
+    desc = mode; current_val = ""
     if df is not None:
         try:
             close = df['Close']
@@ -542,15 +529,13 @@ def get_strategy_desc(cfg, df=None):
                 k = ta.stoch(df['High'], df['Low'], close, k=9, d=3).iloc[-1, 0]
                 current_val += f" | 🎯 目前 K值: {k:.1f}"
             if mode == "MA_CROSS":
-                f = ta.sma(close, cfg['fast_ma']).iloc[-1]
-                s = ta.sma(close, cfg['slow_ma']).iloc[-1]
+                f = ta.sma(close, cfg['fast_ma']).iloc[-1]; s = ta.sma(close, cfg['slow_ma']).iloc[-1]
                 current_val += f" | 🎯 MA{cfg['fast_ma']}: {f:.1f} / MA{cfg['slow_ma']}: {s:.1f}"
             if "BOLL" in mode:
                 bb = ta.bbands(close, length=20, std=2)
                 lower = bb.iloc[-1, 0]
                 current_val += f" | 🎯 下軌: {lower:.1f} (現價: {close.iloc[-1]:.1f})"
         except: pass
-
     if mode == "RSI_RSI": desc = f"RSI 區間 (買 < {cfg['entry_rsi']} / 賣 > {cfg['exit_rsi']})"
     elif mode == "RSI_MA": desc = f"RSI + 均線 (RSI < {cfg['entry_rsi']} 買 / 破 MA{cfg['exit_ma']} 賣)"
     elif mode == "KD": desc = f"KD 隨機指標 (K < {cfg['entry_k']} 買 / K > {cfg['exit_k']} 賣)"
@@ -598,9 +583,15 @@ if app_mode == "🤖 AI 深度學習實驗室":
     
     with tab1:
         st.subheader("TSM 專屬波段顧問 (T+5)")
-        if st.button("開始分析 TSM", key="btn_tsm"):
-            with st.spinner("AI 正在運算..."):
-                prob, acc, price = get_tsm_swing_prediction()
+        # 使用 Session State 防止按鈕刷新後消失
+        if st.button("開始分析 TSM", key="btn_tsm") or 'tsm_result' in st.session_state:
+            if 'tsm_result' not in st.session_state:
+                with st.spinner("AI 正在運算..."):
+                    prob, acc, price = get_tsm_swing_prediction()
+                    st.session_state['tsm_result'] = (prob, acc, price)
+            
+            prob, acc, price = st.session_state['tsm_result']
+            
             if prob is not None:
                 c1, c2, c3 = st.columns(3)
                 c1.metric("TSM 現價", f"${price:.2f}")
@@ -616,61 +607,82 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 else:
                     c3.metric("AI 建議", "⚖️ 震盪")
                 
-                if st.button("📸 記錄預測 (快照)"):
+                # 存檔按鈕獨立出來
+                if st.button("📸 記錄預測 (快照)", key="save_tsm"):
                     if save_prediction("TSM", direction, conf, price):
-                        st.success("✅ 已記錄到交易日記！")
-                    else: st.warning("⚠️ 今天已經存過了")
+                        st.success("✅ 已記錄！")
+                    else: st.warning("⚠️ 今天已存過")
             else: st.error("TF Error")
 
     with tab2:
         st.subheader("全球風險雷達")
         target_risk = st.selectbox("選擇監測對象", ["EDZ", "GC=F", "CL=F", "HG=F"])
-        if st.button(f"分析 {target_risk}", key="btn_macro"):
-            with st.spinner("AI 分析宏觀數據..."):
-                feat_map = { 'China': "FXI", 'DXY': "DX-Y.NYB", 'Rates': "^TNX", 'Copper': "HG=F" }
-                prob, acc = get_macro_prediction(target_risk, feat_map)
+        # ★★★ 修正點：EDZ 也加上 Session State 與按鈕 ★★★
+        if st.button(f"分析 {target_risk}", key="btn_macro") or f'macro_{target_risk}' in st.session_state:
+            if f'macro_{target_risk}' not in st.session_state:
+                with st.spinner("AI 分析宏觀數據..."):
+                    feat_map = { 'China': "FXI", 'DXY': "DX-Y.NYB", 'Rates': "^TNX", 'Copper': "HG=F" }
+                    prob, acc = get_macro_prediction(target_risk, feat_map)
+                    # 需要額外抓取現價
+                    price = get_real_live_price(target_risk) or 0
+                    st.session_state[f'macro_{target_risk}'] = (prob, acc, price)
+            
+            prob, acc, price = st.session_state[f'macro_{target_risk}']
             if prob is not None:
-                c1, c2 = st.columns(2)
-                c1.metric("模型準度", f"{acc*100:.1f}%")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("現價", f"${price:.2f}")
+                c2.metric("模型準度", f"{acc*100:.1f}%")
+                
+                direction = "Bull" if prob > 0.5 else "Bear"
                 conf = prob if prob > 0.5 else 1 - prob
+                
                 if prob > 0.6:
-                    c2.metric("趨勢方向", "📈 向上", delta=f"信心 {conf*100:.1f}%")
+                    c3.metric("趨勢方向", "📈 向上", delta=f"信心 {conf*100:.1f}%")
+                    if target_risk == "EDZ": st.error("⚠️ 市場避險情緒高漲！")
                 elif prob < 0.4:
-                    c2.metric("趨勢方向", "📉 向下", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
+                    c3.metric("趨勢方向", "📉 向下", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
                 else:
-                    c2.metric("趨勢方向", "💤 震盪")
+                    c3.metric("趨勢方向", "💤 震盪")
+                
+                # ★★★ 新增：EDZ 存檔按鈕 ★★★
+                if st.button("📸 記錄預測 (快照)", key=f"save_{target_risk}"):
+                    if save_prediction(target_risk, direction, conf, price):
+                        st.success("✅ 已記錄！")
+                    else: st.warning("⚠️ 今天已存過")
 
     with tab3:
         st.subheader("QQQ 科技股掃描器")
         tech_list = ["NVDA", "AMD", "AMZN", "MSFT", "GOOGL", "META", "TSLA", "AVGO", "PLTR"]
-        if st.button("🚀 掃描科技巨頭", key="btn_scan"):
-            with st.spinner("AI 正在訓練通用腦..."):
-                model, scaler, feats = train_qqq_brain()
-                if model:
-                    res = []
-                    prog = st.progress(0)
-                    for i, t in enumerate(tech_list):
-                        p, acc, pr = scan_tech_stock(t, model, scaler, feats)
-                        if p: res.append((t, p, acc, pr))
-                        prog.progress((i+1)/len(tech_list))
-                    prog.empty()
-                    res.sort(key=lambda x: x[1]+x[2], reverse=True)
-                    for tick, p, acc, pr in res:
-                        mark = "💎" if p > 0.6 and acc > 0.55 else "🛡️" if p < 0.4 and acc > 0.55 else "⚠️"
-                        direction = "📈" if p > 0.6 else "📉" if p < 0.4 else "💤"
-                        color_str = "green" if p > 0.6 else "red" if p < 0.4 else "gray"
-                        
-                        col1, col2, col3, col4 = st.columns([2, 2, 3, 2])
-                        col1.markdown(f"**{tick}** (${pr:.1f})")
-                        col2.markdown(f":{color_str}[{direction} ({p*100:.0f}%)]")
-                        col3.caption(f"準度: {acc*100:.0f}% {mark}")
-                        
-                        if col4.button("存", key=f"save_{tick}"):
-                            dir_str = "Bull" if p > 0.5 else "Bear"
-                            conf = p if p > 0.5 else 1 - p
-                            if save_prediction(tick, dir_str, conf, pr):
-                                st.toast(f"✅ {tick} 已存檔")
-                            else: st.toast("⚠️ 已存在")
+        if st.button("🚀 掃描科技巨頭", key="btn_scan") or 'scan_result' in st.session_state:
+            if 'scan_result' not in st.session_state:
+                with st.spinner("AI 正在訓練通用腦..."):
+                    model, scaler, feats = train_qqq_brain()
+                    if model:
+                        res = []
+                        prog = st.progress(0)
+                        for i, t in enumerate(tech_list):
+                            p, acc, pr = scan_tech_stock(t, model, scaler, feats)
+                            if p: res.append((t, p, acc, pr))
+                            prog.progress((i+1)/len(tech_list))
+                        prog.empty()
+                        res.sort(key=lambda x: x[1]+x[2], reverse=True)
+                        st.session_state['scan_result'] = res
+            
+            if 'scan_result' in st.session_state:
+                for tick, p, acc, pr in st.session_state['scan_result']:
+                    mark = "💎" if p > 0.6 and acc > 0.55 else "🛡️" if p < 0.4 and acc > 0.55 else "⚠️"
+                    direction = "📈" if p > 0.6 else "📉" if p < 0.4 else "💤"
+                    color_str = "green" if p > 0.6 else "red" if p < 0.4 else "gray"
+                    col1, col2, col3, col4 = st.columns([2, 2, 3, 2])
+                    col1.markdown(f"**{tick}** (${pr:.1f})")
+                    col2.markdown(f":{color_str}[{direction} ({p*100:.0f}%)]")
+                    col3.caption(f"準度: {acc*100:.0f}% {mark}")
+                    # ★★★ 這裡就是 QQQ 的存檔按鈕，一直都有，現在標示清楚 ★★★
+                    if col4.button("💾 存入日記", key=f"save_{tick}"):
+                        dir_str = "Bull" if p > 0.5 else "Bear"
+                        conf = p if p > 0.5 else 1 - p
+                        if save_prediction(tick, dir_str, conf, pr): st.toast(f"✅ {tick} 已存")
+                        else: st.toast("⚠️ 已存")
 
 # ------------------------------------------
 # Mode 2: 策略分析工具 (單股)
@@ -720,7 +732,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
     target_key = st.selectbox("選擇標的", list(strategies.keys()), format_func=lambda x: strategies[x]['name'])
     cfg = strategies[target_key]
     
-    # 1. 抓取數據與即時價格
     df = get_safe_data(cfg['symbol'])
     lp = get_real_live_price(cfg['symbol'])
     
@@ -729,20 +740,13 @@ elif app_mode == "📊 策略分析工具 (單股)":
         chg = lp - prev_close
         pct_chg = (chg / prev_close) * 100
         
-        # 2. 執行回測
         current_sig, perf, sigs = quick_backtest(df, cfg)
         win_rate = perf['Raw_Win_Rate'] if perf else 0
-        
-        # 3. 凱利公式
         kelly_msg, kelly_shares = calculate_kelly_position(df, user_capital, win_rate, user_risk/100, current_sig)
-        
-        # 4. K線與訊號
         k_pat = identify_k_pattern(df)
-        
-        # 5. 基本面
+        rsi_val = ta.rsi(df['Close'], 14).iloc[-1]
         fund = get_fundamentals(cfg['symbol'])
         
-        # 6. UI 顯示
         with st.container(border=True):
             c1, c2, c3 = st.columns(3)
             c1.metric("即時價格", f"${lp:.2f}", f"{chg:.2f} ({pct_chg:.2f}%)")
@@ -750,7 +754,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
             c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望")
             st.info(f"💡 凱利觀點: {kelly_msg}")
 
-        # 7. 財報基本面
         if fund:
             with st.expander("📊 財報基本面 & 籌碼數據", expanded=False):
                 f1, f2, f3, f4, f5 = st.columns(5)
@@ -760,11 +763,9 @@ elif app_mode == "📊 策略分析工具 (單股)":
                 f4.metric("法人持股", f"{fund['inst']*100:.1f}%" if fund['inst'] else "N/A")
                 f5.metric("空單比例", f"{fund['short']*100:.1f}%" if fund['short'] else "N/A")
 
-        # 8. 策略詳細說明
         strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
 
-        # 9. Gemini 大腦分析
         if ai_provider == "Gemini (User Defined)" and gemini_key:
             st.subheader("🧠 Gemini 首席分析師")
             with st.expander("📝 輸入財報筆記 / 新聞重點", expanded=False):
@@ -773,38 +774,29 @@ elif app_mode == "📊 策略分析工具 (單股)":
             if analyze_btn or user_notes:
                 with st.spinner("AI 正在深度解讀中..."):
                     news = get_news(cfg['symbol'])
-                    # 傳入 RSI 值
-                    rsi_val = ta.rsi(df['Close'], 14).iloc[-1]
                     tech_txt = f"RSI:{rsi_val:.1f} | 策略勝率:{win_rate*100:.0f}% | 訊號:{current_sig}"
                     analysis, _, _ = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news, tech_txt, k_pat, gemini_model, user_notes)
                     st.markdown(analysis)
         
-        # 10. 圖表
         st.plotly_chart(plot_chart(df, cfg, sigs), use_container_width=True)
-
-    else:
-        st.error("無法取得數據")
+    else: st.error("無法取得數據")
 
 # ------------------------------------------
 # Mode 3: 預測日記 (Ledger)
 # ------------------------------------------
 elif app_mode == "📒 預測日記 (自動驗證)":
     st.header("📒 AI 實戰驗證日記")
-    st.caption("追蹤 AI 的每一次預測，T+5 自動驗收成果。")
+    st.caption(f"檔案路徑: {LEDGER_FILE}")
     
     if st.button("🔄 立即刷新並驗證 (Auto-Verify)"):
         with st.spinner("正在檢查最新股價..."):
             df_ledger = verify_ledger()
-            if df_ledger is not None:
-                st.success("驗證完成！")
-            else:
-                st.info("尚無記錄，請先到「AI 實驗室」進行預測並存檔。")
+            if df_ledger is not None: st.success("驗證完成！")
+            else: st.info("尚無記錄")
     
     if os.path.exists(LEDGER_FILE):
         df = pd.read_csv(LEDGER_FILE)
         st.dataframe(df, use_container_width=True)
-        
-        # 統計數據
         if not df.empty:
             completed = df[df['Status'].isin(['Win', 'Loss'])]
             if not completed.empty:
@@ -812,5 +804,4 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 total = len(completed)
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
-    else:
-        st.info("目前還沒有任何日記。請去預測頁面按「📸 記錄預測」。")
+    else: st.info("目前還沒有日記，請去預測頁面存檔。")
