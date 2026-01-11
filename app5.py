@@ -66,7 +66,7 @@ except ImportError:
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v12.2)",
+    page_title="2026 量化戰情室 (Ultimate v13.0)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -89,8 +89,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 量化戰情室 (Ultimate v12.2)")
-st.caption("全配版：包含所有自選股 (AVGO/MRVL/核能) | T+5 波段 AI (含準度) | EDZ 風險雷達")
+st.title("💎 量化戰情室 (Ultimate v13.0)")
+st.caption("全配版：QQQ 通用腦掃描 (含準度評級) | T+5 波段預測 | EDZ 風險雷達")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -103,7 +103,7 @@ if not HAS_TENSORFLOW:
     st.warning("⚠️ 系統提示：TensorFlow/Keras 未安裝，無法使用波段預測功能。")
 
 # ==========================================
-# ★★★ 策略清單 (已恢復您的完整清單) ★★★
+# ★★★ 策略清單 ★★★
 # ==========================================
 strategies = {
     "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
@@ -148,7 +148,7 @@ strategies = {
 # ★★★ 3. AI 深度學習模組 (LSTM) ★★★
 # ==========================================
 
-# --- A. TSM 波段顧問 (含夜盤+利率) ★修正版：回傳準度 ---
+# --- A. TSM 波段顧問 (含夜盤+利率) ---
 @st.cache_resource(ttl=43200)
 def get_tsm_swing_prediction(symbol="TSM"):
     if not HAS_TENSORFLOW: return None, None, "TF 未安裝"
@@ -196,12 +196,12 @@ def get_tsm_swing_prediction(symbol="TSM"):
         
         X, y = np.array(X), np.array(y)
         
-        # 切分測試集 (為了計算準度)
+        # 切分測試集
         split = int(len(X) * 0.8)
         X_train, X_test = X[:split], X[split:]
         y_train, y_test = y[:split], y[split:]
         
-        # 訓練 (含 EarlyStopping + RestoreBestWeights)
+        # 訓練
         model = Sequential()
         model.add(LSTM(64, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
         model.add(Dropout(0.3))
@@ -210,27 +210,22 @@ def get_tsm_swing_prediction(symbol="TSM"):
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
         
-        # ★ 關鍵：恢復最佳權重
         early_stop = EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True)
         model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early_stop])
         
-        # ★ 計算準度
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # 預測
         last_seq = df[features].iloc[-lookback:].values
-        last_seq_scaled = scaler.transform(last_seq)
-        prob = model.predict(np.expand_dims(last_seq_scaled, axis=0), verbose=0)[0][0]
+        prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         
         return prob, acc, df['Close'].iloc[-1]
     except Exception as e: return None, None, str(e)
 
-# --- B. EDZ / 原物料 宏觀雷達 (含準度回測) ---
+# --- B. EDZ / 原物料 宏觀雷達 (含準度) ---
 @st.cache_resource(ttl=43200)
 def get_macro_prediction(target_symbol, features_dict, threshold=0.02):
     if not HAS_TENSORFLOW: return None, None
     try:
-        # 下載
         tickers = { 'Main': target_symbol }
         tickers.update(features_dict)
         data = yf.download(list(tickers.values()), period="3y", interval="1d", progress=False)
@@ -242,7 +237,6 @@ def get_macro_prediction(target_symbol, features_dict, threshold=0.02):
             df = df_close.copy()
         else: return None, None
 
-        # 特徵工程
         feature_cols = []
         df['Main_Ret'] = df['Main'].pct_change()
         feature_cols.append('Main_Ret')
@@ -255,7 +249,6 @@ def get_macro_prediction(target_symbol, features_dict, threshold=0.02):
         feature_cols.append('RSI')
         df.dropna(inplace=True)
         
-        # 標籤
         days_out = 5
         df['Target'] = ((df['Main'].shift(-days_out) / df['Main'] - 1) > threshold).astype(int)
         df_train = df.iloc[:-days_out].copy()
@@ -273,7 +266,6 @@ def get_macro_prediction(target_symbol, features_dict, threshold=0.02):
             
         X, y = np.array(X), np.array(y)
         
-        # 切分測試集
         split = int(len(X) * 0.8)
         X_train, X_test = X[:split], X[split:]
         y_train, y_test = y[:split], y[split:]
@@ -286,21 +278,17 @@ def get_macro_prediction(target_symbol, features_dict, threshold=0.02):
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
         
-        # 訓練
         early_stop = EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True)
         model.fit(X_train, y_train, epochs=40, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early_stop])
         
-        # 計算準度
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # 預測
         last_seq = df[feature_cols].iloc[-lookback:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
-        
         return prob, acc
     except: return None, None
 
-# --- C. QQQ 通用掃描器 ---
+# --- C. QQQ 通用掃描器 (含準度回測 - 升級版) ---
 @st.cache_resource(ttl=86400)
 def train_universal_scanner():
     if not HAS_TENSORFLOW: return None, None, None
@@ -312,12 +300,13 @@ def train_universal_scanner():
         df['RSI'] = ta.rsi(df['Close'], 14)
         df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
         df['MA20_Dist'] = (df['Close'] - ta.sma(df['Close'], 20)) / ta.sma(df['Close'], 20)
+        df['ATR_Pct'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) / df['Close']
         df.dropna(inplace=True)
         
         df['Target'] = ((df['Close'].shift(-5) / df['Close'] - 1) > 0.02).astype(int)
         df_train = df.iloc[:-5].copy()
         
-        features = ['Return', 'RSI', 'RVOL', 'MA20_Dist']
+        features = ['Return', 'RSI', 'RVOL', 'MA20_Dist', 'ATR_Pct']
         scaler = StandardScaler()
         X, y = [], []
         for i in range(20, len(df_train)):
@@ -325,7 +314,7 @@ def train_universal_scanner():
             y.append(df_train['Target'].iloc[i])
             
         model = Sequential()
-        model.add(LSTM(64, input_shape=(20, 4))); model.add(Dense(1, activation='sigmoid'))
+        model.add(LSTM(64, input_shape=(20, 5))); model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
         model.fit(np.array(X), np.array(y), epochs=30, verbose=0)
         return model, scaler, features
@@ -333,20 +322,45 @@ def train_universal_scanner():
 
 def scan_stock(symbol, model, scaler, features):
     try:
-        df = yf.download(symbol, period="6mo", interval="1d", progress=False)
-        if len(df) < 30: return None, None
+        # 下載 1 年數據以進行回測
+        df = yf.download(symbol, period="1y", interval="1d", progress=False)
+        if len(df) < 60: return None, None, 0
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
+        # 特徵工程
         df['Return'] = df['Close'].pct_change()
         df['RSI'] = ta.rsi(df['Close'], 14)
         df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
         df['MA20_Dist'] = (df['Close'] - ta.sma(df['Close'], 20)) / ta.sma(df['Close'], 20)
+        df['ATR_Pct'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) / df['Close']
+        
+        # 標籤 (用於回測)
+        df['Target'] = ((df['Close'].shift(-5) / df['Close'] - 1) > 0.02).astype(int)
         df.dropna(inplace=True)
         
+        # 1. 預測未來
         last_seq = df[features].iloc[-20:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
-        return prob, df['Close'].iloc[-1]
-    except: return None, None
+        
+        # 2. 計算適配度 (回測)
+        # 取最近半年的數據來測試這個 QQQ 腦適不適合這支股票
+        test_df = df.iloc[-125:-5] 
+        if len(test_df) > 30:
+            X_test, y_test = [], []
+            for i in range(20, len(test_df)):
+                # 這裡要小心 index 對齊，簡化處理：
+                # 重新 scaled 一次這段區間
+                sub_features = test_df[features].iloc[i-20:i+1]
+                X_test.append(scaler.transform(sub_features)[:-1])
+                y_test.append(test_df['Target'].iloc[i])
+            
+            if len(y_test) > 0:
+                _, acc = model.evaluate(np.array(X_test), np.array(y_test), verbose=0)
+            else: acc = 0.5
+        else: acc = 0.5
+
+        return prob, acc, df['Close'].iloc[-1]
+    except: return None, None, 0
 
 # ==========================================
 # 4. 資料與邏輯處理 (保留原功能)
@@ -557,28 +571,41 @@ with st.sidebar:
 
     st.divider()
     
-    # ★★★ 全市場掃描區 ★★★
+    # ★★★ 全市場掃描區 (升級版：含準度評級) ★★★
     st.header("⚡ AI 資金流向")
     st.caption("預測 T+5 漲幅 > 2%")
+    # 預設掃描清單
     scan_list = ["AMZN", "NVDA", "AAPL", "MSFT", "GOOGL", "AMD", "TSM", "TSLA", "PLTR", "GC=F", "CL=F"]
     
     if st.button("🚀 掃描全市場"):
-        with st.spinner("AI 正在訓練通用腦..."):
+        with st.spinner("AI 正在訓練通用腦 (含回測)..."):
             model, scaler, feats = train_universal_scanner()
             if model:
                 res = []
                 bar = st.progress(0)
                 for i, tick in enumerate(scan_list):
-                    p, price = scan_stock(tick, model, scaler, feats)
-                    if p: res.append((tick, p, price))
+                    # 接收三個回傳值 (prob, acc, price)
+                    p, acc, price = scan_stock(tick, model, scaler, feats)
+                    if p: res.append((tick, p, acc, price))
                     bar.progress((i+1)/len(scan_list))
                 
-                res.sort(key=lambda x: x[1], reverse=True)
+                # 排序邏輯：優先顯示「準度高」且「信心強」的
+                res.sort(key=lambda x: x[1] + x[2], reverse=True)
                 bar.empty()
-                for tick, p, pr in res:
-                    color = "green" if p > 0.6 else "red" if p < 0.4 else "gray"
-                    icon = "🔥" if p > 0.6 else "❄️"
-                    st.markdown(f"**{tick}**: :{color}[{p*100:.0f}%] ${pr:.1f} {icon}")
+                
+                for tick, p, acc, pr in res:
+                    # 評級邏輯
+                    mark = ""
+                    if p > 0.6 and acc > 0.55: mark = "💎" # 鑽石機會
+                    elif p < 0.4 and acc > 0.55: mark = "🛡️" # 建議避開
+                    elif acc < 0.5: mark = "⚠️" # 不準
+                    
+                    color = "green" if p > 0.5 else "red"
+                    
+                    # 顯示格式：股票 | 信心% | 準度% | 評級
+                    st.markdown(f"**{tick}** {mark}")
+                    st.caption(f"${pr:.1f} | :{color}[信心 {p*100:.0f}%] | 準度 {acc*100:.0f}%")
+                    st.divider()
             else: st.error("TF Error")
 
     st.divider()
@@ -608,15 +635,11 @@ with c1.container(border=True):
     
     if st.button("檢測風險 / 趨勢"):
         with st.spinner("AI 分析宏觀數據 (含準度回測)..."):
-            # 設定對應的特徵因子
             feat_map = { 'China': "FXI", 'DXY': "DX-Y.NYB", 'Rates': "^TNX", 'Copper': "HG=F" }
-            # 修正：接收兩個回傳值 (prob, acc)
             prob, acc = get_macro_prediction(target_risk, feat_map)
             
         if prob is not None:
             conf = prob if prob > 0.5 else 1 - prob
-            
-            # 新增：顯示準度
             st.metric("模型歷史準度", f"{acc*100:.1f}%", delta="可信" if acc > 0.6 else "普通")
             
             if prob > 0.6:
@@ -636,20 +659,14 @@ with c2.container(border=True):
     
     if st.button("AI 判讀 TSM"):
         with st.spinner("AI 運算中 (含準度回測)..."):
-            # 呼叫修正後的函數，接收三個返回值
             prob, acc, price = get_tsm_swing_prediction("TSM")
             
         if prob:
             conf = prob if prob > 0.5 else 1 - prob
-            
-            # 使用三欄位顯示：現價、準度、建議
             m1, m2, m3 = st.columns(3)
             m1.metric("TSM 現價", f"${price:.2f}")
-            
-            # 顯示準度
             m2.metric("回測準度", f"{acc*100:.1f}%", delta="表現優異" if acc>0.58 else "表現尚可")
 
-            # 顯示建議
             if prob > 0.6:
                 m3.metric("AI 建議", "看漲 🚀")
                 st.success(f"信心度 {conf*100:.1f}%：預期 5 天後漲幅 > 2%。**建議拉回佈局。**")
