@@ -61,7 +61,7 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v16.0)",
+    page_title="2026 量化戰情室 (Ultimate v16.1)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -270,7 +270,7 @@ def scan_tech_stock(symbol, model, scaler, features):
     except: return None, None, 0
 
 # ==========================================
-# 4. 傳統策略分析 (功能模組 - 修復版)
+# 4. 傳統策略分析 (功能模組)
 # ==========================================
 def get_safe_data(ticker):
     try:
@@ -281,7 +281,6 @@ def get_safe_data(ticker):
         return df
     except: return None
 
-# ★★★ 財報基本面獲取 ★★★
 def get_fundamentals(symbol):
     try:
         if "=" in symbol or "^" in symbol: return None
@@ -349,27 +348,16 @@ def calculate_kelly_position(df, capital, win_rate, risk_per_trade, current_sign
         return msg, shares
     except: return "計算失敗", 0
 
-# ★★★ Gemini 大腦 (含財報分析) ★★★
+# ★★★ Gemini 大腦 ★★★
 def analyze_logic_gemini_full(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
     if not HAS_GEMINI: return "No Gemini", "⚠️", False
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
-        
-        base_prompt = f"""
-        華爾街資深操盤手分析 {symbol}。
-        【技術面】：{tech_txt}
-        【K線型態】：{k_pattern}
-        【新聞焦點】：{news}
-        """
-        
-        if user_input:
-            base_prompt += f"\n【用戶補充財報/筆記】：{user_input}\n請針對用戶補充的內容進行深度解讀，並結合技術面給出建議。"
-        else:
-            base_prompt += "\n請給出：1.趨勢判斷 2.操作建議 3.風險提示"
-            
-        response = model.generate_content(base_prompt)
-        return response.text, "🧠", True
+        base_prompt = f"華爾街資深操盤手分析 {symbol}。\n【技術面】：{tech_txt}\n【K線型態】：{k_pattern}\n【新聞焦點】：{news}"
+        if user_input: base_prompt += f"\n【用戶筆記】：{user_input}\n請深度結合分析。"
+        else: base_prompt += "\n請給出：1.趨勢判斷 2.操作建議 3.風險提示"
+        return model.generate_content(base_prompt).text, "🧠", True
     except Exception as e: return str(e), "⚠️", False
 
 def identify_k_pattern(df):
@@ -387,6 +375,7 @@ def quick_backtest(df, config, fee=0.0005):
         close = df['Close']; sigs = pd.Series(0, index=df.index)
         mode = config['mode']
         
+        # 1. 優先判斷複合策略
         if mode == "RSI_MA":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             ma_exit = ta.sma(close, length=config['exit_ma'])
@@ -407,6 +396,7 @@ def quick_backtest(df, config, fee=0.0005):
             lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
             sigs[(close < lower) & (rsi < config['entry_rsi'])] = 1
             sigs[close > upper] = -1
+        # 2. 判斷通用關鍵字
         elif "RSI" in mode:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
@@ -415,41 +405,30 @@ def quick_backtest(df, config, fee=0.0005):
             sigs[k < config['entry_k']] = 1; sigs[k > config['exit_k']] = -1
         
         pos=0; ent=0; wins=0; trds=0; rets=[]
-        
         for i in range(len(df)):
             if pos == 0 and sigs.iloc[i] == 1: 
                 pos = 1; ent = close.iloc[i]
             elif pos == 1 and sigs.iloc[i] == -1:
-                pos = 0; 
-                r = (close.iloc[i] - ent) / ent - (fee * 2)
+                pos = 0; r = (close.iloc[i] - ent) / ent - (fee * 2)
                 rets.append(r); trds += 1
                 if r > 0: wins += 1
         
         win_rate = float(wins / trds) if trds > 0 else 0.0
         last_sig = sigs.iloc[-1]
-        
         return last_sig, {"Total_Return": sum(rets)*100, "Win_Rate": win_rate * 100, "Raw_Win_Rate": win_rate}, sigs
-    except Exception as e: 
-        return 0, None, None
+    except Exception as e: return 0, None, None
 
-# ★★★ 繪圖函數：雙軸籌碼圖 (CMF + OBV) ★★★
 def plot_chart(df, config, sigs):
-    # 創建 3 行的子圖
     fig = make_subplots(
-        rows=3, cols=1, 
-        shared_xaxes=True, 
-        row_heights=[0.6, 0.2, 0.2],
-        vertical_spacing=0.02,
-        specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": True}]] # 第三行開啟雙軸
+        rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2],
+        vertical_spacing=0.02, specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": True}]]
     )
-    
-    # 1. K線圖
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
+    
     if config.get('ma_trend', 0) > 0:
         ma = ta.ema(df['Close'], length=config['ma_trend'])
         fig.add_trace(go.Scatter(x=df.index, y=ma, name=f"EMA {config['ma_trend']}", line=dict(color='purple')), row=1, col=1)
 
-    # 2. 技術指標 (RSI/KD)
     if "RSI" in config['mode']:
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
         fig.add_trace(go.Scatter(x=df.index, y=rsi, name="RSI", line=dict(color='#b39ddb')), row=2, col=1)
@@ -459,17 +438,13 @@ def plot_chart(df, config, sigs):
         fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 0], name="K", line=dict(color='yellow')), row=2, col=1)
         fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", row=2, col=1)
 
-    # 3. 籌碼面 (CMF + OBV 雙軸)
-    # CMF (柱狀圖) - 左軸
     cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
     colors = ['#089981' if v >= 0 else '#f23645' for v in cmf]
     fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF', marker_color=colors, opacity=0.5), row=3, col=1, secondary_y=False)
     
-    # OBV (線圖) - 右軸
     obv = ta.obv(df['Close'], df['Volume'])
     fig.add_trace(go.Scatter(x=df.index, y=obv, name='OBV', line=dict(color='cyan', width=1)), row=3, col=1, secondary_y=True)
 
-    # 4. 買賣訊號點
     if sigs is not None:
         buy = df[sigs==1]; sell = df[sigs==-1]
         fig.add_trace(go.Scatter(x=buy.index, y=buy['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', color='green', size=10), name='Buy'), row=1, col=1)
@@ -478,15 +453,40 @@ def plot_chart(df, config, sigs):
     fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False)
     return fig
 
-def get_strategy_desc(cfg):
+# ★★★ 策略說明生成器 (新增：顯示目前數值) ★★★
+def get_strategy_desc(cfg, df=None):
     mode = cfg['mode']
-    if mode == "RSI_RSI": return f"RSI 區間 (買 < {cfg['entry_rsi']} / 賣 > {cfg['exit_rsi']})"
-    elif mode == "RSI_MA": return f"RSI + 均線 (RSI < {cfg['entry_rsi']} 買 / 破 MA{cfg['exit_ma']} 賣)"
-    elif mode == "KD": return f"KD 隨機指標 (K < {cfg['entry_k']} 買 / K > {cfg['exit_k']} 賣)"
-    elif mode == "MA_CROSS": return f"均線交叉 (MA{cfg['fast_ma']} 穿過 MA{cfg['slow_ma']})"
-    elif mode == "FUSION": return f"趨勢 + RSI (站上 EMA{cfg['ma_trend']} 且 RSI < {cfg['entry_rsi']})"
-    elif mode == "BOLL_RSI": return f"布林通道 + RSI (破下軌且 RSI < {cfg['entry_rsi']})"
-    return mode
+    desc = mode
+    current_val = ""
+    
+    # 嘗試計算當前指標數值
+    if df is not None:
+        try:
+            close = df['Close']
+            if "RSI" in mode or mode == "FUSION":
+                rsi = ta.rsi(close, length=cfg.get('rsi_len', 14)).iloc[-1]
+                current_val += f" | 🎯 目前 RSI: {rsi:.1f}"
+            if "KD" in mode:
+                k = ta.stoch(df['High'], df['Low'], close, k=9, d=3).iloc[-1, 0]
+                current_val += f" | 🎯 目前 K值: {k:.1f}"
+            if mode == "MA_CROSS":
+                f = ta.sma(close, cfg['fast_ma']).iloc[-1]
+                s = ta.sma(close, cfg['slow_ma']).iloc[-1]
+                current_val += f" | 🎯 MA{cfg['fast_ma']}: {f:.1f} / MA{cfg['slow_ma']}: {s:.1f}"
+            if "BOLL" in mode:
+                bb = ta.bbands(close, length=20, std=2)
+                lower = bb.iloc[-1, 0]
+                current_val += f" | 🎯 下軌: {lower:.1f} (現價: {close.iloc[-1]:.1f})"
+        except: pass
+
+    if mode == "RSI_RSI": desc = f"RSI 區間 (買 < {cfg['entry_rsi']} / 賣 > {cfg['exit_rsi']})"
+    elif mode == "RSI_MA": desc = f"RSI + 均線 (RSI < {cfg['entry_rsi']} 買 / 破 MA{cfg['exit_ma']} 賣)"
+    elif mode == "KD": desc = f"KD 隨機指標 (K < {cfg['entry_k']} 買 / K > {cfg['exit_k']} 賣)"
+    elif mode == "MA_CROSS": desc = f"均線交叉 (MA{cfg['fast_ma']} 穿過 MA{cfg['slow_ma']})"
+    elif mode == "FUSION": desc = f"趨勢 + RSI (站上 EMA{cfg['ma_trend']} 且 RSI < {cfg['entry_rsi']})"
+    elif mode == "BOLL_RSI": desc = f"布林通道 + RSI (破下軌且 RSI < {cfg['entry_rsi']})"
+    
+    return desc + current_val
 
 # ==========================================
 # 5. 側邊欄與頁面配置
@@ -579,7 +579,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     res.sort(key=lambda x: x[1]+x[2], reverse=True)
                     for tick, p, acc, pr in res:
                         mark = "💎" if p > 0.6 and acc > 0.55 else "🛡️" if p < 0.4 and acc > 0.55 else "⚠️"
-                        direction = "📈 看漲" if p > 0.6 else "📉 看跌" if p < 0.4 else "💤 盤整"
+                        direction = "📈" if p > 0.6 else "📉" if p < 0.4 else "💤"
                         color_str = "green" if p > 0.6 else "red" if p < 0.4 else "gray"
                         with st.container(border=True):
                             c1, c2, c3 = st.columns([2, 3, 3])
@@ -641,6 +641,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
     lp = get_real_live_price(cfg['symbol'])
     
     if df is not None and lp:
+        # 計算漲跌幅
         prev_close = df['Close'].iloc[-2] if len(df) > 1 else lp
         chg = lp - prev_close
         pct_chg = (chg / prev_close) * 100
@@ -654,21 +655,19 @@ elif app_mode == "📊 策略分析工具 (單股)":
         
         # 4. K線與訊號
         k_pat = identify_k_pattern(df)
-        rsi_val = ta.rsi(df['Close'], 14).iloc[-1]
         
-        # 5. 基本面與籌碼數據
+        # 5. 基本面數據
         fund = get_fundamentals(cfg['symbol'])
         
-        # 6. UI 顯示 (恢復大字體儀表板)
+        # 6. UI 顯示
         with st.container(border=True):
             c1, c2, c3 = st.columns(3)
             c1.metric("即時價格", f"${lp:.2f}", f"{chg:.2f} ({pct_chg:.2f}%)")
             c2.metric("策略勝率 (回測)", f"{win_rate*100:.0f}%", delta="凱利參考" if win_rate > 0.5 else "偏低")
             c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望")
-            
             st.info(f"💡 凱利觀點: {kelly_msg}")
 
-        # 7. 財報基本面區塊 (新增)
+        # 7. 財報基本面
         if fund:
             with st.expander("📊 財報基本面 & 籌碼數據", expanded=False):
                 f1, f2, f3, f4, f5 = st.columns(5)
@@ -678,26 +677,24 @@ elif app_mode == "📊 策略分析工具 (單股)":
                 f4.metric("法人持股", f"{fund['inst']*100:.1f}%" if fund['inst'] else "N/A")
                 f5.metric("空單比例", f"{fund['short']*100:.1f}%" if fund['short'] else "N/A")
 
-        # 8. 策略詳細說明
-        strat_desc = get_strategy_desc(cfg)
+        # 8. 策略詳細說明 (含目前數值)
+        strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
 
-        # 9. Gemini 大腦分析 (恢復詳細版 + 用戶輸入)
+        # 9. Gemini 大腦分析
         if ai_provider == "Gemini (User Defined)" and gemini_key:
             st.subheader("🧠 Gemini 首席分析師")
-            
-            with st.expander("📝 輸入財報筆記 / 新聞重點 (AI 幫你解讀)", expanded=False):
+            with st.expander("📝 輸入財報筆記 / 新聞重點", expanded=False):
                 user_notes = st.text_area("貼上新聞或財報數據...", height=100)
                 analyze_btn = st.button("🚀 開始深度分析")
-            
-            if analyze_btn or user_notes: # 有按鈕或有文字都觸發
+            if analyze_btn or user_notes:
                 with st.spinner("AI 正在深度解讀中..."):
                     news = get_news(cfg['symbol'])
-                    tech_txt = f"RSI:{rsi_val:.1f} | 策略勝率:{win_rate*100:.0f}% | 訊號:{current_sig}"
+                    tech_txt = f"策略勝率:{win_rate*100:.0f}% | 訊號:{current_sig}"
                     analysis, _, _ = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news, tech_txt, k_pat, gemini_model, user_notes)
                     st.markdown(analysis)
         
-        # 10. 圖表 (含籌碼面雙軸)
+        # 10. 圖表
         st.plotly_chart(plot_chart(df, cfg, sigs), use_container_width=True)
 
     else:
