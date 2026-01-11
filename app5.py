@@ -15,7 +15,7 @@ import os
 import random
 
 # ==========================================
-# ★★★ 0. God Mode: 鎖定隨機種子 (確保 AI 穩定) ★★★
+# ★★★ 0. God Mode: 鎖定隨機種子 ★★★
 # ==========================================
 def set_seeds(seed=42):
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -61,8 +61,8 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v14.1)",
-    page_icon="🧠",
+    page_title="2026 量化戰情室 (Ultimate v15.1)",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -80,14 +80,11 @@ st.markdown("""
         .stTabs [data-baseweb="tab-list"] { gap: 10px; }
         .stTabs [data-baseweb="tab"] { background-color: #1c202a; border-radius: 4px 4px 0 0; color: #d1d4dc; }
         .stTabs [aria-selected="true"] { background-color: #2962ff; color: white; }
-        .bull-box { background-color: #1a2e1a; padding: 10px; border-left: 5px solid #00ff00; margin-bottom: 5px; border-radius: 5px; }
-        .bear-box { background-color: #2e1a1a; padding: 10px; border-left: 5px solid #ff0000; margin-bottom: 5px; border-radius: 5px; }
-        .judge-box { background-color: #1a1a2e; padding: 10px; border-left: 5px solid #00aaff; margin-bottom: 5px; border-radius: 5px; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# ★★★ 3. AI 模型核心 (獨立模組) ★★★
+# ★★★ 3. AI 模型核心 (保持最新版) ★★★
 # ==========================================
 
 # --- Module A: TSM 專用波段 AI ---
@@ -97,7 +94,6 @@ def get_tsm_swing_prediction():
     try:
         tickers = { 'Main': 'TSM', 'Night': "EWT", 'Rate': "^TNX", 'AI': 'NVDA' }
         data = yf.download(list(tickers.values()), period="2y", interval="1d", progress=False)
-        
         if isinstance(data.columns, pd.MultiIndex):
             df_close = data['Close'].copy()
             inv_map = {v: k for k, v in tickers.items()}
@@ -129,7 +125,6 @@ def get_tsm_swing_prediction():
             y.append(df_train['Target'].iloc[i])
         
         X, y = np.array(X), np.array(y)
-        
         split = int(len(X) * 0.8)
         X_train, X_test, y_train, y_test = X[:split], X[split:], y[:split], y[split:]
         
@@ -145,7 +140,6 @@ def get_tsm_swing_prediction():
         model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early_stop])
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
-        
         last_seq = df[features].iloc[-lookback:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         return prob, acc, df['Main_Close'].iloc[-1]
@@ -159,7 +153,6 @@ def get_macro_prediction(target_symbol, features_dict):
         tickers = { 'Main': target_symbol }
         tickers.update(features_dict)
         data = yf.download(list(tickers.values()), period="3y", interval="1d", progress=False)
-        
         if isinstance(data.columns, pd.MultiIndex):
             df_close = data['Close'].copy()
             inv_map = {v: k for k, v in tickers.items()}
@@ -172,7 +165,7 @@ def get_macro_prediction(target_symbol, features_dict):
         feat_cols.append('Main_Ret')
         for name in features_dict.keys():
             df[f'{name}_Ret'] = df[name].pct_change()
-            feature_cols.append(f'{name}_Ret')
+            feat_cols.append(f'{name}_Ret')
         df['RSI'] = ta.rsi(df['Main'], length=14)
         feat_cols.append('RSI')
         df.dropna(inplace=True)
@@ -206,18 +199,16 @@ def get_macro_prediction(target_symbol, features_dict):
         model.fit(X_train, y_train, epochs=40, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early_stop])
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
-        
         last_seq = df[feat_cols].iloc[-lookback:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         return prob, acc
     except: return None, None
 
-# --- Module C: QQQ 通用腦 (5年數據版) ---
+# --- Module C: QQQ 通用腦 (5年版) ---
 @st.cache_resource(ttl=86400)
 def train_qqq_brain():
     if not HAS_TENSORFLOW: return None, None, None
     try:
-        # ★★★ 保持 5 年數據，讓老師傅經驗豐富 ★★★
         df = yf.download("QQQ", period="5y", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
@@ -251,9 +242,7 @@ def scan_tech_stock(symbol, model, scaler, features):
         if len(df) < 60: return None, None, 0
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # 清洗數據
         df = df[df['Volume'] > 0].copy()
-        
         df['Return'] = df['Close'].pct_change()
         df['RSI'] = ta.rsi(df['Close'], 14)
         df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
@@ -281,7 +270,7 @@ def scan_tech_stock(symbol, model, scaler, features):
     except: return None, None, 0
 
 # ==========================================
-# 4. 傳統策略分析 (資料與指標)
+# 4. 傳統策略分析 (功能模組 - 修復版)
 # ==========================================
 def get_safe_data(ticker):
     try:
@@ -292,58 +281,86 @@ def get_safe_data(ticker):
         return df
     except: return None
 
-def clean_text_for_llm(text): return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', str(text))
-
-def get_fundamentals(symbol):
+def get_real_live_price(symbol):
     try:
-        if "=" in symbol or "^" in symbol: return None
-        s = yf.Ticker(symbol)
-        return { "pe": s.info.get('trailingPE'), "inst": s.info.get('heldPercentInstitutions'), "short": s.info.get('shortPercentOfFloat') }
+        t = yf.Ticker(symbol)
+        price = t.fast_info.get('last_price')
+        if price is None or np.isnan(price):
+            df = yf.download(symbol, period='1d', interval='1m', progress=False)
+            if not df.empty:
+                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                return float(df['Close'].iloc[-1])
+        return float(price) if price else None
     except: return None
 
-def analyze_logic_gemini(api_key, symbol, news, tech, pattern, model_name):
+def clean_text_for_llm(text): return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', str(text))
+
+def get_news(symbol):
+    try:
+        if "=" in symbol or "^" in symbol: return []
+        news = yf.Ticker(symbol).news
+        return [clean_text_for_llm(n['title']) for n in news[:3]]
+    except: return []
+
+# ★★★ 凱利公式 + ATR 倉位控管 (復活) ★★★
+def calculate_kelly_position(df, capital, win_rate, risk_per_trade=0.01):
+    try:
+        atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
+        price = df['Close'].iloc[-1]
+        stop_loss_dist = 2 * atr
+        
+        odds = 2.0
+        kelly_pct = win_rate - ((1 - win_rate) / odds)
+        safe_kelly = max(0, kelly_pct * 0.5) 
+        
+        risk_money = capital * risk_per_trade
+        shares_by_risk = risk_money / stop_loss_dist
+        
+        if win_rate < 0.45:
+            return "⛔ 勝率過低，建議觀望 (0股)", 0
+            
+        shares = int(shares_by_risk)
+        cost = shares * price
+        
+        msg = f"{shares} 股 (約 ${cost:.0f})"
+        if safe_kelly > 0.2: msg += " 🔥重倉機會"
+        
+        return msg, shares
+    except: return "計算失敗", 0
+
+# ★★★ Gemini 大腦 (復活) ★★★
+def analyze_logic_gemini_full(api_key, symbol, news, tech_txt, k_pattern, model_name):
     if not HAS_GEMINI: return "No Gemini", "⚠️", False
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
-        prompt = f"分析 {symbol}。技術: {tech}。型態: {pattern}。新聞: {news}。給出操作建議。"
-        return model.generate_content(prompt).text, "⚡", True
+        prompt = f"""
+        你是一位華爾街資深操盤手。請分析 {symbol}。
+        
+        【技術面】：{tech_txt}
+        【K線型態】：{k_pattern}
+        【最新新聞】：{news}
+        
+        請給出：
+        1. **趨勢判斷**：多/空/盤整 (請結合新聞與技術面)。
+        2. **操作建議**：具體的進出場思路。
+        3. **風險提示**：目前最大的隱憂是什麼？
+        """
+        response = model.generate_content(prompt)
+        return response.text, "🧠", True
     except Exception as e: return str(e), "⚠️", False
 
-def run_ai_debate(api_key, symbol, news, tech, pattern, model_name):
-    if not HAS_GEMINI: return "No Gemini", "⚠️", False, None
+def identify_k_pattern(df):
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
-        prompt = f"對 {symbol} 進行多空辯論。\n技術: {tech}\n型態: {pattern}\n新聞: {news}\n回傳 JSON: {{'bull': '...', 'bear': '...', 'judge': '...'}}"
-        res = model.generate_content(prompt).text
-        if "```json" in res: res = res.replace("```json", "").replace("```", "")
-        return json.loads(res).get("judge"), "⚖️", True, json.loads(res)
-    except: return "Error", "⚠️", False, None
-
-def analyze_ticker_strategy(config, ai_provider, gemini_key, model_name, debate):
-    symbol = config['symbol']
-    df = get_safe_data(symbol)
-    if df is None: return None
-    
-    lp = df['Close'].iloc[-1]
-    rsi = ta.rsi(df['Close'], 14).iloc[-1]
-    sig = "BUY" if rsi < config.get('entry_rsi', 30) else "SELL" if rsi > config.get('exit_rsi', 70) else "WAIT"
-    
-    llm_res = "N/A"; debate_res = None; is_llm = False
-    
-    if ai_provider == "Gemini (User Defined)" and gemini_key:
-        news = [clean_text_for_llm(n['title']) for n in yf.Ticker(symbol).news[:3]]
-        if debate:
-            llm_res, _, is_llm, debate_res = run_ai_debate(gemini_key, symbol, news, f"RSI:{rsi}", "N/A", model_name)
-        else:
-            llm_res, _, is_llm = analyze_logic_gemini(gemini_key, symbol, news, f"RSI:{rsi}", "N/A", model_name)
-            
-    return {
-        "Symbol": symbol, "Name": config['name'], "Price": lp, "Prev_Close": df['Close'].iloc[-2],
-        "Signal": sig, "Action": f"RSI:{rsi:.1f}", "Raw_DF": df, "Strat_Desc": config['mode'],
-        "Is_LLM": is_llm, "LLM_Analysis": llm_res, "Debate": debate_res
-    }
+        c, o = df['Close'].iloc[-1], df['Open'].iloc[-1]
+        c_prev, o_prev = df['Close'].iloc[-2], df['Open'].iloc[-2]
+        
+        pat = "一般震盪"
+        if c > o and c_prev < o_prev and c > o_prev and o < c_prev: pat = "🔥 多頭吞噬 (Bullish Engulfing)"
+        elif c < o and c_prev > o_prev and c < o_prev and o > c_prev: pat = "💀 空頭吞噬 (Bearish Engulfing)"
+        elif c > o and (c-o)/(df['High'].iloc[-1]-df['Low'].iloc[-1]) < 0.3: pat = "🔨 錘頭/吊人 (Hammer)"
+        return pat
+    except: return "N/A"
 
 def quick_backtest(df, config):
     try:
@@ -354,13 +371,28 @@ def quick_backtest(df, config):
         elif "KD" in config['mode']:
             k = ta.stoch(df['High'], df['Low'], close, k=9, d=3).iloc[:, 0]
             sigs[k < config['entry_k']] = 1; sigs[k > config['exit_k']] = -1
+        elif "BOLL" in config['mode']:
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            bb = ta.bbands(close, length=20, std=2)
+            lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
+            sigs[(close < lower) & (rsi < config['entry_rsi'])] = 1
+            sigs[close > upper] = -1
+        elif "MA_CROSS" in config['mode']:
+            f = ta.sma(close, config['fast_ma']); s = ta.sma(close, config['slow_ma'])
+            sigs[(f > s) & (f.shift(1) <= s.shift(1))] = 1
+            sigs[(f < s) & (f.shift(1) >= s.shift(1))] = -1
+        elif "FUSION" in config['mode']:
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
         
         pos=0; ent=0; wins=0; trds=0; rets=[]
         for i in range(len(df)):
             if pos==0 and sigs.iloc[i]==1: pos=1; ent=close.iloc[i]
             elif pos==1 and sigs.iloc[i]==-1:
                 pos=0; r = (close.iloc[i]-ent)/ent; rets.append(r); trds+=1; wins += 1 if r>0 else 0
-        return sigs, {"Total_Return": sum(rets)*100, "Win_Rate": (wins/trds*100) if trds else 0}
+        
+        win_rate = (wins/trds) if trds > 0 else 0
+        return sigs, {"Total_Return": sum(rets)*100, "Win_Rate": win_rate * 100, "Raw_Win_Rate": win_rate}
     except: return None, None
 
 def plot_chart(df, config, sigs):
@@ -381,17 +413,21 @@ def plot_chart(df, config, sigs):
 # 5. 側邊欄與頁面配置
 # ==========================================
 st.sidebar.title("🚀 戰情室導航")
-app_mode = st.sidebar.radio("選擇功能模組：", ["🤖 AI 深度學習實驗室", "📊 策略分析工具 (舊版)"])
+app_mode = st.sidebar.radio("選擇功能模組：", ["🤖 AI 深度學習實驗室", "📊 策略分析工具 (單股)"])
 
 st.sidebar.divider()
 st.sidebar.header("⚙️ 全域設定")
 ai_provider = st.sidebar.selectbox("AI 語言模型", ["不使用", "Gemini (User Defined)"])
-gemini_key = ""; gemini_model = "models/gemini-2.0-flash"; debate_mode = False
+gemini_key = ""; gemini_model = "models/gemini-2.0-flash"
 
 if ai_provider == "Gemini (User Defined)":
     gemini_key = st.sidebar.text_input("Gemini Key", type="password")
     gemini_model = st.sidebar.text_input("Model Name", value="models/gemini-2.0-flash")
-    debate_mode = st.sidebar.checkbox("啟用 AI 辯論模式", value=False)
+
+st.sidebar.divider()
+st.sidebar.header("💰 凱利公式設定")
+user_capital = st.sidebar.number_input("總本金 (USD)", value=10000)
+user_risk = st.sidebar.number_input("單筆風險 (%)", value=1.0)
 
 if st.sidebar.button("🔄 清除快取 (重置 AI)"):
     st.cache_resource.clear()
@@ -406,69 +442,52 @@ if st.sidebar.button("🔄 清除快取 (重置 AI)"):
 # ------------------------------------------
 if app_mode == "🤖 AI 深度學習實驗室":
     st.header("🤖 AI 深度學習實驗室")
-    st.caption("神經網路模型 (LSTM) | T+5 波段預測 | 鎖定最佳權重")
+    st.caption("神經網路模型 (LSTM) | T+5 波段預測")
     
     tab1, tab2, tab3 = st.tabs(["📈 TSM 專用波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦"])
     
-    # [Tab 1] TSM
     with tab1:
         st.subheader("TSM 專屬波段顧問 (T+5)")
-        st.info("因子：台積電 + EWT (夜盤) + ^TNX (利率) + NVDA (供應鏈)")
         if st.button("開始分析 TSM", key="btn_tsm"):
-            with st.spinner("AI 正在運算 (含準度回測)..."):
+            with st.spinner("AI 正在運算..."):
                 prob, acc, price = get_tsm_swing_prediction()
-            
             if prob is not None:
                 c1, c2, c3 = st.columns(3)
                 c1.metric("TSM 現價", f"${price:.2f}")
                 c2.metric("模型準度", f"{acc*100:.1f}%", delta="可信" if acc>0.58 else "普通")
-                
                 conf = prob if prob > 0.5 else 1 - prob
                 if prob > 0.6:
-                    c3.metric("AI 建議", "🚀 看漲")
-                    st.success(f"信心度 {conf*100:.1f}%：預期 5 天後漲幅 > 2%。建議拉回佈局。")
+                    c3.metric("AI 建議", "🚀 看漲", delta=f"信心 {conf*100:.1f}%")
                 elif prob < 0.4:
-                    c3.metric("AI 建議", "📉 看跌/盤")
-                    st.error(f"信心度 {conf*100:.1f}%：上漲空間有限。建議觀望。")
+                    c3.metric("AI 建議", "📉 看跌/盤", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
                 else:
                     c3.metric("AI 建議", "⚖️ 震盪")
-                    st.warning("多空不明，建議空手。")
-            else: st.error("運算失敗，請檢查 TensorFlow")
+            else: st.error("TF Error")
 
-    # [Tab 2] EDZ
     with tab2:
-        st.subheader("全球風險與原物料雷達")
-        st.info("因子：標的 + 利率 + 銅價 + 中國股市 + 美元")
+        st.subheader("全球風險雷達")
         target_risk = st.selectbox("選擇監測對象", ["EDZ", "GC=F", "CL=F", "HG=F"])
-        
         if st.button(f"分析 {target_risk}", key="btn_macro"):
             with st.spinner("AI 分析宏觀數據..."):
                 feat_map = { 'China': "FXI", 'DXY': "DX-Y.NYB", 'Rates': "^TNX", 'Copper': "HG=F" }
                 prob, acc = get_macro_prediction(target_risk, feat_map)
-            
             if prob is not None:
                 c1, c2 = st.columns(2)
                 c1.metric("模型準度", f"{acc*100:.1f}%")
                 conf = prob if prob > 0.5 else 1 - prob
-                
                 if prob > 0.6:
-                    c2.metric("趨勢方向", "📈 向上/風險高")
-                    st.error(f"信心 {conf*100:.1f}%：{target_risk} 趨勢向上。(若是 EDZ 代表市場風險高)")
+                    c2.metric("趨勢方向", "📈 向上", delta=f"信心 {conf*100:.1f}%")
+                    if target_risk == "EDZ": st.error("⚠️ 市場避險情緒高漲！")
                 elif prob < 0.4:
-                    c2.metric("趨勢方向", "📉 向下/盤整")
-                    st.success(f"信心 {conf*100:.1f}%：{target_risk} 趨勢向下或盤整。")
+                    c2.metric("趨勢方向", "📉 向下", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
                 else:
                     c2.metric("趨勢方向", "💤 震盪")
-                    st.warning("無明顯趨勢。")
 
-    # [Tab 3] QQQ 通用腦 (方向顯示修復版)
     with tab3:
         st.subheader("QQQ 科技股掃描器")
-        st.info("原理：用 QQQ 學會的邏輯，去檢視個股是否具備「科技股上漲型態」。")
         tech_list = ["NVDA", "AMD", "AMZN", "MSFT", "GOOGL", "META", "TSLA", "AVGO", "PLTR"]
-        
         if st.button("🚀 掃描科技巨頭", key="btn_scan"):
-            with st.spinner("AI 正在訓練通用腦並掃描..."):
+            with st.spinner("AI 正在訓練通用腦..."):
                 model, scaler, feats = train_qqq_brain()
                 if model:
                     res = []
@@ -477,106 +496,107 @@ if app_mode == "🤖 AI 深度學習實驗室":
                         p, acc, pr = scan_tech_stock(t, model, scaler, feats)
                         if p: res.append((t, p, acc, pr))
                         prog.progress((i+1)/len(tech_list))
-                    
                     prog.empty()
-                    # 排序：優先顯示「信心強」且「準度高」的
                     res.sort(key=lambda x: x[1]+x[2], reverse=True)
-                    
                     for tick, p, acc, pr in res:
-                        mark = ""
-                        if p > 0.6 and acc > 0.55: mark = "💎 鑽石機會"
-                        elif p < 0.4 and acc > 0.55: mark = "🛡️ 建議避開"
-                        elif acc < 0.5: mark = "⚠️ QQQ不懂它"
-                        
-                        # ★★★ 方向判斷邏輯 (修復處) ★★★
-                        direction = ""
-                        color_str = ""
-                        conf_val = 0.0
-                        
-                        if p > 0.6:
-                            direction = "📈 看漲"
-                            conf_val = p
-                            color_str = "green"
-                        elif p < 0.4:
-                            direction = "📉 看跌"
-                            conf_val = 1 - p
-                            color_str = "red"
-                        else:
-                            direction = "💤 盤整"
-                            conf_val = p if p > 0.5 else 1 - p
-                            color_str = "gray"
-                        
+                        mark = "💎" if p > 0.6 and acc > 0.55 else "🛡️" if p < 0.4 and acc > 0.55 else "⚠️"
+                        direction = "📈 看漲" if p > 0.6 else "📉 看跌" if p < 0.4 else "💤 盤整"
+                        color_str = "green" if p > 0.6 else "red" if p < 0.4 else "gray"
                         with st.container(border=True):
                             c1, c2, c3 = st.columns([2, 3, 3])
                             c1.markdown(f"**{tick}** (${pr:.1f})")
-                            # 顯示：📈 看漲 (81%)
-                            c2.markdown(f":{color_str}[{direction} ({conf_val*100:.0f}%)]")
-                            c3.caption(f"適配準度: {acc*100:.0f}%  {mark}")
+                            c2.markdown(f":{color_str}[{direction} ({p*100:.0f}%)]")
+                            c3.caption(f"準度: {acc*100:.0f}% {mark}")
 
 # ------------------------------------------
-# Mode 2: 策略分析工具
+# Mode 2: 策略分析工具 (完全體復活)
 # ------------------------------------------
-elif app_mode == "📊 策略分析工具 (舊版)":
+elif app_mode == "📊 策略分析工具 (單股)":
     st.header("📊 單股策略分析")
+    
+    # ★★★ 您的全配版完整清單 (V15.1 修復版) ★★★
     strategies = {
-        "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
-        "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
-        "QLD": { "symbol": "QLD", "name": "QLD (那斯達克2倍)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
-        "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (那斯達克3倍)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
-        "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半3倍-狙擊)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
-        "SOXL_F": { "symbol": "SOXL", "name": "SOXL (費半3倍-快攻)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 10, "exit_k": 75 },
-        "EDZ": { "symbol": "EDZ", "name": "EDZ (新興空-避險)", "category": "📊 指數/外匯", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
-        "BTC_W": { "symbol": "BTC-USD", "name": "BTC (比特幣-波段)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
-        "BTC_F": { "symbol": "BTC-USD", "name": "BTC (比特幣-閃電)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
-        "NVDA": { "symbol": "NVDA", "name": "NVDA (輝達)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-        "TSM": { "symbol": "TSM", "name": "TSM (台積電)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
-        "AVGO": { "symbol": "AVGO", "name": "AVGO (博通)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200 },
-        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100 },
-        "QCOM": { "symbol": "QCOM", "name": "QCOM (高通)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100 },
-        "GLW": { "symbol": "GLW", "name": "GLW (康寧)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-        "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
-        "META": { "symbol": "META", "name": "META (臉書)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-        "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (谷歌)", "category": "💻 軟體/巨頭", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
+        "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
+        "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+        "QLD": { "symbol": "QLD", "name": "QLD (那斯達克 2倍做多)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
+        "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (那斯達克 3倍做多)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200 },
+        "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 狙擊)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100 },
+        "SOXL_F": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 快攻)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 10, "exit_k": 75 },
+        "EDZ": { "symbol": "EDZ", "name": "EDZ (新興市場 3倍做空 - 避險)", "category": "📊 指數/外匯", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20 },
+        "BTC_W": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 波段)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200 },
+        "BTC_F": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 閃電)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100 },
+        "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+        "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60 },
+        "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200 },
+        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100 },
+        "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100 },
+        "GLW": { "symbol": "GLW", "name": "GLW (康寧 - 玻璃基板/光通訊)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
+        "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖 - CoWoS 檢測設備)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
+        "META": { "symbol": "META", "name": "META (臉書 - 廣告與元宇宙)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
+        "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (谷歌 - 搜尋與 Gemini)", "category": "💻 軟體/巨頭", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
         "AMZN": { "symbol": "AMZN", "name": "AMZN (亞馬遜)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 80, "rsi_len": 14, "ma_trend": 200 },
         "TSLA": { "symbol": "TSLA", "name": "TSLA (特斯拉)", "category": "💻 軟體/巨頭", "mode": "KD", "entry_k": 20, "exit_k": 80 },
         "AAPL": { "symbol": "AAPL", "name": "AAPL (蘋果)", "category": "💻 軟體/巨頭", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 20, "rsi_len": 14, "ma_trend": 200 },
         "MSFT": { "symbol": "MSFT", "name": "MSFT (微軟)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14, "ma_trend": 200 },
         "AMD": { "symbol": "AMD", "name": "AMD (超微)", "category": "🤖 AI 硬體/晶片", "mode": "KD", "entry_k": 20, "exit_k": 80 },
         "PLTR": { "symbol": "PLTR", "name": "PLTR (Palantir)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 35, "exit_rsi": 85, "rsi_len": 14, "ma_trend": 50 },
-        "ETN": { "symbol": "ETN", "name": "ETN (伊頓)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
-        "VRT": { "symbol": "VRT", "name": "VRT (維諦)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
-        "OKLO": { "symbol": "OKLO", "name": "OKLO (核能)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 50, "exit_rsi": 95, "ma_trend": 0 },
-        "SMR": { "symbol": "SMR", "name": "SMR (NuScale)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 45, "exit_rsi": 90, "ma_trend": 0 },
-        "KO": { "symbol": "KO", "name": "KO (可口可樂)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
-        "JNJ": { "symbol": "JNJ", "name": "JNJ (嬌生)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200 },
-        "PG": { "symbol": "PG", "name": "PG (寶僑)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0 },
-        "BA": { "symbol": "BA", "name": "BA (波音)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 15, "exit_rsi": 60, "ma_trend": 0 },
-        "CHT": { "symbol": "2412.TW", "name": "中華電", "category": "🇹🇼 台股", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70, "ma_trend": 0 },
-        "GC": { "symbol": "GC=F", "name": "Gold (黃金)", "category": "⛏️ 原物料", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14 },
-        "CL": { "symbol": "CL=F", "name": "Crude Oil (原油)", "category": "⛏️ 原物料", "mode": "KD", "entry_k": 20, "exit_k": 80 },
-        "HG": { "symbol": "HG=F", "name": "Copper (銅)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
+        "ETN": { "symbol": "ETN", "name": "ETN (伊頓 - 電網與電力管理)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
+        "VRT": { "symbol": "VRT", "name": "VRT (維諦 - AI 伺服器液冷)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
+        "OKLO": { "symbol": "OKLO", "name": "OKLO (核能 - 微型反應堆)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 50, "exit_rsi": 95, "ma_trend": 0 },
+        "SMR": { "symbol": "SMR", "name": "SMR (NuScale - 模組化核能)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 45, "exit_rsi": 90, "ma_trend": 0 },
+        "KO": { "symbol": "KO", "name": "KO (可口可樂 - 消費必需品)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
+        "JNJ": { "symbol": "JNJ", "name": "JNJ (嬌生 - 醫療與製藥)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200 },
+        "PG": { "symbol": "PG", "name": "PG (寶僑 - 日用品龍頭)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0 },
+        "BA": { "symbol": "BA", "name": "BA (波音 - 航太製造)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 15, "exit_rsi": 60, "ma_trend": 0 },
+        "CHT": { "symbol": "2412.TW", "name": "中華電 (台灣電信龍頭)", "category": "🇹🇼 台股", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70, "ma_trend": 0 },
+        "GC": { "symbol": "GC=F", "name": "Gold (黃金期貨)", "category": "⛏️ 原物料", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14 },
+        "CL": { "symbol": "CL=F", "name": "Crude Oil (原油期貨)", "category": "⛏️ 原物料", "mode": "KD", "entry_k": 20, "exit_k": 80 },
+        "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
     }
     
     target_key = st.selectbox("選擇標的", list(strategies.keys()), format_func=lambda x: strategies[x]['name'])
     cfg = strategies[target_key]
     
-    row = analyze_ticker_strategy(cfg, ai_provider, gemini_key, gemini_model, debate_mode)
-    if row:
+    # 1. 抓取數據與即時價格
+    df = get_safe_data(cfg['symbol'])
+    lp = get_real_live_price(cfg['symbol'])
+    
+    if df is not None and lp:
+        prev_close = df['Close'].iloc[-2] if len(df) > 1 else lp
+        chg = lp - prev_close
+        pct_chg = (chg / prev_close) * 100
+        
+        # 2. 執行回測 (為了拿勝率算凱利公式)
+        sigs, perf = quick_backtest(df, cfg)
+        win_rate = perf['Raw_Win_Rate'] if perf else 0
+        
+        # 3. 凱利公式計算
+        kelly_msg, kelly_shares = calculate_kelly_position(df, user_capital, win_rate, user_risk/100)
+        
+        # 4. K線與訊號
+        k_pat = identify_k_pattern(df)
+        rsi_val = ta.rsi(df['Close'], 14).iloc[-1]
+        
+        # 5. UI 顯示 (恢復大字體儀表板)
         with st.container(border=True):
-            c1, c2 = st.columns(2)
-            c1.metric("價格", f"${row['Price']:.2f}", f"{row['Price']-row['Prev_Close']:.2f}")
-            c2.caption(f"策略: {row['Strat_Desc']}")
-            st.markdown(f"#### {row['Signal']} | {row['Action']}")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("即時價格", f"${lp:.2f}", f"{chg:.2f} ({pct_chg:.2f}%)")
+            c2.metric("策略勝率 (回測)", f"{win_rate*100:.0f}%", delta="凱利參考" if win_rate > 0.5 else "偏低")
+            c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[-1] if '建議' not in kelly_msg else "觀望")
             
-            if row.get('Debate'):
-                with st.expander("⚖️ AI 辯論", expanded=True):
-                    st.write(f"🐂 多方: {row['Debate'].get('bull')}")
-                    st.write(f"🐻 空方: {row['Debate'].get('bear')}")
-                    st.success(f"⚖️ 裁決: {row['Debate'].get('judge')}")
-            elif row['Is_LLM']:
-                st.info(f"AI 分析: {row['LLM_Analysis']}")
-            
-            if row['Raw_DF'] is not None:
-                sigs, perf = quick_backtest(row['Raw_DF'], cfg)
-                st.plotly_chart(plot_chart(row['Raw_DF'], cfg, sigs), use_container_width=True)
-                if perf: st.caption(f"回測績效: {perf['Total_Return']:.1f}% (勝率 {perf['Win_Rate']:.0f}%)")
+            st.info(f"💡 凱利觀點: {kelly_msg}")
+
+        # 6. Gemini 大腦分析 (恢復詳細版)
+        if ai_provider == "Gemini (User Defined)" and gemini_key:
+            st.subheader("🧠 Gemini 首席分析師")
+            with st.spinner("AI 正在閱讀新聞與 K 線..."):
+                news = get_news(cfg['symbol'])
+                tech_txt = f"RSI:{rsi_val:.1f} | 策略勝率:{win_rate*100:.0f}%"
+                analysis, _, _ = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news, tech_txt, k_pat, gemini_model)
+                st.markdown(analysis)
+        
+        # 7. 圖表
+        st.plotly_chart(plot_chart(df, cfg, sigs), use_container_width=True)
+
+    else:
+        st.error("無法取得數據")
