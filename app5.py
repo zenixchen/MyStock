@@ -66,7 +66,7 @@ except ImportError:
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v12.0)",
+    page_title="2026 量化戰情室 (Ultimate v12.1)",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -89,8 +89,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🧠 量化戰情室 (Ultimate v12.0)")
-st.caption("全功能版：T+5 波段預測 (鎖定最佳權重) | EDZ 風險雷達 | 原物料觀測 | AI 辯論")
+st.title("🧠 量化戰情室 (Ultimate v12.1)")
+st.caption("全功能版：T+5 波段預測 (含準度顯示) | EDZ 風險雷達 | 原物料觀測 | AI 辯論")
 
 if st.button('🔄 強制刷新行情 (Clear Cache)'):
     st.cache_data.clear()
@@ -130,10 +130,10 @@ strategies = {
 # ★★★ 3. AI 深度學習模組 (LSTM) ★★★
 # ==========================================
 
-# --- A. TSM 波段顧問 (含夜盤+利率) ---
+# --- A. TSM 波段顧問 (含夜盤+利率) ★修正版：回傳準度 ---
 @st.cache_resource(ttl=43200)
 def get_tsm_swing_prediction(symbol="TSM"):
-    if not HAS_TENSORFLOW: return None, "TF 未安裝"
+    if not HAS_TENSORFLOW: return None, None, "TF 未安裝"
     try:
         # 下載數據
         tickers = { 'Main': symbol, 'Night': "EWT", 'Rate': "^TNX", 'AI': 'NVDA' }
@@ -148,7 +148,7 @@ def get_tsm_swing_prediction(symbol="TSM"):
             df['Night_Close'] = df_close['Night']
             df['Rate_Close'] = df_close['Rate']
             df['AI_Close'] = df_close['AI']
-        else: return None, "Data Error"
+        else: return None, None, "Data Error"
 
         # 特徵
         df['Main_Ret'] = df['Close'].pct_change()
@@ -164,7 +164,7 @@ def get_tsm_swing_prediction(symbol="TSM"):
         df['Target'] = ((df['Close'].shift(-days_out) / df['Close'] - 1) > threshold).astype(int)
         df_train = df.iloc[:-days_out].copy()
         
-        if len(df_train) < 60: return None, "數據不足"
+        if len(df_train) < 60: return None, None, "數據不足"
 
         features = ['Main_Ret', 'Night_Ret', 'Rate_Chg', 'AI_Ret', 'RSI', 'Bias']
         scaler = StandardScaler()
@@ -178,6 +178,11 @@ def get_tsm_swing_prediction(symbol="TSM"):
         
         X, y = np.array(X), np.array(y)
         
+        # 切分測試集 (為了計算準度)
+        split = int(len(X) * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        
         # 訓練 (含 EarlyStopping + RestoreBestWeights)
         model = Sequential()
         model.add(LSTM(64, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
@@ -188,16 +193,19 @@ def get_tsm_swing_prediction(symbol="TSM"):
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
         
         # ★ 關鍵：恢復最佳權重
-        early_stop = EarlyStopping(monitor='accuracy', patience=20, restore_best_weights=True)
-        model.fit(X, y, epochs=50, batch_size=32, verbose=0, callbacks=[early_stop])
+        early_stop = EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True)
+        model.fit(X_train, y_train, epochs=50, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early_stop])
+        
+        # ★ 計算準度
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
         # 預測
         last_seq = df[features].iloc[-lookback:].values
         last_seq_scaled = scaler.transform(last_seq)
         prob = model.predict(np.expand_dims(last_seq_scaled, axis=0), verbose=0)[0][0]
         
-        return prob, df['Close'].iloc[-1]
-    except Exception as e: return None, str(e)
+        return prob, acc, df['Close'].iloc[-1]
+    except Exception as e: return None, None, str(e)
 
 # --- B. EDZ / 原物料 宏觀雷達 ---
 @st.cache_resource(ttl=43200)
@@ -592,20 +600,30 @@ with c2.container(border=True):
     st.caption("因子: 夜盤 EWT + 利率 + 供應鏈")
     
     if st.button("AI 判讀 TSM"):
-        with st.spinner("AI 運算中 (鎖定最佳權重)..."):
-            prob, price = get_tsm_swing_prediction("TSM")
+        with st.spinner("AI 運算中 (含準度回測)..."):
+            # 呼叫修正後的函數，接收三個返回值
+            prob, acc, price = get_tsm_swing_prediction("TSM")
             
         if prob:
             conf = prob if prob > 0.5 else 1 - prob
-            st.metric("TSM 現價", f"${price:.2f}")
+            
+            # 使用三欄位顯示：現價、準度、建議
+            m1, m2, m3 = st.columns(3)
+            m1.metric("TSM 現價", f"${price:.2f}")
+            
+            # 顯示準度
+            m2.metric("回測準度", f"{acc*100:.1f}%", delta="表現優異" if acc>0.58 else "表現尚可")
+
+            # 顯示建議
             if prob > 0.6:
-                st.success(f"🚀 波段看漲 (信心 {conf*100:.1f}%)")
-                st.markdown("預期 5 天後漲幅 > 2%。**拉回佈局。**")
+                m3.metric("AI 建議", "看漲 🚀")
+                st.success(f"信心度 {conf*100:.1f}%：預期 5 天後漲幅 > 2%。**建議拉回佈局。**")
             elif prob < 0.4:
-                st.error(f"📉 看跌/盤整 (信心 {conf*100:.1f}%)")
-                st.markdown("上漲空間有限。**建議觀望。**")
+                m3.metric("AI 建議", "看跌/盤 📉")
+                st.error(f"信心度 {conf*100:.1f}%：上漲空間有限。**建議獲利了結或觀望。**")
             else:
-                st.info(f"⚖️ 多空不明 (信心 {conf*100:.1f}%)")
+                m3.metric("AI 建議", "震盪 ⚖️")
+                st.info(f"信心度 {conf*100:.1f}%：多空不明，建議空手。")
         else: st.info("需 TensorFlow")
 
 st.divider()
