@@ -61,7 +61,7 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v15.1)",
+    page_title="2026 量化戰情室 (Ultimate v15.2)",
     page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -84,7 +84,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# ★★★ 3. AI 模型核心 (保持最新版) ★★★
+# ★★★ 3. AI 模型核心 ★★★
 # ==========================================
 
 # --- Module A: TSM 專用波段 AI ---
@@ -302,7 +302,7 @@ def get_news(symbol):
         return [clean_text_for_llm(n['title']) for n in news[:3]]
     except: return []
 
-# ★★★ 凱利公式 + ATR 倉位控管 (復活) ★★★
+# ★★★ 凱利公式 + ATR 倉位控管 ★★★
 def calculate_kelly_position(df, capital, win_rate, risk_per_trade=0.01):
     try:
         atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
@@ -328,7 +328,7 @@ def calculate_kelly_position(df, capital, win_rate, risk_per_trade=0.01):
         return msg, shares
     except: return "計算失敗", 0
 
-# ★★★ Gemini 大腦 (復活) ★★★
+# ★★★ Gemini 大腦 ★★★
 def analyze_logic_gemini_full(api_key, symbol, news, tech_txt, k_pattern, model_name):
     if not HAS_GEMINI: return "No Gemini", "⚠️", False
     try:
@@ -362,9 +362,12 @@ def identify_k_pattern(df):
         return pat
     except: return "N/A"
 
-def quick_backtest(df, config):
+# ★★★ 修正版回測邏輯 (修復 0% 勝率 bug) ★★★
+def quick_backtest(df, config, fee=0.0005):
     try:
         close = df['Close']; sigs = pd.Series(0, index=df.index)
+        
+        # 策略邏輯判斷
         if "RSI" in config['mode']:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
@@ -383,17 +386,31 @@ def quick_backtest(df, config):
             sigs[(f < s) & (f.shift(1) >= s.shift(1))] = -1
         elif "FUSION" in config['mode']:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
-            sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
+            ma = ta.ema(close, length=config.get('ma_trend', 200))
+            sigs[(close > ma) & (rsi < config['entry_rsi'])] = 1
+            sigs[rsi > config['exit_rsi']] = -1
         
         pos=0; ent=0; wins=0; trds=0; rets=[]
-        for i in range(len(df)):
-            if pos==0 and sigs.iloc[i]==1: pos=1; ent=close.iloc[i]
-            elif pos==1 and sigs.iloc[i]==-1:
-                pos=0; r = (close.iloc[i]-ent)/ent; rets.append(r); trds+=1; wins += 1 if r>0 else 0
         
-        win_rate = (wins/trds) if trds > 0 else 0
+        # 修正迴圈邏輯
+        for i in range(1, len(df)):
+            # 進場
+            if pos == 0 and sigs.iloc[i] == 1: 
+                pos = 1; ent = close.iloc[i]
+            # 出場
+            elif pos == 1 and sigs.iloc[i] == -1:
+                pos = 0
+                r = (close.iloc[i] - ent) / ent
+                rets.append(r)
+                trds += 1
+                if r > 0: wins += 1
+        
+        # 避免除以零
+        win_rate = (wins / trds) if trds > 0 else 0.0
         return sigs, {"Total_Return": sum(rets)*100, "Win_Rate": win_rate * 100, "Raw_Win_Rate": win_rate}
-    except: return None, None
+    except Exception as e: 
+        print(e)
+        return None, None
 
 def plot_chart(df, config, sigs):
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
@@ -408,6 +425,23 @@ def plot_chart(df, config, sigs):
         fig.add_trace(go.Scatter(x=sell.index, y=sell['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', color='red')), row=1, col=1)
     fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
     return fig
+
+# ★★★ 策略說明生成器 (新增) ★★★
+def get_strategy_desc(cfg):
+    mode = cfg['mode']
+    if mode == "RSI_RSI":
+        return f"RSI 區間策略 (買 < {cfg['entry_rsi']} / 賣 > {cfg['exit_rsi']})"
+    elif mode == "RSI_MA":
+        return f"RSI + 均線 (RSI < {cfg['entry_rsi']} 買 / 破 MA{cfg['exit_ma']} 賣)"
+    elif mode == "KD":
+        return f"KD 隨機指標 (K < {cfg['entry_k']} 買 / K > {cfg['exit_k']} 賣)"
+    elif mode == "MA_CROSS":
+        return f"均線交叉 (MA{cfg['fast_ma']} 穿過 MA{cfg['slow_ma']})"
+    elif mode == "FUSION":
+        return f"趨勢 + RSI (站上 EMA{cfg['ma_trend']} 且 RSI < {cfg['entry_rsi']})"
+    elif mode == "BOLL_RSI":
+        return f"布林通道 + RSI (破下軌且 RSI < {cfg['entry_rsi']})"
+    return mode
 
 # ==========================================
 # 5. 側邊欄與頁面配置
@@ -509,12 +543,12 @@ if app_mode == "🤖 AI 深度學習實驗室":
                             c3.caption(f"準度: {acc*100:.0f}% {mark}")
 
 # ------------------------------------------
-# Mode 2: 策略分析工具 (完全體復活)
+# Mode 2: 策略分析工具 (單股)
 # ------------------------------------------
 elif app_mode == "📊 策略分析工具 (單股)":
     st.header("📊 單股策略分析")
     
-    # ★★★ 您的全配版完整清單 (V15.1 修復版) ★★★
+    # ★★★ 您的全配版完整清單 (V15.2) ★★★
     strategies = {
         "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
         "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
@@ -562,6 +596,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
     lp = get_real_live_price(cfg['symbol'])
     
     if df is not None and lp:
+        # 計算漲跌幅
         prev_close = df['Close'].iloc[-2] if len(df) > 1 else lp
         chg = lp - prev_close
         pct_chg = (chg / prev_close) * 100
@@ -586,7 +621,11 @@ elif app_mode == "📊 策略分析工具 (單股)":
             
             st.info(f"💡 凱利觀點: {kelly_msg}")
 
-        # 6. Gemini 大腦分析 (恢復詳細版)
+        # 6. 策略詳細說明 (新增功能)
+        strat_desc = get_strategy_desc(cfg)
+        st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
+
+        # 7. Gemini 大腦分析 (恢復詳細版)
         if ai_provider == "Gemini (User Defined)" and gemini_key:
             st.subheader("🧠 Gemini 首席分析師")
             with st.spinner("AI 正在閱讀新聞與 K 線..."):
@@ -595,7 +634,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
                 analysis, _, _ = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news, tech_txt, k_pat, gemini_model)
                 st.markdown(analysis)
         
-        # 7. 圖表
+        # 8. 圖表
         st.plotly_chart(plot_chart(df, cfg, sigs), use_container_width=True)
 
     else:
