@@ -61,7 +61,7 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v14.0)",
+    page_title="2026 量化戰情室 (Ultimate v14.1)",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -95,7 +95,6 @@ st.markdown("""
 def get_tsm_swing_prediction():
     if not HAS_TENSORFLOW: return None, None, "TF缺"
     try:
-        # TSM 專屬因子: 夜盤(EWT) + 利率(TNX) + 供應鏈(NVDA)
         tickers = { 'Main': 'TSM', 'Night': "EWT", 'Rate': "^TNX", 'AI': 'NVDA' }
         data = yf.download(list(tickers.values()), period="2y", interval="1d", progress=False)
         
@@ -115,7 +114,6 @@ def get_tsm_swing_prediction():
         df['Bias'] = (df['Main_Close'] - ta.sma(df['Main_Close'], 20)) / ta.sma(df['Main_Close'], 20)
         df.dropna(inplace=True)
 
-        # 預測 T+5 > 2%
         days_out = 5; threshold = 0.02
         df['Target'] = ((df['Main_Close'].shift(-days_out) / df['Main_Close'] - 1) > threshold).astype(int)
         df_train = df.iloc[:-days_out].copy()
@@ -174,7 +172,7 @@ def get_macro_prediction(target_symbol, features_dict):
         feat_cols.append('Main_Ret')
         for name in features_dict.keys():
             df[f'{name}_Ret'] = df[name].pct_change()
-            feat_cols.append(f'{name}_Ret')
+            feature_cols.append(f'{name}_Ret')
         df['RSI'] = ta.rsi(df['Main'], length=14)
         feat_cols.append('RSI')
         df.dropna(inplace=True)
@@ -214,14 +212,13 @@ def get_macro_prediction(target_symbol, features_dict):
         return prob, acc
     except: return None, None
 
-# --- Module C: QQQ 通用腦 (修正版：升級為 5 年數據，同步 Colab) ---
+# --- Module C: QQQ 通用腦 (5年數據版) ---
 @st.cache_resource(ttl=86400)
 def train_qqq_brain():
     if not HAS_TENSORFLOW: return None, None, None
     try:
-        # ★★★ 修正點：從 "2y" 改為 "5y" (讓模型看過多空循環，標準才會一致)
+        # ★★★ 保持 5 年數據，讓老師傅經驗豐富 ★★★
         df = yf.download("QQQ", period="5y", interval="1d", progress=False)
-        
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         df['Return'] = df['Close'].pct_change()
@@ -244,21 +241,18 @@ def train_qqq_brain():
         model = Sequential()
         model.add(LSTM(64, input_shape=(20, 5))); model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-        
-        # 增加訓練次數以適應 5 年數據
         model.fit(np.array(X), np.array(y), epochs=40, verbose=0)
         return model, scaler, features
     except: return None, None, None
 
 def scan_tech_stock(symbol, model, scaler, features):
     try:
-        # 下載 1 年數據
         df = yf.download(symbol, period="1y", interval="1d", progress=False)
         if len(df) < 60: return None, None, 0
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # ★ 強制清洗：確保沒有未來數據或錯誤的高價
-        df = df[df['Volume'] > 0].copy() 
+        # 清洗數據
+        df = df[df['Volume'] > 0].copy()
         
         df['Return'] = df['Close'].pct_change()
         df['RSI'] = ta.rsi(df['Close'], 14)
@@ -266,15 +260,12 @@ def scan_tech_stock(symbol, model, scaler, features):
         df['MA_Dist'] = (df['Close'] - ta.sma(df['Close'], 20)) / ta.sma(df['Close'], 20)
         df['ATR_Pct'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) / df['Close']
         
-        # 回測標籤
         df['Target'] = ((df['Close'].shift(-5) / df['Close'] - 1) > 0.02).astype(int)
         df.dropna(inplace=True)
         
-        # 1. 預測未來
         last_seq = df[features].iloc[-20:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         
-        # 2. 準度回測 (適配度)
         test_df = df.iloc[-125:-5] 
         acc = 0.5
         if len(test_df) > 30:
@@ -407,11 +398,11 @@ if st.sidebar.button("🔄 清除快取 (重置 AI)"):
     st.rerun()
 
 # ==========================================
-# 6. 主畫面邏輯 (分流)
+# 6. 主畫面邏輯
 # ==========================================
 
 # ------------------------------------------
-# Mode 1: AI 深度學習實驗室 (TSM / EDZ / QQQ)
+# Mode 1: AI 深度學習實驗室
 # ------------------------------------------
 if app_mode == "🤖 AI 深度學習實驗室":
     st.header("🤖 AI 深度學習實驗室")
@@ -419,7 +410,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
     
     tab1, tab2, tab3 = st.tabs(["📈 TSM 專用波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦"])
     
-    # [Tab 1] TSM 專用
+    # [Tab 1] TSM
     with tab1:
         st.subheader("TSM 專屬波段顧問 (T+5)")
         st.info("因子：台積電 + EWT (夜盤) + ^TNX (利率) + NVDA (供應鏈)")
@@ -444,7 +435,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     st.warning("多空不明，建議空手。")
             else: st.error("運算失敗，請檢查 TensorFlow")
 
-    # [Tab 2] EDZ / 宏觀
+    # [Tab 2] EDZ
     with tab2:
         st.subheader("全球風險與原物料雷達")
         st.info("因子：標的 + 利率 + 銅價 + 中國股市 + 美元")
@@ -470,11 +461,10 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     c2.metric("趨勢方向", "💤 震盪")
                     st.warning("無明顯趨勢。")
 
-    # [Tab 3] QQQ 通用腦
+    # [Tab 3] QQQ 通用腦 (方向顯示修復版)
     with tab3:
         st.subheader("QQQ 科技股掃描器")
         st.info("原理：用 QQQ 學會的邏輯，去檢視個股是否具備「科技股上漲型態」。")
-        # 您指定的觀察清單
         tech_list = ["NVDA", "AMD", "AMZN", "MSFT", "GOOGL", "META", "TSLA", "AVGO", "PLTR"]
         
         if st.button("🚀 掃描科技巨頭", key="btn_scan"):
@@ -489,7 +479,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                         prog.progress((i+1)/len(tech_list))
                     
                     prog.empty()
-                    # 排序：準度+信心 高者在先
+                    # 排序：優先顯示「信心強」且「準度高」的
                     res.sort(key=lambda x: x[1]+x[2], reverse=True)
                     
                     for tick, p, acc, pr in res:
@@ -498,20 +488,36 @@ if app_mode == "🤖 AI 深度學習實驗室":
                         elif p < 0.4 and acc > 0.55: mark = "🛡️ 建議避開"
                         elif acc < 0.5: mark = "⚠️ QQQ不懂它"
                         
-                        col = "green" if p > 0.5 else "red"
+                        # ★★★ 方向判斷邏輯 (修復處) ★★★
+                        direction = ""
+                        color_str = ""
+                        conf_val = 0.0
+                        
+                        if p > 0.6:
+                            direction = "📈 看漲"
+                            conf_val = p
+                            color_str = "green"
+                        elif p < 0.4:
+                            direction = "📉 看跌"
+                            conf_val = 1 - p
+                            color_str = "red"
+                        else:
+                            direction = "💤 盤整"
+                            conf_val = p if p > 0.5 else 1 - p
+                            color_str = "gray"
+                        
                         with st.container(border=True):
-                            c1, c2, c3 = st.columns([2, 2, 3])
+                            c1, c2, c3 = st.columns([2, 3, 3])
                             c1.markdown(f"**{tick}** (${pr:.1f})")
-                            c2.markdown(f":{col}[信心 {p*100:.0f}%]")
+                            # 顯示：📈 看漲 (81%)
+                            c2.markdown(f":{color_str}[{direction} ({conf_val*100:.0f}%)]")
                             c3.caption(f"適配準度: {acc*100:.0f}%  {mark}")
 
 # ------------------------------------------
-# Mode 2: 策略分析工具 (舊版功能)
+# Mode 2: 策略分析工具
 # ------------------------------------------
 elif app_mode == "📊 策略分析工具 (舊版)":
     st.header("📊 單股策略分析")
-    
-    # 這裡放回您原本完整的所有策略清單
     strategies = {
         "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
         "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
@@ -574,4 +580,3 @@ elif app_mode == "📊 策略分析工具 (舊版)":
                 sigs, perf = quick_backtest(row['Raw_DF'], cfg)
                 st.plotly_chart(plot_chart(row['Raw_DF'], cfg, sigs), use_container_width=True)
                 if perf: st.caption(f"回測績效: {perf['Total_Return']:.1f}% (勝率 {perf['Win_Rate']:.0f}%)")
-
