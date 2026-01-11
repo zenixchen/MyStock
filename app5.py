@@ -61,7 +61,7 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v18.0)",
+    page_title="2026 量化戰情室 (Ultimate v18.1)",
     page_icon="📒",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -101,33 +101,21 @@ def get_real_live_price(symbol):
     except: return None
 
 def save_prediction(symbol, direction, confidence, entry_price, target_days=5):
-    """保存預測到 CSV"""
     try:
         today = datetime.now().date()
         target_date = today + timedelta(days=target_days)
-        
         new_record = {
-            "Date": today,
-            "Symbol": symbol,
-            "Direction": direction, # Bull/Bear
-            "Confidence": round(float(confidence), 4),
-            "Entry_Price": round(float(entry_price), 2),
-            "Target_Date": target_date,
-            "Status": "Pending", # Pending/Win/Loss
-            "Exit_Price": 0.0,
-            "Return": 0.0
+            "Date": today, "Symbol": symbol, "Direction": direction,
+            "Confidence": round(float(confidence), 4), "Entry_Price": round(float(entry_price), 2),
+            "Target_Date": target_date, "Status": "Pending", "Exit_Price": 0.0, "Return": 0.0
         }
-        
         if os.path.exists(LEDGER_FILE):
             df = pd.read_csv(LEDGER_FILE)
-            # 避免重複儲存
             mask = (df['Date'] == str(today)) & (df['Symbol'] == symbol)
-            if not df[mask].empty:
-                return False 
+            if not df[mask].empty: return False
             df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
         else:
             df = pd.DataFrame([new_record])
-            
         df.to_csv(LEDGER_FILE, index=False)
         return True
     except Exception as e:
@@ -135,35 +123,24 @@ def save_prediction(symbol, direction, confidence, entry_price, target_days=5):
         return False
 
 def verify_ledger():
-    """自動驗證預測結果"""
     if not os.path.exists(LEDGER_FILE): return None
     try:
         df = pd.read_csv(LEDGER_FILE)
         df['Target_Date'] = pd.to_datetime(df['Target_Date']).dt.date
         today = datetime.now().date()
         updated = False
-        
         for i, row in df.iterrows():
             if row['Status'] == 'Pending' or 'Run' in row['Status']:
                 current_price = get_real_live_price(row['Symbol'])
                 if current_price and current_price > 0:
                     entry = row['Entry_Price']
                     ret = (current_price - entry) / entry
-                    
                     df.at[i, 'Exit_Price'] = current_price
                     df.at[i, 'Return'] = round(ret * 100, 2)
-                    
-                    if row['Direction'] == "Bull":
-                        res = "Win" if ret > 0 else "Loss"
-                    else: # Bear
-                        res = "Win" if ret < 0 else "Loss"
-                    
-                    if today >= row['Target_Date']:
-                        df.at[i, 'Status'] = res
-                    else:
-                        df.at[i, 'Status'] = f"Run ({res})"
+                    res = "Win" if (row['Direction'] == "Bull" and ret > 0) or (row['Direction'] == "Bear" and ret < 0) else "Loss"
+                    if today >= row['Target_Date']: df.at[i, 'Status'] = res
+                    else: df.at[i, 'Status'] = f"Run ({res})"
                     updated = True
-        
         if updated: df.to_csv(LEDGER_FILE, index=False)
         return df
     except Exception as e:
@@ -197,7 +174,8 @@ def get_tsm_swing_prediction():
         df['Bias'] = (df['Main_Close'] - ta.sma(df['Main_Close'], 20)) / ta.sma(df['Main_Close'], 20)
         df.dropna(inplace=True)
 
-        df['Target'] = ((df['Main_Close'].shift(-5) / df['Main_Close'] - 1) > 0.02).astype(int)
+        days_out = 5; threshold = 0.02
+        df['Target'] = ((df['Main_Close'].shift(-days_out) / df['Main_Close'] - 1) > threshold).astype(int)
         df_train = df.iloc[:-5].copy()
         
         features = ['Main_Ret', 'Night_Ret', 'Rate_Chg', 'AI_Ret', 'RSI', 'Bias']
@@ -327,6 +305,8 @@ def scan_tech_stock(symbol, model, scaler, features):
         df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
         df['MA_Dist'] = (df['Close'] - ta.sma(df['Close'], 20)) / ta.sma(df['Close'], 20)
         df['ATR_Pct'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) / df['Close']
+        
+        df['Target'] = ((df['Close'].shift(-5) / df['Close'] - 1) > 0.02).astype(int)
         df.dropna(inplace=True)
         
         last_seq = df[features].iloc[-20:].values
@@ -438,7 +418,6 @@ def quick_backtest(df, config, fee=0.0005):
         close = df['Close']; sigs = pd.Series(0, index=df.index)
         mode = config['mode']
         
-        # 1. 優先判斷複合策略
         if mode == "RSI_MA":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             ma_exit = ta.sma(close, length=config['exit_ma'])
@@ -459,7 +438,6 @@ def quick_backtest(df, config, fee=0.0005):
             lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
             sigs[(close < lower) & (rsi < config['entry_rsi'])] = 1
             sigs[close > upper] = -1
-        # 2. 判斷通用關鍵字
         elif "RSI" in mode:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
@@ -504,7 +482,6 @@ def plot_chart(df, config, sigs):
     cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=20)
     colors = ['#089981' if v >= 0 else '#f23645' for v in cmf]
     fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF', marker_color=colors, opacity=0.5), row=3, col=1, secondary_y=False)
-    
     obv = ta.obv(df['Close'], df['Volume'])
     fig.add_trace(go.Scatter(x=df.index, y=obv, name='OBV', line=dict(color='cyan', width=1)), row=3, col=1, secondary_y=True)
 
@@ -605,7 +582,8 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 elif prob < 0.4:
                     c3.metric("AI 建議", "📉 看跌/盤", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
                 else:
-                    c3.metric("AI 建議", "⚖️ 震盪")
+                    # ★★★ 修正點：即使震盪，也要顯示信心 ★★★
+                    c3.metric("AI 建議", "⚖️ 震盪", delta=f"信心 {conf*100:.1f}%", delta_color="off")
                 
                 # 存檔按鈕獨立出來
                 if st.button("📸 記錄預測 (快照)", key="save_tsm"):
@@ -617,13 +595,11 @@ if app_mode == "🤖 AI 深度學習實驗室":
     with tab2:
         st.subheader("全球風險雷達")
         target_risk = st.selectbox("選擇監測對象", ["EDZ", "GC=F", "CL=F", "HG=F"])
-        # ★★★ 修正點：EDZ 也加上 Session State 與按鈕 ★★★
         if st.button(f"分析 {target_risk}", key="btn_macro") or f'macro_{target_risk}' in st.session_state:
             if f'macro_{target_risk}' not in st.session_state:
                 with st.spinner("AI 分析宏觀數據..."):
                     feat_map = { 'China': "FXI", 'DXY': "DX-Y.NYB", 'Rates': "^TNX", 'Copper': "HG=F" }
                     prob, acc = get_macro_prediction(target_risk, feat_map)
-                    # 需要額外抓取現價
                     price = get_real_live_price(target_risk) or 0
                     st.session_state[f'macro_{target_risk}'] = (prob, acc, price)
             
@@ -642,9 +618,9 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 elif prob < 0.4:
                     c3.metric("趨勢方向", "📉 向下", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
                 else:
-                    c3.metric("趨勢方向", "💤 震盪")
+                    # ★★★ 修正點：即使震盪，也要顯示信心 ★★★
+                    c3.metric("趨勢方向", "💤 震盪", delta=f"信心 {conf*100:.1f}%", delta_color="off")
                 
-                # ★★★ 新增：EDZ 存檔按鈕 ★★★
                 if st.button("📸 記錄預測 (快照)", key=f"save_{target_risk}"):
                     if save_prediction(target_risk, direction, conf, price):
                         st.success("✅ 已記錄！")
@@ -677,7 +653,6 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     col1.markdown(f"**{tick}** (${pr:.1f})")
                     col2.markdown(f":{color_str}[{direction} ({p*100:.0f}%)]")
                     col3.caption(f"準度: {acc*100:.0f}% {mark}")
-                    # ★★★ 這裡就是 QQQ 的存檔按鈕，一直都有，現在標示清楚 ★★★
                     if col4.button("💾 存入日記", key=f"save_{tick}"):
                         dir_str = "Bull" if p > 0.5 else "Bear"
                         conf = p if p > 0.5 else 1 - p
