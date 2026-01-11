@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta
 import sys
 import re
 import importlib.util
@@ -61,8 +61,8 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v16.1)",
-    page_icon="💎",
+    page_title="2026 量化戰情室 (Ultimate v17.0)",
+    page_icon="📒",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -82,6 +82,85 @@ st.markdown("""
         .stTabs [aria-selected="true"] { background-color: #2962ff; color: white; }
     </style>
 """, unsafe_allow_html=True)
+
+# ==========================================
+# ★★★ 新增模組：AI 交易日記系統 (Ledger) ★★★
+# ==========================================
+LEDGER_FILE = "ai_prediction_history.csv"
+
+def save_prediction(symbol, direction, confidence, entry_price, target_days=5):
+    """保存預測到 CSV"""
+    today = datetime.now().date()
+    target_date = today + timedelta(days=target_days)
+    
+    new_record = {
+        "Date": today,
+        "Symbol": symbol,
+        "Direction": direction, # Bull/Bear
+        "Confidence": round(confidence, 4),
+        "Entry_Price": round(entry_price, 2),
+        "Target_Date": target_date,
+        "Status": "Pending", # Pending/Win/Loss
+        "Exit_Price": 0.0,
+        "Return": 0.0
+    }
+    
+    if os.path.exists(LEDGER_FILE):
+        df = pd.read_csv(LEDGER_FILE)
+        # 避免重複儲存當天同標的
+        mask = (df['Date'] == str(today)) & (df['Symbol'] == symbol)
+        if not df[mask].empty:
+            return False # 已經存過了
+        df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
+    else:
+        df = pd.DataFrame([new_record])
+        
+    df.to_csv(LEDGER_FILE, index=False)
+    return True
+
+def verify_ledger():
+    """自動驗證過去的預測"""
+    if not os.path.exists(LEDGER_FILE): return None
+    
+    df = pd.read_csv(LEDGER_FILE)
+    df['Target_Date'] = pd.to_datetime(df['Target_Date']).dt.date
+    today = datetime.now().date()
+    
+    updated = False
+    
+    # 針對狀態為 Pending 且日期已到的資料進行驗證
+    for i, row in df.iterrows():
+        if row['Status'] == 'Pending':
+            # 如果今天 >= 目標日，或者想要隨時監控浮動損益，可以把這裡改成 True
+            # 這裡設定為：只要過了 T+1 就可以開始看目前損益
+            current_price = get_real_live_price(row['Symbol'])
+            
+            if current_price:
+                entry = row['Entry_Price']
+                ret = (current_price - entry) / entry
+                
+                # 更新目前價格與報酬
+                df.at[i, 'Exit_Price'] = current_price
+                df.at[i, 'Return'] = round(ret * 100, 2)
+                
+                # 判定勝負 (如果方向是 Bull，報酬>0 為勝)
+                if row['Direction'] == "Bull":
+                    status = "Win" if ret > 0 else "Loss"
+                else: # Bear
+                    status = "Win" if ret < 0 else "Loss"
+                
+                # 只有過期才鎖定狀態，否則標記為 Floating (浮動中)
+                if today >= row['Target_Date']:
+                    df.at[i, 'Status'] = status
+                else:
+                    df.at[i, 'Status'] = f"Run ({status})"
+                
+                updated = True
+                
+    if updated:
+        df.to_csv(LEDGER_FILE, index=False)
+        
+    return df
 
 # ==========================================
 # ★★★ 3. AI 模型核心 ★★★
@@ -318,7 +397,6 @@ def get_news(symbol):
         return [clean_text_for_llm(n['title']) for n in news[:3]]
     except: return []
 
-# ★★★ 凱利公式 + 方向判斷 ★★★
 def calculate_kelly_position(df, capital, win_rate, risk_per_trade, current_signal):
     try:
         if current_signal != 1:
@@ -348,7 +426,6 @@ def calculate_kelly_position(df, capital, win_rate, risk_per_trade, current_sign
         return msg, shares
     except: return "計算失敗", 0
 
-# ★★★ Gemini 大腦 ★★★
 def analyze_logic_gemini_full(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
     if not HAS_GEMINI: return "No Gemini", "⚠️", False
     try:
@@ -375,7 +452,6 @@ def quick_backtest(df, config, fee=0.0005):
         close = df['Close']; sigs = pd.Series(0, index=df.index)
         mode = config['mode']
         
-        # 1. 優先判斷複合策略
         if mode == "RSI_MA":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             ma_exit = ta.sma(close, length=config['exit_ma'])
@@ -396,7 +472,6 @@ def quick_backtest(df, config, fee=0.0005):
             lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
             sigs[(close < lower) & (rsi < config['entry_rsi'])] = 1
             sigs[close > upper] = -1
-        # 2. 判斷通用關鍵字
         elif "RSI" in mode:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
@@ -453,13 +528,10 @@ def plot_chart(df, config, sigs):
     fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False)
     return fig
 
-# ★★★ 策略說明生成器 (新增：顯示目前數值) ★★★
 def get_strategy_desc(cfg, df=None):
     mode = cfg['mode']
     desc = mode
     current_val = ""
-    
-    # 嘗試計算當前指標數值
     if df is not None:
         try:
             close = df['Close']
@@ -485,14 +557,13 @@ def get_strategy_desc(cfg, df=None):
     elif mode == "MA_CROSS": desc = f"均線交叉 (MA{cfg['fast_ma']} 穿過 MA{cfg['slow_ma']})"
     elif mode == "FUSION": desc = f"趨勢 + RSI (站上 EMA{cfg['ma_trend']} 且 RSI < {cfg['entry_rsi']})"
     elif mode == "BOLL_RSI": desc = f"布林通道 + RSI (破下軌且 RSI < {cfg['entry_rsi']})"
-    
     return desc + current_val
 
 # ==========================================
 # 5. 側邊欄與頁面配置
 # ==========================================
 st.sidebar.title("🚀 戰情室導航")
-app_mode = st.sidebar.radio("選擇功能模組：", ["🤖 AI 深度學習實驗室", "📊 策略分析工具 (單股)"])
+app_mode = st.sidebar.radio("選擇功能模組：", ["🤖 AI 深度學習實驗室", "📊 策略分析工具 (單股)", "📒 預測日記 (自動驗證)"])
 
 st.sidebar.divider()
 st.sidebar.header("⚙️ 全域設定")
@@ -534,13 +605,21 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 c1, c2, c3 = st.columns(3)
                 c1.metric("TSM 現價", f"${price:.2f}")
                 c2.metric("模型準度", f"{acc*100:.1f}%", delta="可信" if acc>0.58 else "普通")
+                
+                direction = "Bull" if prob > 0.5 else "Bear"
                 conf = prob if prob > 0.5 else 1 - prob
+                
                 if prob > 0.6:
                     c3.metric("AI 建議", "🚀 看漲", delta=f"信心 {conf*100:.1f}%")
                 elif prob < 0.4:
                     c3.metric("AI 建議", "📉 看跌/盤", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
                 else:
                     c3.metric("AI 建議", "⚖️ 震盪")
+                
+                if st.button("📸 記錄預測 (快照)"):
+                    if save_prediction("TSM", direction, conf, price):
+                        st.success("✅ 已記錄到交易日記！")
+                    else: st.warning("⚠️ 今天已經存過了")
             else: st.error("TF Error")
 
     with tab2:
@@ -556,7 +635,6 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 conf = prob if prob > 0.5 else 1 - prob
                 if prob > 0.6:
                     c2.metric("趨勢方向", "📈 向上", delta=f"信心 {conf*100:.1f}%")
-                    if target_risk == "EDZ": st.error("⚠️ 市場避險情緒高漲！")
                 elif prob < 0.4:
                     c2.metric("趨勢方向", "📉 向下", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
                 else:
@@ -581,11 +659,18 @@ if app_mode == "🤖 AI 深度學習實驗室":
                         mark = "💎" if p > 0.6 and acc > 0.55 else "🛡️" if p < 0.4 and acc > 0.55 else "⚠️"
                         direction = "📈" if p > 0.6 else "📉" if p < 0.4 else "💤"
                         color_str = "green" if p > 0.6 else "red" if p < 0.4 else "gray"
-                        with st.container(border=True):
-                            c1, c2, c3 = st.columns([2, 3, 3])
-                            c1.markdown(f"**{tick}** (${pr:.1f})")
-                            c2.markdown(f":{color_str}[{direction} ({p*100:.0f}%)]")
-                            c3.caption(f"準度: {acc*100:.0f}% {mark}")
+                        
+                        col1, col2, col3, col4 = st.columns([2, 2, 3, 2])
+                        col1.markdown(f"**{tick}** (${pr:.1f})")
+                        col2.markdown(f":{color_str}[{direction} ({p*100:.0f}%)]")
+                        col3.caption(f"準度: {acc*100:.0f}% {mark}")
+                        
+                        if col4.button("存", key=f"save_{tick}"):
+                            dir_str = "Bull" if p > 0.5 else "Bear"
+                            conf = p if p > 0.5 else 1 - p
+                            if save_prediction(tick, dir_str, conf, pr):
+                                st.toast(f"✅ {tick} 已存檔")
+                            else: st.toast("⚠️ 已存在")
 
 # ------------------------------------------
 # Mode 2: 策略分析工具 (單股)
@@ -593,7 +678,6 @@ if app_mode == "🤖 AI 深度學習實驗室":
 elif app_mode == "📊 策略分析工具 (單股)":
     st.header("📊 單股策略分析")
     
-    # 全配策略清單
     strategies = {
         "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
         "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200 },
@@ -641,7 +725,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
     lp = get_real_live_price(cfg['symbol'])
     
     if df is not None and lp:
-        # 計算漲跌幅
         prev_close = df['Close'].iloc[-2] if len(df) > 1 else lp
         chg = lp - prev_close
         pct_chg = (chg / prev_close) * 100
@@ -656,7 +739,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
         # 4. K線與訊號
         k_pat = identify_k_pattern(df)
         
-        # 5. 基本面數據
+        # 5. 基本面
         fund = get_fundamentals(cfg['symbol'])
         
         # 6. UI 顯示
@@ -677,7 +760,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
                 f4.metric("法人持股", f"{fund['inst']*100:.1f}%" if fund['inst'] else "N/A")
                 f5.metric("空單比例", f"{fund['short']*100:.1f}%" if fund['short'] else "N/A")
 
-        # 8. 策略詳細說明 (含目前數值)
+        # 8. 策略詳細說明
         strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
 
@@ -690,7 +773,9 @@ elif app_mode == "📊 策略分析工具 (單股)":
             if analyze_btn or user_notes:
                 with st.spinner("AI 正在深度解讀中..."):
                     news = get_news(cfg['symbol'])
-                    tech_txt = f"策略勝率:{win_rate*100:.0f}% | 訊號:{current_sig}"
+                    # 傳入 RSI 值
+                    rsi_val = ta.rsi(df['Close'], 14).iloc[-1]
+                    tech_txt = f"RSI:{rsi_val:.1f} | 策略勝率:{win_rate*100:.0f}% | 訊號:{current_sig}"
                     analysis, _, _ = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news, tech_txt, k_pat, gemini_model, user_notes)
                     st.markdown(analysis)
         
@@ -699,3 +784,33 @@ elif app_mode == "📊 策略分析工具 (單股)":
 
     else:
         st.error("無法取得數據")
+
+# ------------------------------------------
+# Mode 3: 預測日記 (Ledger)
+# ------------------------------------------
+elif app_mode == "📒 預測日記 (自動驗證)":
+    st.header("📒 AI 實戰驗證日記")
+    st.caption("追蹤 AI 的每一次預測，T+5 自動驗收成果。")
+    
+    if st.button("🔄 立即刷新並驗證 (Auto-Verify)"):
+        with st.spinner("正在檢查最新股價..."):
+            df_ledger = verify_ledger()
+            if df_ledger is not None:
+                st.success("驗證完成！")
+            else:
+                st.info("尚無記錄，請先到「AI 實驗室」進行預測並存檔。")
+    
+    if os.path.exists(LEDGER_FILE):
+        df = pd.read_csv(LEDGER_FILE)
+        st.dataframe(df, use_container_width=True)
+        
+        # 統計數據
+        if not df.empty:
+            completed = df[df['Status'].isin(['Win', 'Loss'])]
+            if not completed.empty:
+                wins = len(completed[completed['Status'] == 'Win'])
+                total = len(completed)
+                win_rate = wins / total
+                st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
+    else:
+        st.info("目前還沒有任何日記。請去預測頁面按「📸 記錄預測」。")
