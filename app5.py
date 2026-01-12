@@ -474,12 +474,79 @@ def analyze_logic_gemini_full(api_key, symbol, news, tech_txt, k_pattern, model_
 
 def identify_k_pattern(df):
     try:
-        c, o = df['Close'].iloc[-1], df['Open'].iloc[-1]
-        c_prev, o_prev = df['Close'].iloc[-2], df['Open'].iloc[-2]
-        pat = "一般震盪"
-        if c > o and c_prev < o_prev and c > o_prev and o < c_prev: pat = "🔥 多頭吞噬"
-        elif c < o and c_prev > o_prev and c < o_prev and o > c_prev: pat = "💀 空頭吞噬"
-        return pat
+        if len(df) < 3: return "N/A" # 至少需要 3 天數據
+        
+        # 提取最近 3 天的數據 (idx 0=前天, 1=昨天, 2=今天)
+        # 為了方便計算，我們取最後 3 筆
+        last_3 = df.iloc[-3:].copy()
+        c = last_3['Close'].values
+        o = last_3['Open'].values
+        h = last_3['High'].values
+        l = last_3['Low'].values
+        
+        # 定義變數 (2 = 今天, 1 = 昨天, 0 = 前天)
+        c2, o2, h2, l2 = c[2], o[2], h[2], l[2]
+        c1, o1, h1, l1 = c[1], o[1], h[1], l[1]
+        c0, o0, h0, l0 = c[0], o[0], h[0], l[0]
+        
+        # 計算實體與影線
+        body2 = abs(c2 - o2)
+        upper2 = h2 - max(c2, o2)
+        lower2 = min(c2, o2) - l2
+        
+        body1 = abs(c1 - o1)
+        
+        # --- 判斷邏輯開始 ---
+        
+        # 1. 【晨星 (Morning Star)】: 跌 -> 小十字 -> 漲 (強力底部訊號)
+        # 前天大跌 + 昨天小實體(跳空尤佳) + 今天大漲(吃掉前天一半以上)
+        if (c0 < o0) and (abs(c0-o0) > body1 * 2) and \
+           (c2 > o2) and (c2 > (o0 + c0)/2) and \
+           (c1 < c0 and c1 < c2): 
+            return "🌅 晨星轉折 (多)"
+
+        # 2. 【暮星 (Evening Star)】: 漲 -> 小十字 -> 跌 (強力頭部訊號)
+        # 前天大漲 + 昨天小實體(跳空尤佳) + 今天大跌(吃掉前天一半以上)
+        if (c0 > o0) and (abs(c0-o0) > body1 * 2) and \
+           (c2 < o2) and (c2 < (o0 + c0)/2) and \
+           (c1 > c0 and c1 > c2):
+            return "🌃 暮星轉折 (空)"
+
+        # 3. 【紅三兵 (Three White Soldiers)】: 連三紅 (強勢多頭)
+        if (c0 > o0) and (c1 > o1) and (c2 > o2) and \
+           (c1 > c0) and (c2 > c1) and \
+           (body2 > 0) and (lower2 < body2 * 0.5): # 今天不能有太長下影線
+            return "💂‍♂️ 紅三兵 (強多)"
+
+        # 4. 【黑三鴉 (Three Black Crows)】: 連三黑 (強勢空頭)
+        if (c0 < o0) and (c1 < o1) and (c2 < o2) and \
+           (c1 < c0) and (c2 < c1):
+            return "🦅 黑三鴉 (強空)"
+
+        # 5. 【吞噬 (Engulfing)】: 2根 (原有邏輯優化)
+        if (c2 > o2) and (c1 < o1) and (c2 > o1) and (o2 < c1):
+            return "🔥 多頭吞噬"
+        if (c2 < o2) and (c1 > o1) and (c2 < o1) and (o2 > c1):
+            return "💀 空頭吞噬"
+
+        # 6. 【母子線 (Harami)】: 昨天大根包住今天小根 (變盤前兆)
+        if (body1 > body2 * 3) and (max(c2, o2) < max(c1, o1)) and (min(c2, o2) > min(c1, o1)):
+            return "🤰 母子變盤線"
+
+        # 7. 【單K型態】 (僅看今天)
+        # 錘頭 (Hammer): 實體小，下影線長 (跌勢末端看漲)
+        if (lower2 >= body2 * 2) and (upper2 <= body2 * 0.5):
+            return "🔨 錘頭/吊人 (測底)"
+        
+        # 流星 (Shooting Star): 實體小，上影線長 (漲勢末端看跌)
+        if (upper2 >= body2 * 2) and (lower2 <= body2 * 0.5):
+            return "🌠 流星/倒錘 (測頂)"
+
+        # 十字線 (Doji): 開收盤幾乎一樣 (多空僵持)
+        if body2 <= (h2 - l2) * 0.1:
+            return "✝️ 十字線 (觀望)"
+
+        return "一般震盪"
     except: return "N/A"
 
 def quick_backtest(df, config, fee=0.0005):
@@ -890,3 +957,4 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
