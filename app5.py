@@ -926,8 +926,44 @@ elif app_mode == "📊 策略分析工具 (單股)":
                     # ★★★ 關鍵更新：改用 Google News RSS ★★★
                     news = get_news(cfg['symbol'])
                     
-                    tech_txt = f"RSI:{rsi_val:.1f} | 策略勝率:{win_rate*100:.0f}% | 訊號:{current_sig}"
-                    analysis, _, _ = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news, tech_txt, k_pat, gemini_model, user_notes)
+                    # ★★★ 關鍵修改：讓 Gemini 看懂您的策略參數 ★★★
+                    # 1. 抓取策略設定的 RSI 長度 (如果沒有就預設 14)
+                    strat_rsi_len = cfg.get('rsi_len', 14)
+                    
+                    # 2. 根據不同策略，計算該策略「真正看重」的指標
+                    strat_val_txt = ""
+                    
+                    if "RSI" in cfg['mode'] or cfg['mode'] == "FUSION":
+                        # 如果是 RSI 策略，就給它看那個長度的 RSI
+                        real_rsi = ta.rsi(df['Close'], length=strat_rsi_len).iloc[-1]
+                        strat_val_txt = f"Strategy_RSI({strat_rsi_len}):{real_rsi:.1f}"
+                        
+                    elif "KD" in cfg['mode']:
+                        # 如果是 KD 策略，就給它看 K 值
+                        k_val = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3).iloc[-1, 0]
+                        strat_val_txt = f"KD_K(9,3):{k_val:.1f}"
+                        
+                    elif cfg['mode'] == "MA_CROSS":
+                        # 如果是均線策略，給它看兩條均線距離
+                        ma_fast = ta.sma(df['Close'], cfg['fast_ma']).iloc[-1]
+                        ma_slow = ta.sma(df['Close'], cfg['slow_ma']).iloc[-1]
+                        dist = (ma_fast - ma_slow) / ma_slow * 100
+                        strat_val_txt = f"MA_Gap:{dist:.2f}%"
+
+                    # 3. 補充一個公版 RSI(14) 當作大環境參考
+                    base_rsi = ta.rsi(df['Close'], 14).iloc[-1]
+
+                    # 4. 組合給 Gemini 的技術面小抄
+                    # 格式：[策略數據] + [公版參考] + [勝率] + [訊號]
+                    tech_txt = (
+                        f"【策略關鍵指標】: {strat_val_txt} | "
+                        f"【市場大環境 RSI(14)】: {base_rsi:.1f} | "
+                        f"【回測勝率】: {win_rate*100:.0f}% | "
+                        f"【當前訊號】: {current_sig} (1=Buy, -1=Sell, 0=Wait)"
+                    )
+
+                    # 5. 呼叫 Gemini (維持原樣)
+                    analysis, icon, success = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news_items, tech_txt, k_pat, gemini_model, user_notes)
                     st.markdown(analysis)
         
         st.plotly_chart(plot_chart(df, cfg, sigs), use_container_width=True)
@@ -957,4 +993,5 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
