@@ -372,7 +372,10 @@ def get_fundamentals(symbol):
             "inst": info.get('heldPercentInstitutions', 0),
             "short": info.get('shortPercentOfFloat', 0),
             "margin": info.get('grossMargins', 0),
-            "eps": info.get('trailingEps', None)
+            "eps": info.get('trailingEps', None),
+            # ★★★ 新增：抓取成長率數據 (讓 AI 知道是進步還退步) ★★★
+            "rev_growth": info.get('revenueGrowth', None),  # 營收成長率 (YoY)
+            "earn_growth": info.get('earningsGrowth', None) # 獲利成長率 (YoY)
         }
     except: return None
 
@@ -928,33 +931,30 @@ elif app_mode == "📊 策略分析工具 (單股)":
             
             analyze_btn = st.button("🚀 啟動 AI 深度分析 (含新聞解讀)")
             
-            if analyze_btn:
+if analyze_btn:
                 with st.spinner("🔍 AI 正在爬取 Google News 並進行大腦運算..."):
-                    # 1. 【定義變數】自動抓新聞
-                    # 這裡統一使用 'news_items' 作為變數名稱
+                    # 1. 自動抓新聞
                     news_items = get_news(cfg['symbol'])
                     
-                    # 2. 顯示抓到了什麼新聞 (讓您安心)
+                    # 顯示抓到了什麼新聞
                     if news_items:
                         with st.expander(f"📰 AI 已讀取 {len(news_items)} 則最新新聞", expanded=True):
                             for n in news_items:
                                 st.caption(f"• {n}")
                     else:
                         st.warning("⚠️ 暫時抓不到 Google News，AI 將純以技術面分析。")
-                        news_items = [] # 確保它是一個空串列，避免報錯
+                        news_items = []
 
-                    # 3. 【計算指標】讓 Gemini 看懂您的策略參數
+                    # 2. 計算策略指標 (讓 AI 看懂您的策略參數)
                     strat_rsi_len = cfg.get('rsi_len', 14)
                     strat_val_txt = ""
                     
                     if "RSI" in cfg['mode'] or cfg['mode'] == "FUSION":
                         real_rsi = ta.rsi(df['Close'], length=strat_rsi_len).iloc[-1]
                         strat_val_txt = f"Strategy_RSI({strat_rsi_len}):{real_rsi:.1f}"
-                        
                     elif "KD" in cfg['mode']:
                         k_val = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3).iloc[-1, 0]
                         strat_val_txt = f"KD_K(9,3):{k_val:.1f}"
-                        
                     elif cfg['mode'] == "MA_CROSS":
                         ma_fast = ta.sma(df['Close'], cfg['fast_ma']).iloc[-1]
                         ma_slow = ta.sma(df['Close'], cfg['slow_ma']).iloc[-1]
@@ -962,20 +962,73 @@ elif app_mode == "📊 策略分析工具 (單股)":
                         strat_val_txt = f"MA_Gap:{dist:.2f}%"
 
                     base_rsi = ta.rsi(df['Close'], 14).iloc[-1]
+                    
+                    # 訊號翻譯機
+                    sig_map = { 1: "🚀 買進訊號 (Buy)", -1: "📉 賣出訊號 (Sell)", 0: "💤 觀望/無訊號 (Wait)" }
+                    human_sig = sig_map.get(int(current_sig), "未知")
 
-                    # 4. 組合技術面小抄
+                    # ★★★ 3. 這裡是您要找的：財報數據打包 (含成長率) ★★★
+                    fund_txt = "無財報數據"
+                    if fund:
+                        # 預先處理成長率 (轉成 % 顯示，如果是 None 就顯示 N/A)
+                        rev_g = f"{fund.get('rev_growth', 0)*100:.1f}%" if fund.get('rev_growth') is not None else "N/A"
+                        earn_g = f"{fund.get('earn_growth', 0)*100:.1f}%" if fund.get('earn_growth') is not None else "N/A"
+                        
+                        fund_txt = (
+                            f"PE(本益比):{fund.get('pe', 'N/A')} | "
+                            f"EPS:{fund.get('eps', 'N/A')} | "
+                            f"毛利率:{fund.get('margin', 0)*100:.1f}% | "
+                            f"營收成長(YoY):{rev_g} | "
+                            f"獲利成長(YoY):{earn_g} | "
+                            f"法人持股:{fund.get('inst', 0)*100:.1f}% | "
+                            f"空單比例:{fund.get('short', 0)*100:.1f}%"
+                        )
+
+                    # 4. 組合給 Gemini 的「全方位小抄」
                     tech_txt = (
-                        f"【策略關鍵指標】: {strat_val_txt} | "
-                        f"【市場大環境 RSI(14)】: {base_rsi:.1f} | "
-                        f"【回測勝率】: {win_rate*100:.0f}% | "
-                        f"【當前訊號】: {current_sig} (1=Buy, -1=Sell, 0=Wait)"
+                        f"【策略關鍵指標】: {strat_val_txt}\n"
+                        f"【財報基本面】: {fund_txt}\n"
+                        f"【市場大環境 RSI(14)】: {base_rsi:.1f}\n"
+                        f"【回測勝率】: {win_rate*100:.0f}%\n"
+                        f"【當前訊號】: {human_sig}"
                     )
 
-                    # 5. 【呼叫 Gemini】傳入正確的變數
-                    analysis, icon, success = analyze_logic_gemini_full(
+                    # 5. 定義 Prompt 並呼叫 Gemini
+                    def analyze_logic_gemini_full_v2(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
+                        if not HAS_GEMINI: return "No Gemini", "⚠️", False
+                        try:
+                            genai.configure(api_key=api_key)
+                            model = genai.GenerativeModel(model_name)
+                            news_str = "\n".join([f"- {n}" for n in news]) if news else "無最新新聞"
+                            
+                            base_prompt = f"""
+                            你是一位華爾街資深操盤手。請根據以下「全方位數據」進行深度分析：
+                            
+                            【目標標的】：{symbol}
+                            【綜合數據面板】：
+                            {tech_txt}
+                            
+                            【K線型態】：{k_pattern}
+                            
+                            【最新新聞焦點】：
+                            {news_str}
+                            
+                            【用戶補充筆記】：{user_input}
+                            
+                            請給出分析報告 (需包含技術面、基本面、消息面)：
+                            1. 🎯 核心觀點 (多/空/觀望)
+                            2. 📊 數據解讀 (請引用上述財報成長率或指標數據佐證)
+                            3. 📰 市場情緒 (基於新聞)
+                            4. 💡 操作建議
+                            """
+                            return model.generate_content(base_prompt).text, "🧠", True
+                        except Exception as e: return str(e), "⚠️", False
+
+                    # 執行分析
+                    analysis, icon, success = analyze_logic_gemini_full_v2(
                         gemini_key, 
                         cfg['symbol'], 
-                        news_items,   # 這裡傳入上面定義好的 news_items
+                        news_items, 
                         tech_txt, 
                         k_pat, 
                         gemini_model, 
@@ -1011,6 +1064,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
