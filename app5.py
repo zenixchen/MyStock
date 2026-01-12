@@ -151,76 +151,58 @@ def verify_ledger():
 # ★★★ 3. AI 模型核心 (Ultimate v21.2 穩健版) ★★★
 # ==========================================
 
-# --- A. TSM (5年數據 + 強力補土機制) ---
+# --- Module A: TSM (5年數據 + 穩定訓練版 v21.3) ---
 @st.cache_resource(ttl=3600)
 def get_tsm_swing_prediction():
     if not HAS_TENSORFLOW: return None, None, "TF缺"
     try:
+        # 1. 下載數據 (純美股因子，雜訊最少)
         tickers = { 'Main': 'TSM', 'Night': "EWT", 'Rate': "^TNX", 'AI': 'NVDA' }
-        # 下載 5 年數據
         data = yf.download(list(tickers.values()), period="5y", interval="1d", progress=False)
         
-        # 1. 確保數據下載成功
-        if data is None or data.empty:
-            return None, None, "下載失敗"
-
-        # 2. 處理 MultiIndex 並進行「強力補土」
+        # 2. 資料清洗與補土
         if isinstance(data.columns, pd.MultiIndex):
             df_close = data['Close'].copy()
             df = pd.DataFrame()
-            
-            # 安全對應：如果某個代碼下載失敗，填入 0 或前值
             for key, symbol in tickers.items():
                 if symbol in df_close.columns:
                     df[f'{key}_Close'] = df_close[symbol]
                 else:
-                    # 如果抓不到 (例如 ^TNX)，填入 0 避免當機
                     df[f'{key}_Close'] = 0 
-        else: 
-            return None, None, "DataFmt"
+        else: return None, None, "DataFmt"
 
-        # 3. 補洞關鍵步驟 (Fix: 0 samples error)
-        # 先用前面的值補後面的空洞 (ffill)，再用後面的值補前面的空洞 (bfill)
         df.ffill(inplace=True)
         df.bfill(inplace=True) 
-        df.fillna(0, inplace=True) # 最後防線
+        df.fillna(0, inplace=True)
 
-        # 計算指標
+        # 3. 計算特徵
         df['Main_Ret'] = df['Main_Close'].pct_change()
         df['Night_Ret'] = df['Night_Close'].pct_change()
         df['Rate_Chg'] = df['Rate_Close'].pct_change()
         df['AI_Ret'] = df['AI_Close'].pct_change()
         df['RSI'] = ta.rsi(df['Main_Close'], length=14)
         df['Bias'] = (df['Main_Close'] - ta.sma(df['Main_Close'], 20)) / ta.sma(df['Main_Close'], 20)
-        
-        # 再次補洞 (計算指標會產生 NaN)
-        df.fillna(0, inplace=True) 
-        
-        # 建立 Target
+        df.dropna(inplace=True)
+
         days_out = 5; threshold = 0.02
         df['Target'] = ((df['Main_Close'].shift(-days_out) / df['Main_Close'] - 1) > threshold).astype(int)
         
-        # 訓練集 (扣掉最後 5 天)
         df_train = df.iloc[:-days_out].copy()
         
         features = ['Main_Ret', 'Night_Ret', 'Rate_Chg', 'AI_Ret', 'RSI', 'Bias']
-        
-        # ★★★ 最後檢查：如果資料還是空的，回傳特定錯誤 ★★★
-        if len(df_train) < 30:
-            return None, None, f"資料不足({len(df_train)})"
+        if len(df_train) < 30: return None, None, "DataShort"
 
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[features])
         
         X, y = [], []
         lookback = 20
-        
         for i in range(lookback, len(scaled_data)):
             X.append(scaled_data[i-lookback:i])
             y.append(df_train['Target'].iloc[i])
         
         X, y = np.array(X), np.array(y)
-        split = int(len(X) * 0.8)
+        split = int(len(X) * 0.8) # 80% 訓練, 20% 考試
         X_train, X_test, y_train, y_test = X[:split], X[split:], y[:split], y[split:]
         
         model = Sequential()
@@ -230,11 +212,13 @@ def get_tsm_swing_prediction():
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
         
         early = EarlyStopping(monitor='val_accuracy', patience=15, restore_best_weights=True)
-        model.fit(X_train, y_train, epochs=30, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early])
+        
+        # ★★★ 關鍵修改：Epochs 30 -> 60, Batch 32 -> 16 ★★★
+        # 這會讓 AI 學得更慢一點，但是更細緻、更穩定
+        model.fit(X_train, y_train, epochs=60, batch_size=16, verbose=0, validation_data=(X_test, y_test), callbacks=[early])
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # 預測未來
         last_seq = df[features].iloc[-lookback:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         
@@ -877,3 +861,4 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
