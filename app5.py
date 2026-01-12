@@ -61,8 +61,8 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v18.1)",
-    page_icon="📒",
+    page_title="2026 量化戰情室 (Ultimate v19.0)",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -175,7 +175,7 @@ def get_tsm_swing_prediction():
         df.dropna(inplace=True)
 
         days_out = 5; threshold = 0.02
-        df['Target'] = ((df['Main_Close'].shift(-days_out) / df['Main_Close'] - 1) > threshold).astype(int)
+        df['Target'] = ((df['Main_Close'].shift(-5) / df['Main_Close'] - 1) > 0.02).astype(int)
         df_train = df.iloc[:-5].copy()
         
         features = ['Main_Ret', 'Night_Ret', 'Rate_Chg', 'AI_Ret', 'RSI', 'Bias']
@@ -231,6 +231,7 @@ def get_macro_prediction(target_symbol, features_dict):
         feat_cols.append('RSI')
         df.dropna(inplace=True)
         
+        days_out = 5
         df['Target'] = ((df['Main'].shift(-5) / df['Main'] - 1) > 0.02).astype(int)
         df_train = df.iloc[:-5].copy()
         
@@ -352,6 +353,18 @@ def get_fundamentals(symbol):
             "margin": info.get('grossMargins', 0),
             "eps": info.get('trailingEps', None)
         }
+    except: return None
+
+def get_real_live_price(symbol):
+    try:
+        t = yf.Ticker(symbol)
+        price = t.fast_info.get('last_price')
+        if price is None or np.isnan(price):
+            df = yf.download(symbol, period='1d', interval='1m', progress=False)
+            if not df.empty:
+                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                return float(df['Close'].iloc[-1])
+        return float(price) if price else None
     except: return None
 
 def clean_text_for_llm(text): return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', str(text))
@@ -729,14 +742,55 @@ elif app_mode == "📊 策略分析工具 (單股)":
             c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望")
             st.info(f"💡 凱利觀點: {kelly_msg}")
 
+        # ★★★ 新增功能：基本面自動判讀 ★★★
         if fund:
             with st.expander("📊 財報基本面 & 籌碼數據", expanded=False):
                 f1, f2, f3, f4, f5 = st.columns(5)
-                f1.metric("本益比 (PE)", f"{fund['pe']:.1f}" if fund['pe'] else "N/A")
-                f2.metric("EPS", f"${fund['eps']:.2f}" if fund['eps'] else "N/A")
-                f3.metric("毛利率", f"{fund['margin']*100:.1f}%" if fund['margin'] else "N/A")
-                f4.metric("法人持股", f"{fund['inst']*100:.1f}%" if fund['inst'] else "N/A")
-                f5.metric("空單比例", f"{fund['short']*100:.1f}%" if fund['short'] else "N/A")
+                
+                # Helper function for conditional formatting
+                def check_metric(val, high_good=True, low_good=False, threshold_good=0, threshold_bad=0):
+                    if val is None: return "N/A", "off"
+                    val = float(val)
+                    if high_good:
+                        if val > threshold_good: return f"{val:.1f}% ✅", "normal"
+                        if val < threshold_bad: return f"{val:.1f}% ❌", "inverse"
+                        return f"{val:.1f}% ⚠️", "off"
+                    if low_good:
+                        if val < threshold_good: return f"{val:.1f}% ✅", "normal"
+                        if val > threshold_bad: return f"{val:.1f}% ❌", "inverse"
+                        return f"{val:.1f}% ⚠️", "off"
+                    return f"{val:.1f}", "off"
+
+                # PE Logic: <25 Good, >50 Bad
+                pe_val = fund['pe']
+                pe_str = "N/A"
+                pe_delta = "off"
+                if pe_val:
+                    if pe_val < 25: pe_str, pe_delta = f"{pe_val:.1f} ✅", "normal"
+                    elif pe_val > 50: pe_str, pe_delta = f"{pe_val:.1f} ❌", "inverse"
+                    else: pe_str, pe_delta = f"{pe_val:.1f} ⚠️", "off"
+                f1.metric("本益比 (PE)", pe_str, delta_color=pe_delta)
+
+                # EPS Logic: >0 Good
+                eps_val = fund['eps']
+                eps_str = "N/A"
+                eps_delta = "off"
+                if eps_val:
+                    if eps_val > 0: eps_str, eps_delta = f"${eps_val:.2f} ✅", "normal"
+                    else: eps_str, eps_delta = f"${eps_val:.2f} ❌", "inverse"
+                f2.metric("EPS", eps_str, delta_color=eps_delta)
+
+                # Margin: >40% Good, <10% Bad
+                m_str, m_delta = check_metric(fund['margin']*100, high_good=True, threshold_good=40, threshold_bad=10)
+                f3.metric("毛利率", m_str, delta_color=m_delta)
+
+                # Inst: >60% Good, <20% Bad
+                i_str, i_delta = check_metric(fund['inst']*100, high_good=True, threshold_good=60, threshold_bad=20)
+                f4.metric("法人持股", i_str, delta_color=i_delta)
+
+                # Short: <5% Good, >15% Bad
+                s_str, s_delta = check_metric(fund['short']*100, low_good=True, threshold_good=5, threshold_bad=15)
+                f5.metric("空單比例", s_str, delta_color=s_delta)
 
         strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
