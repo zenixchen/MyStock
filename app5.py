@@ -157,7 +157,7 @@ def get_tsm_swing_prediction():
     if not HAS_TENSORFLOW: return None, None, "TF缺"
     try:
         tickers = { 'Main': 'TSM', 'Night': "EWT", 'Rate': "^TNX", 'AI': 'NVDA' }
-        data = yf.download(list(tickers.values()), period="2y", interval="1d", progress=False)
+        data = yf.download(list(tickers.values()), period="5y", interval="1d", progress=False)
         if isinstance(data.columns, pd.MultiIndex):
             df_close = data['Close'].copy()
             inv_map = {v: k for k, v in tickers.items()}
@@ -840,3 +840,4 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
