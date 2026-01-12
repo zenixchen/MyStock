@@ -13,6 +13,8 @@ import json
 import time
 import os
 import random
+import requests # 新增：用於抓取 Google News
+import xml.etree.ElementTree as ET # 新增：用於解析 RSS
 
 # ==========================================
 # ★★★ 0. God Mode: 鎖定隨機種子 ★★★
@@ -61,8 +63,8 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v21.2)",
-    page_icon="💎",
+    page_title="2026 量化戰情室 (Ultimate v22.0)",
+    page_icon="📰",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -148,19 +150,17 @@ def verify_ledger():
         return None
 
 # ==========================================
-# ★★★ 3. AI 模型核心 (Ultimate v21.2 穩健版) ★★★
+# ★★★ 3. AI 模型核心 (5年穩健版) ★★★
 # ==========================================
 
-# --- Module A: TSM (5年數據 + 穩定訓練版 v21.3) ---
+# --- A. TSM (5年數據) ---
 @st.cache_resource(ttl=3600)
 def get_tsm_swing_prediction():
     if not HAS_TENSORFLOW: return None, None, "TF缺"
     try:
-        # 1. 下載數據 (純美股因子，雜訊最少)
         tickers = { 'Main': 'TSM', 'Night': "EWT", 'Rate': "^TNX", 'AI': 'NVDA' }
         data = yf.download(list(tickers.values()), period="5y", interval="1d", progress=False)
         
-        # 2. 資料清洗與補土
         if isinstance(data.columns, pd.MultiIndex):
             df_close = data['Close'].copy()
             df = pd.DataFrame()
@@ -175,7 +175,6 @@ def get_tsm_swing_prediction():
         df.bfill(inplace=True) 
         df.fillna(0, inplace=True)
 
-        # 3. 計算特徵
         df['Main_Ret'] = df['Main_Close'].pct_change()
         df['Night_Ret'] = df['Night_Close'].pct_change()
         df['Rate_Chg'] = df['Rate_Close'].pct_change()
@@ -188,7 +187,6 @@ def get_tsm_swing_prediction():
         df['Target'] = ((df['Main_Close'].shift(-days_out) / df['Main_Close'] - 1) > threshold).astype(int)
         
         df_train = df.iloc[:-days_out].copy()
-        
         features = ['Main_Ret', 'Night_Ret', 'Rate_Chg', 'AI_Ret', 'RSI', 'Bias']
         if len(df_train) < 30: return None, None, "DataShort"
 
@@ -202,7 +200,7 @@ def get_tsm_swing_prediction():
             y.append(df_train['Target'].iloc[i])
         
         X, y = np.array(X), np.array(y)
-        split = int(len(X) * 0.8) # 80% 訓練, 20% 考試
+        split = int(len(X) * 0.8)
         X_train, X_test, y_train, y_test = X[:split], X[split:], y[:split], y[split:]
         
         model = Sequential()
@@ -212,9 +210,6 @@ def get_tsm_swing_prediction():
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
         
         early = EarlyStopping(monitor='val_accuracy', patience=15, restore_best_weights=True)
-        
-        # ★★★ 關鍵修改：Epochs 30 -> 60, Batch 32 -> 16 ★★★
-        # 這會讓 AI 學得更慢一點，但是更細緻、更穩定
         model.fit(X_train, y_train, epochs=60, batch_size=16, verbose=0, validation_data=(X_test, y_test), callbacks=[early])
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
@@ -240,10 +235,7 @@ def get_macro_prediction(target_symbol, features_dict):
             df = df_close.copy()
         else: return None, None
 
-        # 補洞處理
-        df.ffill(inplace=True)
-        df.bfill(inplace=True)
-
+        df.ffill(inplace=True); df.bfill(inplace=True)
         feat_cols = []
         df['Main_Ret'] = df['Main'].pct_change()
         feat_cols.append('Main_Ret')
@@ -256,7 +248,7 @@ def get_macro_prediction(target_symbol, features_dict):
         
         days_out = 5
         df['Target'] = ((df['Main'].shift(-days_out) / df['Main'] - 1) > 0.02).astype(int)
-        df_train = df.iloc[:-days_out].copy()
+        df_train = df.iloc[:-5].copy()
         
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[feat_cols])
@@ -293,7 +285,7 @@ def train_qqq_brain():
         df = yf.download("QQQ", period="5y", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        df.ffill(inplace=True) # 補洞
+        df.ffill(inplace=True)
         df['Return'] = df['Close'].pct_change()
         df['RSI'] = ta.rsi(df['Close'], 14)
         df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
@@ -324,7 +316,7 @@ def scan_tech_stock(symbol, model, scaler, features):
         if len(df) < 60: return None, None, 0
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        df.ffill(inplace=True) # 補洞
+        df.ffill(inplace=True)
         df = df[df['Volume'] > 0].copy()
         df['Return'] = df['Close'].pct_change()
         df['RSI'] = ta.rsi(df['Close'], 14)
@@ -398,12 +390,31 @@ def get_real_live_price(symbol):
 
 def clean_text_for_llm(text): return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', str(text))
 
+# ★★★ 新增：Google News RSS 爬蟲 (穩定版) ★★★
 def get_news(symbol):
     try:
-        if "=" in symbol or "^" in symbol: return []
-        news = yf.Ticker(symbol).news
-        return [clean_text_for_llm(n['title']) for n in news[:3]]
-    except: return []
+        # 使用 Google News RSS 搜尋
+        # 注意：對於台股 (如 2330.TW)，搜尋 "TSMC" 或 "2330.TW"
+        search_query = symbol
+        if ".TW" in symbol: search_query = symbol.replace(".TW", " TW stock")
+        else: search_query = f"{symbol} stock news"
+        
+        url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
+        
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            root = ET.fromstring(resp.content)
+            # 解析 XML，抓取前 5 個 item 的 title
+            news_items = []
+            for item in root.findall('.//item')[:5]:
+                title = item.find('title').text
+                # 簡單過濾掉太短的標題
+                if len(title) > 10:
+                    news_items.append(clean_text_for_llm(title))
+            return news_items
+        return []
+    except Exception as e:
+        return [f"News Error: {str(e)}"]
 
 def calculate_kelly_position(df, capital, win_rate, risk_per_trade, current_signal):
     try:
@@ -439,9 +450,25 @@ def analyze_logic_gemini_full(api_key, symbol, news, tech_txt, k_pattern, model_
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
-        base_prompt = f"華爾街資深操盤手分析 {symbol}。\n【技術面】：{tech_txt}\n【K線型態】：{k_pattern}\n【新聞焦點】：{news}"
-        if user_input: base_prompt += f"\n【用戶筆記】：{user_input}\n請深度結合分析。"
-        else: base_prompt += "\n請給出：1.趨勢判斷 2.操作建議 3.風險提示"
+        
+        news_str = "\n".join([f"- {n}" for n in news]) if news else "無最新新聞"
+        
+        base_prompt = f"""
+        你是一位華爾街資深操盤手。請根據以下數據進行分析：
+        
+        【目標標的】：{symbol}
+        【技術面數據】：{tech_txt}
+        【K線型態】：{k_pattern}
+        【最新新聞焦點】：
+        {news_str}
+        
+        【用戶筆記】：{user_input}
+        
+        請給出：
+        1. 市場情緒解讀 (基於新聞)
+        2. 技術面多空判斷
+        3. 具體操作建議 (進場/觀望/止損)
+        """
         return model.generate_content(base_prompt).text, "🧠", True
     except Exception as e: return str(e), "⚠️", False
 
@@ -829,7 +856,9 @@ elif app_mode == "📊 策略分析工具 (單股)":
                 analyze_btn = st.button("🚀 開始深度分析")
             if analyze_btn or user_notes:
                 with st.spinner("AI 正在深度解讀中..."):
+                    # ★★★ 關鍵更新：改用 Google News RSS ★★★
                     news = get_news(cfg['symbol'])
+                    
                     tech_txt = f"RSI:{rsi_val:.1f} | 策略勝率:{win_rate*100:.0f}% | 訊號:{current_sig}"
                     analysis, _, _ = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news, tech_txt, k_pat, gemini_model, user_notes)
                     st.markdown(analysis)
@@ -861,4 +890,3 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
-
