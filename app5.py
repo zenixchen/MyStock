@@ -665,11 +665,11 @@ app_mode = st.sidebar.radio("選擇功能模組：", ["🤖 AI 深度學習實�
 st.sidebar.divider()
 st.sidebar.header("⚙️ 全域設定")
 ai_provider = st.sidebar.selectbox("AI 語言模型", ["不使用", "Gemini (User Defined)"])
-gemini_key = ""; gemini_model = "models/gemini-2.0-flash"
+gemini_key = ""; gemini_model = "models/gemini-3-pro-preview"
 
 if ai_provider == "Gemini (User Defined)":
     gemini_key = st.sidebar.text_input("Gemini Key", type="password")
-    gemini_model = st.sidebar.text_input("Model Name", value="models/gemini-2.0-flash")
+    gemini_model = st.sidebar.text_input("Model Name", value="models/gemini-3-pro-preview")
 
 st.sidebar.divider()
 st.sidebar.header("💰 凱利公式設定")
@@ -916,45 +916,54 @@ elif app_mode == "📊 策略分析工具 (單股)":
         strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
 
+# --- Gemini 區塊 (完整修復版：整合新聞 + 客製化指標) ---
         if ai_provider == "Gemini (User Defined)" and gemini_key:
+            st.divider()
             st.subheader("🧠 Gemini 首席分析師")
-            with st.expander("📝 輸入財報筆記 / 新聞重點", expanded=False):
-                user_notes = st.text_area("貼上新聞或財報數據...", height=100)
-                analyze_btn = st.button("🚀 開始深度分析")
-            if analyze_btn or user_notes:
-                with st.spinner("AI 正在深度解讀中..."):
-                    # ★★★ 關鍵更新：改用 Google News RSS ★★★
-                    news = get_news(cfg['symbol'])
+            
+            st.info("ℹ️ 系統將自動抓取 Google News 最新頭條。若您有額外資訊 (如財報細節)，可在下方補充。")
+
+            with st.expander("📝 補充筆記 (選填 / Optional)", expanded=False):
+                user_notes = st.text_area("例如：營收創歷史新高、分析師調升評級...", height=68)
+            
+            analyze_btn = st.button("🚀 啟動 AI 深度分析 (含新聞解讀)")
+            
+            if analyze_btn:
+                with st.spinner("🔍 AI 正在爬取 Google News 並進行大腦運算..."):
+                    # 1. 【定義變數】自動抓新聞
+                    # 這裡統一使用 'news_items' 作為變數名稱
+                    news_items = get_news(cfg['symbol'])
                     
-                    # ★★★ 關鍵修改：讓 Gemini 看懂您的策略參數 ★★★
-                    # 1. 抓取策略設定的 RSI 長度 (如果沒有就預設 14)
+                    # 2. 顯示抓到了什麼新聞 (讓您安心)
+                    if news_items:
+                        with st.expander(f"📰 AI 已讀取 {len(news_items)} 則最新新聞", expanded=True):
+                            for n in news_items:
+                                st.caption(f"• {n}")
+                    else:
+                        st.warning("⚠️ 暫時抓不到 Google News，AI 將純以技術面分析。")
+                        news_items = [] # 確保它是一個空串列，避免報錯
+
+                    # 3. 【計算指標】讓 Gemini 看懂您的策略參數
                     strat_rsi_len = cfg.get('rsi_len', 14)
-                    
-                    # 2. 根據不同策略，計算該策略「真正看重」的指標
                     strat_val_txt = ""
                     
                     if "RSI" in cfg['mode'] or cfg['mode'] == "FUSION":
-                        # 如果是 RSI 策略，就給它看那個長度的 RSI
                         real_rsi = ta.rsi(df['Close'], length=strat_rsi_len).iloc[-1]
                         strat_val_txt = f"Strategy_RSI({strat_rsi_len}):{real_rsi:.1f}"
                         
                     elif "KD" in cfg['mode']:
-                        # 如果是 KD 策略，就給它看 K 值
                         k_val = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3).iloc[-1, 0]
                         strat_val_txt = f"KD_K(9,3):{k_val:.1f}"
                         
                     elif cfg['mode'] == "MA_CROSS":
-                        # 如果是均線策略，給它看兩條均線距離
                         ma_fast = ta.sma(df['Close'], cfg['fast_ma']).iloc[-1]
                         ma_slow = ta.sma(df['Close'], cfg['slow_ma']).iloc[-1]
                         dist = (ma_fast - ma_slow) / ma_slow * 100
                         strat_val_txt = f"MA_Gap:{dist:.2f}%"
 
-                    # 3. 補充一個公版 RSI(14) 當作大環境參考
                     base_rsi = ta.rsi(df['Close'], 14).iloc[-1]
 
-                    # 4. 組合給 Gemini 的技術面小抄
-                    # 格式：[策略數據] + [公版參考] + [勝率] + [訊號]
+                    # 4. 組合技術面小抄
                     tech_txt = (
                         f"【策略關鍵指標】: {strat_val_txt} | "
                         f"【市場大環境 RSI(14)】: {base_rsi:.1f} | "
@@ -962,12 +971,21 @@ elif app_mode == "📊 策略分析工具 (單股)":
                         f"【當前訊號】: {current_sig} (1=Buy, -1=Sell, 0=Wait)"
                     )
 
-                    # 5. 呼叫 Gemini (維持原樣)
-                    analysis, icon, success = analyze_logic_gemini_full(gemini_key, cfg['symbol'], news_items, tech_txt, k_pat, gemini_model, user_notes)
-                    st.markdown(analysis)
-        
-        st.plotly_chart(plot_chart(df, cfg, sigs), use_container_width=True)
-    else: st.error("無法取得數據")
+                    # 5. 【呼叫 Gemini】傳入正確的變數
+                    analysis, icon, success = analyze_logic_gemini_full(
+                        gemini_key, 
+                        cfg['symbol'], 
+                        news_items,   # 這裡傳入上面定義好的 news_items
+                        tech_txt, 
+                        k_pat, 
+                        gemini_model, 
+                        user_notes
+                    )
+                    
+                    if success:
+                        st.markdown(analysis)
+                    else:
+                        st.error(f"Gemini 連線失敗: {analysis}")
 
 # ------------------------------------------
 # Mode 3: 預測日記 (Ledger)
@@ -993,5 +1011,6 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
