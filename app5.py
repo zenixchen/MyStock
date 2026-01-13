@@ -918,10 +918,11 @@ elif app_mode == "📊 策略分析工具 (單股)":
         else:
             st.warning("⚠️ 暫無財報數據 (API 忙碌中，請稍後再試)")
 
+# 1. 顯示策略邏輯文字 (這是錨點，請對齊這裡)
         strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
 
-# 2. Gemini 分析區塊 (完整防呆版)
+        # 2. Gemini 分析區塊 (完整防呆版)
         if ai_provider == "Gemini (User Defined)" and gemini_key:
             st.divider()
             st.subheader("🧠 Gemini 首席分析師")
@@ -1061,6 +1062,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
