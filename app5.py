@@ -919,7 +919,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
         strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
 
-# --- Gemini 區塊 (完整修復版：整合新聞 + 客製化指標) ---
+# --- Gemini 區塊 (完整修復版 v22.5) ---
         if ai_provider == "Gemini (User Defined)" and gemini_key:
             st.divider()
             st.subheader("🧠 Gemini 首席分析師")
@@ -929,9 +929,10 @@ elif app_mode == "📊 策略分析工具 (單股)":
             with st.expander("📝 補充筆記 (選填 / Optional)", expanded=False):
                 user_notes = st.text_area("例如：營收創歷史新高、分析師調升評級...", height=68)
             
+            # ★★★ 關鍵修復：按鈕定義一定要在這裡！ ★★★
             analyze_btn = st.button("🚀 啟動 AI 深度分析 (含新聞解讀)")
             
-if analyze_btn:
+            if analyze_btn:
                 with st.spinner("🔍 AI 正在爬取 Google News 並進行大腦運算..."):
                     # 1. 自動抓新聞
                     news_items = get_news(cfg['symbol'])
@@ -943,7 +944,7 @@ if analyze_btn:
                                 st.caption(f"• {n}")
                     else:
                         st.warning("⚠️ 暫時抓不到 Google News，AI 將純以技術面分析。")
-                        news_items = []
+                        news_items = [] # 確保變數存在，避免報錯
 
                     # 2. 計算策略指標 (讓 AI 看懂您的策略參數)
                     strat_rsi_len = cfg.get('rsi_len', 14)
@@ -967,10 +968,9 @@ if analyze_btn:
                     sig_map = { 1: "🚀 買進訊號 (Buy)", -1: "📉 賣出訊號 (Sell)", 0: "💤 觀望/無訊號 (Wait)" }
                     human_sig = sig_map.get(int(current_sig), "未知")
 
-                    # ★★★ 3. 這裡是您要找的：財報數據打包 (含成長率) ★★★
+                    # 3. 財報數據打包 (含成長率)
                     fund_txt = "無財報數據"
                     if fund:
-                        # 預先處理成長率 (轉成 % 顯示，如果是 None 就顯示 N/A)
                         rev_g = f"{fund.get('rev_growth', 0)*100:.1f}%" if fund.get('rev_growth') is not None else "N/A"
                         earn_g = f"{fund.get('earn_growth', 0)*100:.1f}%" if fund.get('earn_growth') is not None else "N/A"
                         
@@ -1064,6 +1064,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
