@@ -13,8 +13,8 @@ import json
 import time
 import os
 import random
-import requests # 新增：用於抓取 Google News
-import xml.etree.ElementTree as ET # 新增：用於解析 RSS
+import requests
+import xml.etree.ElementTree as ET
 
 # ==========================================
 # ★★★ 0. God Mode: 鎖定隨機種子 ★★★
@@ -50,11 +50,6 @@ except ImportError:
 
 HAS_TRANSFORMERS = importlib.util.find_spec("transformers") is not None
 try:
-    from groq import Groq
-    HAS_GROQ = True
-except: HAS_GROQ = False
-
-try:
     import google.generativeai as genai
     HAS_GEMINI = True
 except: HAS_GEMINI = False
@@ -63,8 +58,8 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v22.0)",
-    page_icon="📰",
+    page_title="2026 量化戰情室 (Ultimate v22.1)",
+    page_icon="🔥",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -349,10 +344,11 @@ def scan_tech_stock(symbol, model, scaler, features):
 # ==========================================
 def get_safe_data(ticker):
     try:
-        df = yf.download(ticker, period="2y", interval="1d", progress=False)
+        # 強制單層索引並關閉 auto_adjust
+        df = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=False, multi_level_index=False)
         if df is None or df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        df = df.loc[:, ~df.columns.duplicated()]
+        df = df.sort_index()
         return df
     except: return None
 
@@ -379,18 +375,6 @@ def get_fundamentals(symbol):
             "rev_growth": info.get('revenueGrowth', None),
             "earn_growth": info.get('earningsGrowth', None)
         }
-    except: return None
-
-def get_real_live_price(symbol):
-    try:
-        t = yf.Ticker(symbol)
-        price = t.fast_info.get('last_price')
-        if price is None or np.isnan(price):
-            df = yf.download(symbol, period='1d', interval='1m', progress=False)
-            if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                return float(df['Close'].iloc[-1])
-        return float(price) if price else None
     except: return None
 
 def clean_text_for_llm(text): return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', str(text))
@@ -449,33 +433,6 @@ def calculate_kelly_position(df, capital, win_rate, risk_per_trade, current_sign
         
         return msg, shares
     except: return "計算失敗", 0
-
-def analyze_logic_gemini_full(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
-    if not HAS_GEMINI: return "No Gemini", "⚠️", False
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
-        
-        news_str = "\n".join([f"- {n}" for n in news]) if news else "無最新新聞"
-        
-        base_prompt = f"""
-        你是一位華爾街資深操盤手。請根據以下數據進行分析：
-        
-        【目標標的】：{symbol}
-        【技術面數據】：{tech_txt}
-        【K線型態】：{k_pattern}
-        【最新新聞焦點】：
-        {news_str}
-        
-        【用戶筆記】：{user_input}
-        
-        請給出：
-        1. 市場情緒解讀 (基於新聞)
-        2. 技術面多空判斷
-        3. 具體操作建議 (進場/觀望/止損)
-        """
-        return model.generate_content(base_prompt).text, "🧠", True
-    except Exception as e: return str(e), "⚠️", False
 
 def identify_k_pattern(df):
     try:
@@ -874,6 +831,10 @@ elif app_mode == "📊 策略分析工具 (單股)":
                 
             c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望")
             st.info(f"💡 凱利觀點: {kelly_msg}")
+
+            # ★★★ 補回圖表繪製邏輯 ★★★
+            fig = plot_chart(df, cfg, sigs)
+            st.plotly_chart(fig, use_container_width=True)
 
         if fund:
             with st.expander("📊 財報基本面 & 籌碼數據", expanded=False):
