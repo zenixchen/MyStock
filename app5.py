@@ -367,15 +367,17 @@ def get_fundamentals(symbol):
             
         return {
             "pe": info.get('trailingPE', None),
-            "fwd_pe": info.get('forwardPE', None),
+            "fwd_pe": info.get('forwardPE', None), # 抓取預估 PE，用來跟現在 PE 比較
             "peg": info.get('pegRatio', None),
             "inst": info.get('heldPercentInstitutions', 0),
             "short": info.get('shortPercentOfFloat', 0),
+            # ★★★ 新增：籌碼動態數據 ★★★
+            "shares_short": info.get('sharesShort', None),           # 本月空單股數
+            "shares_short_prev": info.get('sharesShortPriorMonth', None), # 上月空單股數
             "margin": info.get('grossMargins', 0),
             "eps": info.get('trailingEps', None),
-            # ★★★ 新增：抓取成長率數據 (讓 AI 知道是進步還退步) ★★★
-            "rev_growth": info.get('revenueGrowth', None),  # 營收成長率 (YoY)
-            "earn_growth": info.get('earningsGrowth', None) # 獲利成長率 (YoY)
+            "rev_growth": info.get('revenueGrowth', None),
+            "earn_growth": info.get('earningsGrowth', None)
         }
     except: return None
 
@@ -932,24 +934,21 @@ elif app_mode == "📊 策略分析工具 (單股)":
             # ★★★ 關鍵修復：按鈕定義一定要在這裡！ ★★★
             analyze_btn = st.button("🚀 啟動 AI 深度分析 (含新聞解讀)")
             
-            if analyze_btn:
+        if analyze_btn:
                 with st.spinner("🔍 AI 正在爬取 Google News 並進行大腦運算..."):
                     # 1. 自動抓新聞
                     news_items = get_news(cfg['symbol'])
-                    
-                    # 顯示抓到了什麼新聞
                     if news_items:
                         with st.expander(f"📰 AI 已讀取 {len(news_items)} 則最新新聞", expanded=True):
                             for n in news_items:
                                 st.caption(f"• {n}")
                     else:
                         st.warning("⚠️ 暫時抓不到 Google News，AI 將純以技術面分析。")
-                        news_items = [] # 確保變數存在，避免報錯
+                        news_items = []
 
-                    # 2. 計算策略指標 (讓 AI 看懂您的策略參數)
+                    # 2. 計算策略指標
                     strat_rsi_len = cfg.get('rsi_len', 14)
                     strat_val_txt = ""
-                    
                     if "RSI" in cfg['mode'] or cfg['mode'] == "FUSION":
                         real_rsi = ta.rsi(df['Close'], length=strat_rsi_len).iloc[-1]
                         strat_val_txt = f"Strategy_RSI({strat_rsi_len}):{real_rsi:.1f}"
@@ -963,37 +962,50 @@ elif app_mode == "📊 策略分析工具 (單股)":
                         strat_val_txt = f"MA_Gap:{dist:.2f}%"
 
                     base_rsi = ta.rsi(df['Close'], 14).iloc[-1]
-                    
-                    # 訊號翻譯機
                     sig_map = { 1: "🚀 買進訊號 (Buy)", -1: "📉 賣出訊號 (Sell)", 0: "💤 觀望/無訊號 (Wait)" }
                     human_sig = sig_map.get(int(current_sig), "未知")
 
-                    # 3. 財報數據打包 (含成長率)
+                    # ★★★ 3. 財報與籌碼動態打包 (Trends > Absolute) ★★★
                     fund_txt = "無財報數據"
                     if fund:
+                        # 計算空單變化率 (Short Interest Change)
+                        short_trend_str = "N/A"
+                        if fund.get('shares_short') and fund.get('shares_short_prev'):
+                            current_short = fund.get('shares_short')
+                            prev_short = fund.get('shares_short_prev')
+                            change = (current_short - prev_short) / prev_short
+                            if change > 0.05: short_trend_str = f"🔴 增加 {change*100:.1f}% (空軍集結)"
+                            elif change < -0.05: short_trend_str = f"🟢 減少 {abs(change)*100:.1f}% (空軍回補)"
+                            else: short_trend_str = f"⚪ 持平 ({change*100:.1f}%)"
+
+                        # 預估 PE 比較 (Expectation)
+                        pe_trend_str = "N/A"
+                        if fund.get('pe') and fund.get('fwd_pe'):
+                            if fund['fwd_pe'] < fund['pe']: pe_trend_str = f"↘️ 看好 (預估本益比 {fund['fwd_pe']:.1f} 低於當前)"
+                            else: pe_trend_str = f"↗️ 看壞 (預估本益比 {fund['fwd_pe']:.1f} 高於當前)"
+
                         rev_g = f"{fund.get('rev_growth', 0)*100:.1f}%" if fund.get('rev_growth') is not None else "N/A"
                         earn_g = f"{fund.get('earn_growth', 0)*100:.1f}%" if fund.get('earn_growth') is not None else "N/A"
                         
                         fund_txt = (
-                            f"PE(本益比):{fund.get('pe', 'N/A')} | "
-                            f"EPS:{fund.get('eps', 'N/A')} | "
-                            f"毛利率:{fund.get('margin', 0)*100:.1f}% | "
+                            f"PE評價趨勢:{pe_trend_str} | "  # 告訴 AI 未來展望
+                            f"空單籌碼變動(MoM):{short_trend_str} | " # 告訴 AI 空軍動向
+                            f"空單比例:{fund.get('short', 0)*100:.1f}% | "
                             f"營收成長(YoY):{rev_g} | "
                             f"獲利成長(YoY):{earn_g} | "
-                            f"法人持股:{fund.get('inst', 0)*100:.1f}% | "
-                            f"空單比例:{fund.get('short', 0)*100:.1f}%"
+                            f"毛利率:{fund.get('margin', 0)*100:.1f}%"
                         )
 
-                    # 4. 組合給 Gemini 的「全方位小抄」
+                    # 4. 組合全方位小抄
                     tech_txt = (
                         f"【策略關鍵指標】: {strat_val_txt}\n"
-                        f"【財報基本面】: {fund_txt}\n"
+                        f"【基本面與籌碼動態】: {fund_txt}\n"
                         f"【市場大環境 RSI(14)】: {base_rsi:.1f}\n"
                         f"【回測勝率】: {win_rate*100:.0f}%\n"
                         f"【當前訊號】: {human_sig}"
                     )
 
-                    # 5. 定義 Prompt 並呼叫 Gemini
+                    # 5. 呼叫 Gemini
                     def analyze_logic_gemini_full_v2(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
                         if not HAS_GEMINI: return "No Gemini", "⚠️", False
                         try:
@@ -1002,7 +1014,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
                             news_str = "\n".join([f"- {n}" for n in news]) if news else "無最新新聞"
                             
                             base_prompt = f"""
-                            你是一位華爾街資深操盤手。請根據以下「全方位數據」進行深度分析：
+                            你是一位華爾街資深操盤手。請根據以下「動態趨勢數據」進行深度分析：
                             
                             【目標標的】：{symbol}
                             【綜合數據面板】：
@@ -1015,30 +1027,21 @@ elif app_mode == "📊 策略分析工具 (單股)":
                             
                             【用戶補充筆記】：{user_input}
                             
-                            請給出分析報告 (需包含技術面、基本面、消息面)：
+                            請給出分析報告：
                             1. 🎯 核心觀點 (多/空/觀望)
-                            2. 📊 數據解讀 (請引用上述財報成長率或指標數據佐證)
-                            3. 📰 市場情緒 (基於新聞)
+                            2. 📊 籌碼與基本面解讀 (特別關注空單增減與預估PE的變化意義)
+                            3. 📰 市場情緒
                             4. 💡 操作建議
                             """
                             return model.generate_content(base_prompt).text, "🧠", True
                         except Exception as e: return str(e), "⚠️", False
 
-                    # 執行分析
                     analysis, icon, success = analyze_logic_gemini_full_v2(
-                        gemini_key, 
-                        cfg['symbol'], 
-                        news_items, 
-                        tech_txt, 
-                        k_pat, 
-                        gemini_model, 
-                        user_notes
+                        gemini_key, cfg['symbol'], news_items, tech_txt, k_pat, gemini_model, user_notes
                     )
                     
-                    if success:
-                        st.markdown(analysis)
-                    else:
-                        st.error(f"Gemini 連線失敗: {analysis}")
+                    if success: st.markdown(analysis)
+                    else: st.error(f"Gemini 連線失敗: {analysis}")
 
 # ------------------------------------------
 # Mode 3: 預測日記 (Ledger)
@@ -1064,6 +1067,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
