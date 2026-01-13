@@ -918,9 +918,14 @@ elif app_mode == "📊 策略分析工具 (單股)":
         else:
             st.warning("⚠️ 暫無財報數據 (API 忙碌中，請稍後再試)")
 
-# 1. 顯示策略邏輯文字 (這是錨點，請對齊這裡)
+        # 1. 顯示策略邏輯文字 (這是錨點，請對齊這裡)
         strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
+
+        # ==========================================
+        # ★★★ 修復點：先初始化變數，防止 NameError ★★★
+        # ==========================================
+        analyze_btn = False 
 
         # 2. Gemini 分析區塊 (完整防呆版)
         if ai_provider == "Gemini (User Defined)" and gemini_key:
@@ -935,108 +940,108 @@ elif app_mode == "📊 策略分析工具 (單股)":
             # ★★★ 定義按鈕 (注意：這行必須跟上面的 st.info 對齊) ★★★
             analyze_btn = st.button("🚀 啟動 AI 深度分析 (含新聞解讀)")
             
-            # ★★★ 檢查按鈕 (注意：這行必須跟上面的 button 對齊) ★★★
-            if analyze_btn:
-                with st.spinner("🔍 AI 正在爬取 Google News 並進行大腦運算..."):
-                    # A. 自動抓新聞
-                    news_items = get_news(cfg['symbol'])
+        # ★★★ 檢查按鈕 (現在移到外面也安全了) ★★★
+        if analyze_btn and ai_provider == "Gemini (User Defined)":
+            with st.spinner("🔍 AI 正在爬取 Google News 並進行大腦運算..."):
+                # A. 自動抓新聞
+                news_items = get_news(cfg['symbol'])
+                
+                if news_items:
+                    with st.expander(f"📰 AI 已讀取 {len(news_items)} 則最新新聞", expanded=True):
+                        for n in news_items:
+                            st.caption(f"• {n}")
+                else:
+                    st.warning("⚠️ 暫時抓不到 Google News，AI 將純以技術面分析。")
+                    news_items = []
+
+                # B. 計算策略指標
+                strat_rsi_len = cfg.get('rsi_len', 14)
+                strat_val_txt = ""
+                
+                if "RSI" in cfg['mode'] or cfg['mode'] == "FUSION":
+                    real_rsi = ta.rsi(df['Close'], length=strat_rsi_len).iloc[-1]
+                    strat_val_txt = f"Strategy_RSI({strat_rsi_len}):{real_rsi:.1f}"
+                elif "KD" in cfg['mode']:
+                    k_val = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3).iloc[-1, 0]
+                    strat_val_txt = f"KD_K(9,3):{k_val:.1f}"
+                elif cfg['mode'] == "MA_CROSS":
+                    ma_fast = ta.sma(df['Close'], cfg['fast_ma']).iloc[-1]
+                    ma_slow = ta.sma(df['Close'], cfg['slow_ma']).iloc[-1]
+                    dist = (ma_fast - ma_slow) / ma_slow * 100
+                    strat_val_txt = f"MA_Gap:{dist:.2f}%"
+
+                base_rsi = ta.rsi(df['Close'], 14).iloc[-1]
+                
+                sig_map = { 1: "🚀 買進訊號 (Buy)", -1: "📉 賣出訊號 (Sell)", 0: "💤 觀望/無訊號 (Wait)" }
+                human_sig = sig_map.get(int(current_sig), "未知")
+
+                # C. 財報數據打包 (含成長率)
+                fund_txt = "無財報數據"
+                if fund:
+                    # 籌碼動態
+                    short_trend_str = "N/A"
+                    if fund.get('shares_short') and fund.get('shares_short_prev'):
+                        change = (fund['shares_short'] - fund['shares_short_prev']) / fund['shares_short_prev']
+                        if change > 0.05: short_trend_str = f"🔴 增加 {change*100:.1f}% (空軍集結)"
+                        elif change < -0.05: short_trend_str = f"🟢 減少 {abs(change)*100:.1f}% (空軍回補)"
+                        else: short_trend_str = f"⚪ 持平 ({change*100:.1f}%)"
+
+                    # 預估 PE
+                    pe_trend_str = "N/A"
+                    if fund.get('pe') and fund.get('fwd_pe'):
+                        if fund['fwd_pe'] < fund['pe']: pe_trend_str = f"↘️ 看好 (預估PE {fund['fwd_pe']:.1f} < 當前)"
+                        else: pe_trend_str = f"↗️ 看壞 (預估PE {fund['fwd_pe']:.1f} > 當前)"
+
+                    rev_g = f"{fund.get('rev_growth', 0)*100:.1f}%" if fund.get('rev_growth') is not None else "N/A"
+                    earn_g = f"{fund.get('earn_growth', 0)*100:.1f}%" if fund.get('earn_growth') is not None else "N/A"
                     
-                    if news_items:
-                        with st.expander(f"📰 AI 已讀取 {len(news_items)} 則最新新聞", expanded=True):
-                            for n in news_items:
-                                st.caption(f"• {n}")
-                    else:
-                        st.warning("⚠️ 暫時抓不到 Google News，AI 將純以技術面分析。")
-                        news_items = []
-
-                    # B. 計算策略指標
-                    strat_rsi_len = cfg.get('rsi_len', 14)
-                    strat_val_txt = ""
-                    
-                    if "RSI" in cfg['mode'] or cfg['mode'] == "FUSION":
-                        real_rsi = ta.rsi(df['Close'], length=strat_rsi_len).iloc[-1]
-                        strat_val_txt = f"Strategy_RSI({strat_rsi_len}):{real_rsi:.1f}"
-                    elif "KD" in cfg['mode']:
-                        k_val = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3).iloc[-1, 0]
-                        strat_val_txt = f"KD_K(9,3):{k_val:.1f}"
-                    elif cfg['mode'] == "MA_CROSS":
-                        ma_fast = ta.sma(df['Close'], cfg['fast_ma']).iloc[-1]
-                        ma_slow = ta.sma(df['Close'], cfg['slow_ma']).iloc[-1]
-                        dist = (ma_fast - ma_slow) / ma_slow * 100
-                        strat_val_txt = f"MA_Gap:{dist:.2f}%"
-
-                    base_rsi = ta.rsi(df['Close'], 14).iloc[-1]
-                    
-                    sig_map = { 1: "🚀 買進訊號 (Buy)", -1: "📉 賣出訊號 (Sell)", 0: "💤 觀望/無訊號 (Wait)" }
-                    human_sig = sig_map.get(int(current_sig), "未知")
-
-                    # C. 財報數據打包 (含成長率)
-                    fund_txt = "無財報數據"
-                    if fund:
-                        # 籌碼動態
-                        short_trend_str = "N/A"
-                        if fund.get('shares_short') and fund.get('shares_short_prev'):
-                            change = (fund['shares_short'] - fund['shares_short_prev']) / fund['shares_short_prev']
-                            if change > 0.05: short_trend_str = f"🔴 增加 {change*100:.1f}% (空軍集結)"
-                            elif change < -0.05: short_trend_str = f"🟢 減少 {abs(change)*100:.1f}% (空軍回補)"
-                            else: short_trend_str = f"⚪ 持平 ({change*100:.1f}%)"
-
-                        # 預估 PE
-                        pe_trend_str = "N/A"
-                        if fund.get('pe') and fund.get('fwd_pe'):
-                            if fund['fwd_pe'] < fund['pe']: pe_trend_str = f"↘️ 看好 (預估PE {fund['fwd_pe']:.1f} < 當前)"
-                            else: pe_trend_str = f"↗️ 看壞 (預估PE {fund['fwd_pe']:.1f} > 當前)"
-
-                        rev_g = f"{fund.get('rev_growth', 0)*100:.1f}%" if fund.get('rev_growth') is not None else "N/A"
-                        earn_g = f"{fund.get('earn_growth', 0)*100:.1f}%" if fund.get('earn_growth') is not None else "N/A"
-                        
-                        fund_txt = (
-                            f"PE評價趨勢:{pe_trend_str} | "
-                            f"空單變動(MoM):{short_trend_str} | "
-                            f"空單比例:{fund.get('short', 0)*100:.1f}% | "
-                            f"營收成長(YoY):{rev_g} | "
-                            f"獲利成長(YoY):{earn_g} | "
-                            f"毛利率:{fund.get('margin', 0)*100:.1f}%"
-                        )
-
-                    # D. 組合小抄
-                    tech_txt = (
-                        f"【策略關鍵指標】: {strat_val_txt}\n"
-                        f"【籌碼與基本面】: {fund_txt}\n"
-                        f"【市場大環境 RSI(14)】: {base_rsi:.1f}\n"
-                        f"【回測勝率】: {win_rate*100:.0f}%\n"
-                        f"【當前訊號】: {human_sig}"
+                    fund_txt = (
+                        f"PE評價趨勢:{pe_trend_str} | "
+                        f"空單變動(MoM):{short_trend_str} | "
+                        f"空單比例:{fund.get('short', 0)*100:.1f}% | "
+                        f"營收成長(YoY):{rev_g} | "
+                        f"獲利成長(YoY):{earn_g} | "
+                        f"毛利率:{fund.get('margin', 0)*100:.1f}%"
                     )
 
-                    # E. 定義與呼叫 (內嵌函數以防變數汙染)
-                    def analyze_v2(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
-                        if not HAS_GEMINI: return "No Gemini", "⚠️", False
-                        try:
-                            genai.configure(api_key=api_key)
-                            model = genai.GenerativeModel(model_name)
-                            news_str = "\n".join([f"- {n}" for n in news]) if news else "無最新新聞"
-                            base_prompt = f"""
-                            你是一位華爾街資深操盤手。請根據以下「動態趨勢數據」進行深度分析：
-                            【目標標的】：{symbol}
-                            【綜合數據面板】：
-                            {tech_txt}
-                            【K線型態】：{k_pattern}
-                            【最新新聞焦點】：
-                            {news_str}
-                            【用戶補充筆記】：{user_input}
-                            請給出分析報告：
-                            1. 🎯 核心觀點 (多/空/觀望)
-                            2. 📊 籌碼與基本面解讀 (特別關注空單增減與預估PE的變化意義)
-                            3. 📰 市場情緒
-                            4. 💡 操作建議
-                            """
-                            return model.generate_content(base_prompt).text, "🧠", True
-                        except Exception as e: return str(e), "⚠️", False
+                # D. 組合小抄
+                tech_txt = (
+                    f"【策略關鍵指標】: {strat_val_txt}\n"
+                    f"【籌碼與基本面】: {fund_txt}\n"
+                    f"【市場大環境 RSI(14)】: {base_rsi:.1f}\n"
+                    f"【回測勝率】: {win_rate*100:.0f}%\n"
+                    f"【當前訊號】: {human_sig}"
+                )
 
-                    analysis, icon, success = analyze_v2(gemini_key, cfg['symbol'], news_items, tech_txt, k_pat, gemini_model, user_notes)
-                    
-                    if success: st.markdown(analysis)
-                    else: st.error(f"Gemini 連線失敗: {analysis}")
+                # E. 定義與呼叫 (內嵌函數以防變數汙染)
+                def analyze_v2(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
+                    if not HAS_GEMINI: return "No Gemini", "⚠️", False
+                    try:
+                        genai.configure(api_key=api_key)
+                        model = genai.GenerativeModel(model_name)
+                        news_str = "\n".join([f"- {n}" for n in news]) if news else "無最新新聞"
+                        base_prompt = f"""
+                        你是一位華爾街資深操盤手。請根據以下「動態趨勢數據」進行深度分析：
+                        【目標標的】：{symbol}
+                        【綜合數據面板】：
+                        {tech_txt}
+                        【K線型態】：{k_pattern}
+                        【最新新聞焦點】：
+                        {news_str}
+                        【用戶補充筆記】：{user_input}
+                        請給出分析報告：
+                        1. 🎯 核心觀點 (多/空/觀望)
+                        2. 📊 籌碼與基本面解讀 (特別關注空單增減與預估PE的變化意義)
+                        3. 📰 市場情緒
+                        4. 💡 操作建議
+                        """
+                        return model.generate_content(base_prompt).text, "🧠", True
+                    except Exception as e: return str(e), "⚠️", False
+
+                analysis, icon, success = analyze_v2(gemini_key, cfg['symbol'], news_items, tech_txt, k_pat, gemini_model, user_notes)
+                
+                if success: st.markdown(analysis)
+                else: st.error(f"Gemini 連線失敗: {analysis}")
 
 # ------------------------------------------
 # Mode 3: 預測日記 (Ledger)
@@ -1062,6 +1067,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
