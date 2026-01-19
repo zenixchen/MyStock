@@ -536,7 +536,24 @@ def quick_backtest(df, config, fee=0.0005):
             lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
             sigs[(close < lower) & (rsi < config['entry_rsi'])] = 1
             sigs[close > upper] = -1
-        elif "RSI" in mode:
+        elif mode == "RSI_RSI":
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            
+            # 檢查是否有設定 ma_trend，且值大於 0
+            if config.get('ma_trend', 0) > 0:
+                # 計算趨勢線 (這裡用 EMA，跟原本旗艦版邏輯一致，您也可以改成 ta.sma)
+                ma_trend = ta.ema(close, length=config['ma_trend'])
+                
+                # 買入條件：RSI 低於買點 且 收盤價 大於 趨勢線
+                sigs[(rsi < config['entry_rsi']) & (close > ma_trend)] = 1
+            else:
+                # 如果沒設定 MA，就只看 RSI
+                sigs[rsi < config['entry_rsi']] = 1
+                
+            # 賣出條件不變
+            sigs[rsi > config['exit_rsi']] = -1
+
+        elif "RSI" in mode: # 處理剩下的 (如純 RSI 策略)
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
         elif "KD" in mode:
@@ -1029,4 +1046,5 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
