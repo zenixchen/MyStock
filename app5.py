@@ -58,7 +58,7 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v22.3)",
+    page_title="2026 量化戰情室 (Ultimate v22.4)",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -847,7 +847,13 @@ elif app_mode == "📊 策略分析工具 (單股)":
         "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
     }
     
-    target_key = st.selectbox("選擇標的", list(strategies.keys()), format_func=lambda x: strategies[x]['name'])
+    # ★★★ 優化重點：兩段式選擇 (分類 -> 股票) ★★★
+    all_categories = sorted(list(set(s['category'] for s in strategies.values())))
+    selected_cat = st.selectbox("📂 步驟一：選擇板塊分類", all_categories)
+    
+    cat_strategies = {k: v for k, v in strategies.items() if v['category'] == selected_cat}
+    target_key = st.selectbox("📍 步驟二：選擇具體標的", list(cat_strategies.keys()), format_func=lambda x: cat_strategies[x]['name'])
+    
     cfg = strategies[target_key]
     
     df = get_safe_data(cfg['symbol'])
