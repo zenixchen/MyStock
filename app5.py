@@ -58,8 +58,8 @@ except: HAS_GEMINI = False
 # 2. 頁面設定
 # ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Ultimate v22.1)",
-    page_icon="🔥",
+    page_title="2026 量化戰情室 (Ultimate v22.3)",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -342,6 +342,8 @@ def scan_tech_stock(symbol, model, scaler, features):
 # ==========================================
 # 4. 傳統策略分析 (功能模組)
 # ==========================================
+# ★★★ 優化：加入緩存機制，提升速度並防鎖 IP ★★★
+@st.cache_data(ttl=3600)
 def get_safe_data(ticker):
     try:
         # 強制單層索引並關閉 auto_adjust
@@ -363,13 +365,12 @@ def get_fundamentals(symbol):
             
         return {
             "pe": info.get('trailingPE', None),
-            "fwd_pe": info.get('forwardPE', None), # 抓取預估 PE，用來跟現在 PE 比較
+            "fwd_pe": info.get('forwardPE', None),
             "peg": info.get('pegRatio', None),
             "inst": info.get('heldPercentInstitutions', 0),
             "short": info.get('shortPercentOfFloat', 0),
-            # ★★★ 新增：籌碼動態數據 ★★★
-            "shares_short": info.get('sharesShort', None),           # 本月空單股數
-            "shares_short_prev": info.get('sharesShortPriorMonth', None), # 上月空單股數
+            "shares_short": info.get('sharesShort', None),
+            "shares_short_prev": info.get('sharesShortPriorMonth', None),
             "margin": info.get('grossMargins', 0),
             "eps": info.get('trailingEps', None),
             "rev_growth": info.get('revenueGrowth', None),
@@ -379,31 +380,34 @@ def get_fundamentals(symbol):
 
 def clean_text_for_llm(text): return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', str(text))
 
-# ★★★ 新增：Google News RSS 爬蟲 (穩定版) ★★★
+# ★★★ 優化：新聞雙軌制 (RSS + YFinance) ★★★
 def get_news(symbol):
+    news_items = []
     try:
-        # 使用 Google News RSS 搜尋
-        # 注意：對於台股 (如 2330.TW)，搜尋 "TSMC" 或 "2330.TW"
+        # 1. 優先嘗試 Google News RSS
         search_query = symbol
         if ".TW" in symbol: search_query = symbol.replace(".TW", " TW stock")
         else: search_query = f"{symbol} stock news"
         
         url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
+        resp = requests.get(url, timeout=4) # 縮短 timeout
         
-        resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
             root = ET.fromstring(resp.content)
-            # 解析 XML，抓取前 5 個 item 的 title
-            news_items = []
             for item in root.findall('.//item')[:5]:
                 title = item.find('title').text
-                # 簡單過濾掉太短的標題
-                if len(title) > 10:
-                    news_items.append(clean_text_for_llm(title))
-            return news_items
-        return []
-    except Exception as e:
-        return [f"News Error: {str(e)}"]
+                news_items.append(clean_text_for_llm(title))
+    except: pass
+
+    # 2. 如果 RSS 失敗或空的，使用 yfinance 備援
+    if not news_items:
+        try:
+            t = yf.Ticker(symbol)
+            for n in t.news[:3]:
+                news_items.append(n['title'])
+        except: pass
+        
+    return news_items if news_items else ["暫無新聞數據"]
 
 def calculate_kelly_position(df, capital, win_rate, risk_per_trade, current_signal):
     try:
@@ -436,75 +440,57 @@ def calculate_kelly_position(df, capital, win_rate, risk_per_trade, current_sign
 
 def identify_k_pattern(df):
     try:
-        if len(df) < 3: return "N/A" # 至少需要 3 天數據
+        if len(df) < 3: return "N/A"
         
-        # 提取最近 3 天的數據 (idx 0=前天, 1=昨天, 2=今天)
-        # 為了方便計算，我們取最後 3 筆
         last_3 = df.iloc[-3:].copy()
         c = last_3['Close'].values
         o = last_3['Open'].values
         h = last_3['High'].values
         l = last_3['Low'].values
         
-        # 定義變數 (2 = 今天, 1 = 昨天, 0 = 前天)
         c2, o2, h2, l2 = c[2], o[2], h[2], l[2]
         c1, o1, h1, l1 = c[1], o[1], h[1], l[1]
         c0, o0, h0, l0 = c[0], o[0], h[0], l[0]
         
-        # 計算實體與影線
         body2 = abs(c2 - o2)
         upper2 = h2 - max(c2, o2)
         lower2 = min(c2, o2) - l2
-        
         body1 = abs(c1 - o1)
         
-        # --- 判斷邏輯開始 ---
-        
-        # 1. 【晨星 (Morning Star)】: 跌 -> 小十字 -> 漲 (強力底部訊號)
-        # 前天大跌 + 昨天小實體(跳空尤佳) + 今天大漲(吃掉前天一半以上)
+        # --- 判斷邏輯 ---
         if (c0 < o0) and (abs(c0-o0) > body1 * 2) and \
            (c2 > o2) and (c2 > (o0 + c0)/2) and \
            (c1 < c0 and c1 < c2): 
             return "🌅 晨星轉折 (多)"
 
-        # 2. 【暮星 (Evening Star)】: 漲 -> 小十字 -> 跌 (強力頭部訊號)
-        # 前天大漲 + 昨天小實體(跳空尤佳) + 今天大跌(吃掉前天一半以上)
         if (c0 > o0) and (abs(c0-o0) > body1 * 2) and \
            (c2 < o2) and (c2 < (o0 + c0)/2) and \
            (c1 > c0 and c1 > c2):
             return "🌃 暮星轉折 (空)"
 
-        # 3. 【紅三兵 (Three White Soldiers)】: 連三紅 (強勢多頭)
         if (c0 > o0) and (c1 > o1) and (c2 > o2) and \
            (c1 > c0) and (c2 > c1) and \
-           (body2 > 0) and (lower2 < body2 * 0.5): # 今天不能有太長下影線
+           (body2 > 0) and (lower2 < body2 * 0.5):
             return "💂‍♂️ 紅三兵 (強多)"
 
-        # 4. 【黑三鴉 (Three Black Crows)】: 連三黑 (強勢空頭)
         if (c0 < o0) and (c1 < o1) and (c2 < o2) and \
            (c1 < c0) and (c2 < c1):
             return "🦅 黑三鴉 (強空)"
 
-        # 5. 【吞噬 (Engulfing)】: 2根 (原有邏輯優化)
         if (c2 > o2) and (c1 < o1) and (c2 > o1) and (o2 < c1):
             return "🔥 多頭吞噬"
         if (c2 < o2) and (c1 > o1) and (c2 < o1) and (o2 > c1):
             return "💀 空頭吞噬"
 
-        # 6. 【母子線 (Harami)】: 昨天大根包住今天小根 (變盤前兆)
         if (body1 > body2 * 3) and (max(c2, o2) < max(c1, o1)) and (min(c2, o2) > min(c1, o1)):
             return "🤰 母子變盤線"
 
-        # 7. 【單K型態】 (僅看今天)
-        # 錘頭 (Hammer): 實體小，下影線長 (跌勢末端看漲)
         if (lower2 >= body2 * 2) and (upper2 <= body2 * 0.5):
             return "🔨 錘頭/吊人 (測底)"
         
-        # 流星 (Shooting Star): 實體小，上影線長 (漲勢末端看跌)
         if (upper2 >= body2 * 2) and (lower2 <= body2 * 0.5):
             return "🌠 流星/倒錘 (測頂)"
 
-        # 十字線 (Doji): 開收盤幾乎一樣 (多空僵持)
         if body2 <= (h2 - l2) * 0.1:
             return "✝️ 十字線 (觀望)"
 
@@ -515,6 +501,9 @@ def quick_backtest(df, config, fee=0.0005):
     try:
         close = df['Close']; sigs = pd.Series(0, index=df.index)
         mode = config['mode']
+        
+        # ★★★ 新增：讀取是否啟用濾網 (預設為 True，即開啟) ★★★
+        use_filter = config.get('ma_filter', True)
         
         if mode == "RSI_MA":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
@@ -528,7 +517,10 @@ def quick_backtest(df, config, fee=0.0005):
         elif mode == "FUSION":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             ma = ta.ema(close, length=config.get('ma_trend', 200))
-            sigs[(close > ma) & (rsi < config['entry_rsi'])] = 1
+            if use_filter:
+                sigs[(close > ma) & (rsi < config['entry_rsi'])] = 1
+            else:
+                sigs[rsi < config['entry_rsi']] = 1
             sigs[rsi > config['exit_rsi']] = -1
         elif mode == "BOLL_RSI":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
@@ -536,24 +528,21 @@ def quick_backtest(df, config, fee=0.0005):
             lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
             sigs[(close < lower) & (rsi < config['entry_rsi'])] = 1
             sigs[close > upper] = -1
+        
+        # ★★★ 優化重點：RSI_RSI 加入趨勢濾網開關 ★★★
         elif mode == "RSI_RSI":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
-            
-            # 檢查是否有設定 ma_trend，且值大於 0
-            if config.get('ma_trend', 0) > 0:
-                # 計算趨勢線 (這裡用 EMA，跟原本旗艦版邏輯一致，您也可以改成 ta.sma)
+            # 只有當 1.有設定MA 且 2.濾網開啟 時，才檢查股價是否站上MA
+            if config.get('ma_trend', 0) > 0 and use_filter:
                 ma_trend = ta.ema(close, length=config['ma_trend'])
-                
-                # 買入條件：RSI 低於買點 且 收盤價 大於 趨勢線
                 sigs[(rsi < config['entry_rsi']) & (close > ma_trend)] = 1
             else:
-                # 如果沒設定 MA，就只看 RSI
+                # 沒設定 MA 或 「強制關閉濾網」 -> 只看 RSI 夠不夠低
                 sigs[rsi < config['entry_rsi']] = 1
-                
-            # 賣出條件不變
+            
             sigs[rsi > config['exit_rsi']] = -1
 
-        elif "RSI" in mode: # 處理剩下的 (如純 RSI 策略)
+        elif "RSI" in mode:
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
         elif "KD" in mode:
@@ -595,10 +584,13 @@ def plot_chart(df, config, sigs):
         k = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
         fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 0], name="K", line=dict(color='yellow')), row=2, col=1)
         fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", row=2, col=1)
+    
+    # ★★★ 優化：CMF 使用自訂週期 ★★★
     target_len = config.get('cmf_len', 20)
     cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=target_len)
+    
     colors = ['#089981' if v >= 0 else '#f23645' for v in cmf]
-    fig.add_trace(go.Bar(x=df.index, y=cmf, name='CMF', marker_color=colors, opacity=0.5), row=3, col=1, secondary_y=False)
+    fig.add_trace(go.Bar(x=df.index, y=cmf, name=f'CMF ({target_len})', marker_color=colors, opacity=0.5), row=3, col=1, secondary_y=False)
     obv = ta.obv(df['Close'], df['Volume'])
     fig.add_trace(go.Scatter(x=df.index, y=obv, name='OBV', line=dict(color='cyan', width=1)), row=3, col=1, secondary_y=True)
     if sigs is not None:
@@ -611,6 +603,9 @@ def plot_chart(df, config, sigs):
 def get_strategy_desc(cfg, df=None):
     mode = cfg['mode']
     desc = mode; current_val = ""
+    # ★★★ 新增：顯示濾網狀態 ★★★
+    use_filter = cfg.get('ma_filter', True) 
+
     if df is not None:
         try:
             close = df['Close']
@@ -628,7 +623,12 @@ def get_strategy_desc(cfg, df=None):
                 lower = bb.iloc[-1, 0]
                 current_val += f" | 🎯 下軌: {lower:.1f} (現價: {close.iloc[-1]:.1f})"
         except: pass
-    if mode == "RSI_RSI": desc = f"RSI 區間 (買 < {cfg['entry_rsi']} / 賣 > {cfg['exit_rsi']})"
+    
+    if mode == "RSI_RSI": 
+        desc = f"RSI 區間 (買 < {cfg['entry_rsi']} / 賣 > {cfg['exit_rsi']})"
+        if cfg.get('ma_trend', 0) > 0:
+            if use_filter: desc += f" (🛡️ 嚴格模式: 需站上 MA{cfg['ma_trend']})"
+            else: desc += f" (🔓 寬鬆模式: 無視 MA{cfg['ma_trend']})"
     elif mode == "RSI_MA": desc = f"RSI + 均線 (RSI < {cfg['entry_rsi']} 買 / 破 MA{cfg['exit_ma']} 賣)"
     elif mode == "KD": desc = f"KD 隨機指標 (K < {cfg['entry_k']} 買 / K > {cfg['exit_k']} 賣)"
     elif mode == "MA_CROSS": desc = f"均線交叉 (MA{cfg['fast_ma']} 穿過 MA{cfg['slow_ma']})"
@@ -704,7 +704,6 @@ if app_mode == "🤖 AI 深度學習實驗室":
                         st.success("✅ 已記錄！")
                     else: st.warning("⚠️ 今天已存過")
             else: 
-                # ★★★ 修復：顯示真實錯誤原因 ★★★
                 st.error(f"系統錯誤: {price}") 
 
     with tab2:
@@ -780,39 +779,69 @@ elif app_mode == "📊 策略分析工具 (單股)":
     st.header("📊 單股策略分析")
     
     strategies = {
+        # === 📊 指數與外匯 ===
         "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
-        "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200,"cmf_len": 30 },
-        "QLD": { "symbol": "QLD", "name": "QLD (那斯達克 2倍做多)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200,"cmf_len": 25 },
-        "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (那斯達克 3倍做多)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200,"cmf_len": 40 },
-        "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 狙擊)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100,"cmf_len": 25 },
-        "SOXL_F": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 快攻)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 10, "exit_k": 75,"cmf_len": 25 },
-        "EDZ": { "symbol": "EDZ", "name": "EDZ (新興市場 3倍做空 - 避險)", "category": "📊 指數/外匯", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20,"cmf_len": 10 },
-        "BTC_W": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 波段)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200,"cmf_len": 40 },
-        "BTC_F": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 閃電)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100,"cmf_len": 40 },
-        "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5,"cmf_len": 30 },
-        "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60,"cmf_len": 26 },
-        "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200,"cmf_len": 40 },
-        "AMZN": { "symbol": "AMZN", "name": "AMZN (亞馬遜)", "category": "💻 軟體/巨頭", "mode": "KD", "entry_k": 20, "exit_k": 85,"cmf_len": 40 },
-        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100,"cmf_len": 25 },
-        "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100,"cmf_len": 30 },
+        "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200, "cmf_len": 30 },
+        "QLD": { "symbol": "QLD", "name": "QLD (那斯達克 2倍做多)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200, "cmf_len": 25 },
+        "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (那斯達克 3倍做多)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200, "cmf_len": 40 },
+        "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 狙擊)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100, "cmf_len": 25 },
+        "SOXL_F": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 快攻)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 10, "exit_k": 75, "cmf_len": 25 },
+        "EDZ": { "symbol": "EDZ", "name": "EDZ (新興市場 3倍做空 - 避險)", "category": "📊 指數/外匯", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20, "cmf_len": 10 },
+        
+        # === 🤖 AI 硬體/晶片 ===
+        "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5, "cmf_len": 30 },
+        "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60, "cmf_len": 26 },
+        "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200, "cmf_len": 40 },
+        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100, "ma_filter": False, "cmf_len": 25 }, # ★★★ 寬鬆模式範例 ★★★
+        "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100, "cmf_len": 30 },
         "GLW": { "symbol": "GLW", "name": "GLW (康寧 - 玻璃基板/光通訊)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
         "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖 - CoWoS 檢測設備)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
-        "META": { "symbol": "META", "name": "META (臉書 - 廣告與元宇宙)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
-        "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (谷歌 - 搜尋與 Gemini)", "category": "💻 軟體/巨頭", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
-        "TSLA": { "symbol": "TSLA", "name": "TSLA (特斯拉)", "category": "💻 軟體/巨頭", "mode": "KD", "entry_k": 20, "exit_k": 80,"cmf_len": 10 },
-        "AAPL": { "symbol": "AAPL", "name": "AAPL (蘋果)", "category": "💻 軟體/巨頭", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 20, "rsi_len": 14, "ma_trend": 200 },
-        "MSFT": { "symbol": "MSFT", "name": "MSFT (微軟)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14, "ma_trend": 200 },
         "AMD": { "symbol": "AMD", "name": "AMD (超微)", "category": "🤖 AI 硬體/晶片", "mode": "KD", "entry_k": 20, "exit_k": 80 },
-        "PLTR": { "symbol": "PLTR", "name": "PLTR (Palantir)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 35, "exit_rsi": 85, "rsi_len": 14, "ma_trend": 50 },
-        "ETN": { "symbol": "ETN", "name": "ETN (伊頓 - 電網與電力管理)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
-        "VRT": { "symbol": "VRT", "name": "VRT (維諦 - AI 伺服器液冷)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
-        "OKLO": { "symbol": "OKLO", "name": "OKLO (核能 - 微型反應堆)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 50, "exit_rsi": 95, "ma_trend": 0 },
-        "SMR": { "symbol": "SMR", "name": "SMR (NuScale - 模組化核能)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 45, "exit_rsi": 90, "ma_trend": 0,"cmf_len": 14 },
-        "KO": { "symbol": "KO", "name": "KO (可口可樂 - 消費必需品)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0,"cmf_len": 20 },
-        "JNJ": { "symbol": "JNJ", "name": "JNJ (嬌生 - 醫療與製藥)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200,"cmf_len": 20 },
-        "PG": { "symbol": "PG", "name": "PG (寶僑 - 日用品龍頭)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0,"cmf_len": 30 },
-        "BA": { "symbol": "BA", "name": "BA (波音 - 航太製造)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 15, "exit_rsi": 60, "ma_trend": 0,"cmf_len": 25 },
+        "MU": { "symbol": "MU", "name": "MU (美光 - 記憶體)", "category": "🤖 AI 硬體/晶片", "mode": "KD", "entry_k": 20, "exit_k": 80, "cmf_len": 20 },
+        "SMCI": { "symbol": "SMCI", "name": "SMCI (美超微 - 伺服器妖股)", "category": "🤖 AI 硬體/晶片", "mode": "BOLL_RSI", "entry_rsi": 15, "rsi_len": 4, "ma_trend": 20, "cmf_len": 10 },
+        "ARM": { "symbol": "ARM", "name": "ARM (架構矽智財)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_MA", "entry_rsi": 35, "exit_ma": 20, "rsi_len": 14, "ma_trend": 50, "cmf_len": 20 },
+
+        # === 💻 軟體/巨頭 ===
+        "MSFT": { "symbol": "MSFT", "name": "MSFT (微軟)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14, "ma_trend": 200 },
+        "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (谷歌)", "category": "💻 軟體/巨頭", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+        "META": { "symbol": "META", "name": "META (臉書)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
+        "AMZN": { "symbol": "AMZN", "name": "AMZN (亞馬遜)", "category": "💻 軟體/巨頭", "mode": "KD", "entry_k": 20, "exit_k": 85, "cmf_len": 40 },
+        "TSLA": { "symbol": "TSLA", "name": "TSLA (特斯拉)", "category": "💻 軟體/巨頭", "mode": "KD", "entry_k": 20, "exit_k": 80, "cmf_len": 10 },
+        "AAPL": { "symbol": "AAPL", "name": "AAPL (蘋果)", "category": "💻 軟體/巨頭", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 20, "rsi_len": 14, "ma_trend": 200 },
+        "PLTR": { "symbol": "PLTR", "name": "PLTR (Palantir - AI國防)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 35, "exit_rsi": 85, "rsi_len": 14, "ma_trend": 50 },
+        "CRWD": { "symbol": "CRWD", "name": "CRWD (CrowdStrike - 資安)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 35, "exit_rsi": 90, "rsi_len": 14, "ma_trend": 100, "cmf_len": 20 },
+        "PANW": { "symbol": "PANW", "name": "PANW (Palo Alto - 資安)", "category": "💻 軟體/巨頭", "mode": "KD", "entry_k": 20, "exit_k": 80, "cmf_len": 20 },
+
+        # === 💊 生技醫療 (減肥藥) ===
+        "LLY": { "symbol": "LLY", "name": "LLY (禮來 - 減肥藥王)", "category": "💊 生技醫療", "mode": "FUSION", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 14, "ma_trend": 50 },
+        "NVO": { "symbol": "NVO", "name": "NVO (諾和諾德 - 減肥藥)", "category": "💊 生技醫療", "mode": "MA_CROSS", "fast_ma": 10, "slow_ma": 50 },
+
+        # === 🪙 數位資產 (比特幣概念) ===
+        "BTC_W": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 波段)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200, "cmf_len": 40 },
+        "BTC_F": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 閃電)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100, "cmf_len": 40 },
+        "MSTR": { "symbol": "MSTR", "name": "MSTR (微策略 - BTC槓桿)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 35, "exit_rsi": 85, "rsi_len": 14, "ma_trend": 20, "cmf_len": 10 },
+        "COIN": { "symbol": "COIN", "name": "COIN (Coinbase)", "category": "🪙 數位資產", "mode": "FUSION", "entry_rsi": 30, "exit_rsi": 90, "rsi_len": 14, "ma_trend": 100 },
+
+        # === ⚡ 電力與能源 ===
+        "ETN": { "symbol": "ETN", "name": "ETN (伊頓 - 電網)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
+        "VRT": { "symbol": "VRT", "name": "VRT (維諦 - 液冷)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
+        "OKLO": { "symbol": "OKLO", "name": "OKLO (微型核電)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 50, "exit_rsi": 95, "ma_trend": 0 },
+        "SMR": { "symbol": "SMR", "name": "SMR (NuScale - 核能)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 45, "exit_rsi": 90, "ma_trend": 0, "cmf_len": 14 },
+
+        # === 🇹🇼 台股 AI 權值 ===
         "CHT": { "symbol": "2412.TW", "name": "中華電", "category": "🇹🇼 台股", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70 },
+        "HONHAI": { "symbol": "2317.TW", "name": "鴻海 (AI 伺服器代工)", "category": "🇹🇼 台股", "mode": "KD", "entry_k": 20, "exit_k": 80 },
+        "QUANTA": { "symbol": "2382.TW", "name": "廣達 (AI 伺服器龍頭)", "category": "🇹🇼 台股", "mode": "RSI_MA", "entry_rsi": 40, "exit_ma": 20, "rsi_len": 14, "ma_trend": 60 },
+        "MEDIATEK": { "symbol": "2454.TW", "name": "聯發科 (手機晶片)", "category": "🇹🇼 台股", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 80, "rsi_len": 14, "ma_trend": 0 },
+
+        # === 🛡️ 防禦/傳產/原物料 ===
+        "KO": { "symbol": "KO", "name": "KO (可口可樂)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0, "cmf_len": 20 },
+        "JNJ": { "symbol": "JNJ", "name": "JNJ (嬌生)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200, "cmf_len": 20 },
+        "PG": { "symbol": "PG", "name": "PG (寶僑)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0, "cmf_len": 30 },
+        "BA": { "symbol": "BA", "name": "BA (波音)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 15, "exit_rsi": 60, "ma_trend": 0, "cmf_len": 25 },
+        "JPM": { "symbol": "JPM", "name": "JPM (摩根大通)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 80, "rsi_len": 14, "ma_trend": 200 },
+        "COST": { "symbol": "COST", "name": "COST (好市多)", "category": "🛡️ 防禦/傳產", "mode": "MA_CROSS", "fast_ma": 20, "slow_ma": 60 },
+        
         "GC": { "symbol": "GC=F", "name": "Gold (黃金期貨)", "category": "⛏️ 原物料", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14 },
         "CL": { "symbol": "CL=F", "name": "Crude Oil (原油期貨)", "category": "⛏️ 原物料", "mode": "KD", "entry_k": 20, "exit_k": 80 },
         "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
@@ -1046,5 +1075,3 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
-
-
