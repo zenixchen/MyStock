@@ -650,29 +650,56 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 else:
                     st.error("模型載入失敗")
 
-            # --- 綜合建議 (共振判斷) ---
+            # --- 綜合建議 (主從架構優化版) ---
             st.subheader("🤖 AI 總結")
             
+            # 防呆：確保數值存在
             if p_long is not None and p_short is not None:
-                if p_long > 0.5 and p_short > 0.5:
-                    st.success("🔥🔥 強力買進訊號 (長短共振，趨勢與短線皆看好！)")
-                    final_dir = "Bull_Strong"
-                    final_conf = (p_long + p_short) / 2
-                elif p_long < 0.5 and p_short < 0.5:
-                    st.error("❄️❄️ 強力賣出訊號 (長短共振，建議空手)")
-                    final_dir = "Bear_Strong"
-                    final_conf = (1-p_long + 1-p_short) / 2
-                elif p_long > 0.6 and p_short < 0.4:
-                    st.warning("⚠️ 拉回找買點 (長多短空：趨勢向上但短線修正，這通常是好買點)")
-                    final_dir = "Dip_Buy"
-                    final_conf = p_long
+                
+                # ★★★ 核心邏輯：T+5 (p_long) 權重 80%，T+3 (p_short) 權重 20% ★★★
+                
+                # 情況 1: 主帥 (T+5) 看漲
+                if p_long > 0.6: 
+                    if p_short > 0.5:
+                        st.success("🔥🔥 強力進攻 (主升段確認！T+5趨勢向上 + T+3短線點火)")
+                        final_dir = "Bull_Strong"
+                        final_conf = 0.9  # 信心爆棚
+                    else:
+                        st.info("📈 逢低佈局 (趨勢向上，但短線有雜訊。建議分批買進，不要追高)")
+                        final_dir = "Bull_Dip"
+                        final_conf = 0.7
+                
+                # 情況 2: 主帥 (T+5) 看跌/震盪
+                elif p_long < 0.4:
+                    if p_short > 0.6:
+                        st.warning("⚠️ 短線反彈逃命波 (T+5看空，T+3看反彈。建議趁反彈減碼)")
+                        final_dir = "Bear_Bounce"
+                        final_conf = 0.6
+                    else:
+                        st.error("❄️❄️ 全面撤退 (長短線共振看空，現金為王)")
+                        final_dir = "Bear_Strong"
+                        final_conf = 0.9
+                
+                # 情況 3: 主帥看不懂 (盤整)
                 else:
-                    st.info("👀 訊號分歧，建議觀望 (模型看法不一)")
-                    final_dir = "Neutral"
-                    final_conf = 0.5
+                    st.write("💤 趨勢不明，依照短線 T+3 輕倉操作")
+                    if p_short > 0.6:
+                        st.success("⚡ 短線嘗試做多 (快進快出)")
+                        final_dir = "Neutral_Bull"
+                        final_conf = 0.55
+                    else:
+                        st.warning("💤 觀望為主")
+                        final_dir = "Neutral"
+                        final_conf = 0.5
 
+                # 顯示信心分數 (加權計算)
+                # T+5 佔 70%, T+3 佔 30%
+                weighted_conf = (p_long * 0.7) + (p_short * 0.3)
+                st.caption(f"綜合信心指數: {weighted_conf*100:.1f}% (T+5權重70% / T+3權重30%)")
+
+                # 存檔按鈕
                 if st.button("📸 記錄綜合預測", key="save_tsm_dual"):
-                    if save_prediction("TSM", final_dir, final_conf, price):
+                    if save_prediction("TSM", final_dir, weighted_conf, price):
                         st.success("✅ 已記錄！")
                     else: st.warning("⚠️ 今天已存過")
 
