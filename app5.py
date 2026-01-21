@@ -145,75 +145,88 @@ def verify_ledger():
         return None
 
 # ==========================================
-# ★★★ 3. AI 模型核心 (5年穩健版) ★★★
+# ★★★ 新增：TSM 短線極速預測 (T+3 / 五大因子) ★★★
 # ==========================================
-
-# --- A. TSM (5年數據) ---
 @st.cache_resource(ttl=3600)
-def get_tsm_swing_prediction():
+def get_tsm_short_prediction():
     if not HAS_TENSORFLOW: return None, None, "TF缺"
     try:
-        tickers = { 'Main': 'TSM', 'Night': "EWT", 'Rate': "^TNX", 'AI': 'NVDA' }
-        data = yf.download(list(tickers.values()), period="5y", interval="1d", progress=False)
+        # 定義五大護法 (新版因子)
+        tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
         
+        # 下載數據
+        data = yf.download(tickers, period="2y", interval="1d", progress=False, auto_adjust=False)
+        
+        # 處理格式
         if isinstance(data.columns, pd.MultiIndex):
             df_close = data['Close'].copy()
-            df = pd.DataFrame()
-            for key, symbol in tickers.items():
-                if symbol in df_close.columns:
-                    df[f'{key}_Close'] = df_close[symbol]
-                else:
-                    df[f'{key}_Close'] = 0 
-        else: return None, None, "DataFmt"
+            # 簡單容錯
+            try: df_close = df_close[tickers] 
+            except: pass
+            df = df_close.copy()
+        else:
+            df = data['Close'].copy()
 
-        df.ffill(inplace=True)
-        df.bfill(inplace=True) 
-        df.fillna(0, inplace=True)
+        df.ffill(inplace=True); df.dropna(inplace=True)
 
-        df['Main_Ret'] = df['Main_Close'].pct_change()
-        df['Night_Ret'] = df['Night_Close'].pct_change()
-        df['Rate_Chg'] = df['Rate_Close'].pct_change()
-        df['AI_Ret'] = df['AI_Close'].pct_change()
-        df['RSI'] = ta.rsi(df['Main_Close'], length=14)
-        df['Bias'] = (df['Main_Close'] - ta.sma(df['Main_Close'], 20)) / ta.sma(df['Main_Close'], 20)
-        df.dropna(inplace=True)
-
-        days_out = 5; threshold = 0.02
-        df['Target'] = ((df['Main_Close'].shift(-days_out) / df['Main_Close'] - 1) > threshold).astype(int)
+        # 特徵工程 (跟 Colab T+3 版一致)
+        feat_df = pd.DataFrame()
+        feat_df['TSM_Ret'] = df['TSM'].pct_change()
+        feat_df['SOX_Ret'] = df['^SOX'].pct_change()
+        feat_df['NVDA_Ret'] = df['NVDA'].pct_change()
+        feat_df['TSM_RSI'] = ta.rsi(df['TSM'], length=14)
+        feat_df['TSM_MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
+        feat_df['VIX'] = df['^VIX']
+        feat_df['TNX_Chg'] = df['^TNX'].pct_change()
         
-        df_train = df.iloc[:-days_out].copy()
-        features = ['Main_Ret', 'Night_Ret', 'Rate_Chg', 'AI_Ret', 'RSI', 'Bias']
-        if len(df_train) < 30: return None, None, "DataShort"
-
+        feat_df.dropna(inplace=True)
+        feature_cols = ['TSM_Ret', 'SOX_Ret', 'NVDA_Ret', 'TSM_RSI', 'TSM_MACD', 'VIX', 'TNX_Chg']
+        
+        # 標籤：T+3 漲幅 > 1.5%
+        future_ret = df['TSM'].shift(-3) / df['TSM'] - 1
+        feat_df['Target'] = (future_ret > 0.015).astype(int)
+        
+        df_train = feat_df.iloc[:-3].copy()
+        
+        # 標準化
         scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(df_train[features])
+        scaled_data = scaler.fit_transform(df_train[feature_cols])
         
         X, y = [], []
-        lookback = 20
+        lookback = 30 # T+3 版看 30 天
+        
         for i in range(lookback, len(scaled_data)):
             X.append(scaled_data[i-lookback:i])
             y.append(df_train['Target'].iloc[i])
-        
+            
         X, y = np.array(X), np.array(y)
-        split = int(len(X) * 0.8)
-        X_train, X_test, y_train, y_test = X[:split], X[split:], y[:split], y[split:]
         
+        # 訓練雙向 LSTM
+        from tensorflow.keras.layers import Input, Bidirectional
         model = Sequential()
-        model.add(LSTM(64, return_sequences=True, input_shape=(X.shape[1], X.shape[2])))
-        model.add(Dropout(0.3)); model.add(LSTM(64)); model.add(Dropout(0.3))
+        model.add(Input(shape=(lookback, len(feature_cols))))
+        model.add(Bidirectional(LSTM(64, return_sequences=True)))
+        model.add(Dropout(0.3))
+        model.add(Bidirectional(LSTM(32)))
+        model.add(Dropout(0.3))
         model.add(Dense(1, activation='sigmoid'))
+        
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        model.fit(X, y, epochs=40, batch_size=32, verbose=0)
         
-        early = EarlyStopping(monitor='val_accuracy', patience=15, restore_best_weights=True)
-        model.fit(X_train, y_train, epochs=60, batch_size=16, verbose=0, validation_data=(X_test, y_test), callbacks=[early])
+        loss, acc = model.evaluate(X, y, verbose=0)
         
-        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        # 預測
+        latest_seq = feat_df[feature_cols].iloc[-lookback:].values
+        latest_scaled = scaler.transform(latest_seq)
+        latest_input = latest_scaled.reshape(1, lookback, len(feature_cols))
         
-        last_seq = df[features].iloc[-lookback:].values
-        prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
+        prob = model.predict(latest_input, verbose=0)[0][0]
         
-        return prob, acc, df['Main_Close'].iloc[-1]
-    except Exception as e: return None, None, str(e)
+        return prob, acc
+    except Exception as e:
+        print(f"Error in Short Model: {e}")
+        return None, None
 
 # --- B. EDZ/Macro ---
 @st.cache_resource(ttl=43200)
@@ -673,38 +686,73 @@ if app_mode == "🤖 AI 深度學習實驗室":
     
     tab1, tab2, tab3 = st.tabs(["📈 TSM 專用波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦"])
     
-    with tab1:
-        st.subheader("TSM 專屬波段顧問 (T+5)")
-        # 使用 Session State 防止按鈕刷新後消失
-        if st.button("開始分析 TSM", key="btn_tsm") or 'tsm_result' in st.session_state:
-            if 'tsm_result' not in st.session_state:
-                with st.spinner("AI 正在運算..."):
-                    prob, acc, price = get_tsm_swing_prediction()
-                    st.session_state['tsm_result'] = (prob, acc, price)
+with tab1:
+        st.subheader("TSM 雙核心波段顧問")
+        
+        # 按鈕：一次觸發兩個模型
+        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm") or 'tsm_result_v2' in st.session_state:
             
-            prob, acc, price = st.session_state['tsm_result']
+            if 'tsm_result_v2' not in st.session_state:
+                with st.spinner("AI 正在進行雙重驗證..."):
+                    # 1. 呼叫舊模型 (T+5)
+                    prob_long, acc_long, price = get_tsm_swing_prediction()
+                    # 2. 呼叫新模型 (T+3)
+                    prob_short, acc_short = get_tsm_short_prediction()
+                    
+                    st.session_state['tsm_result_v2'] = (prob_long, acc_long, prob_short, acc_short, price)
             
-            if prob is not None:
-                c1, c2, c3 = st.columns(3)
-                c1.metric("TSM 現價", f"${price:.2f}")
-                c2.metric("模型準度", f"{acc*100:.1f}%", delta="可信" if acc>0.58 else "普通")
-                
-                direction = "Bull" if prob > 0.5 else "Bear"
-                conf = prob if prob > 0.5 else 1 - prob
-                
-                if prob > 0.6:
-                    c3.metric("AI 建議", "🚀 看漲", delta=f"信心 {conf*100:.1f}%")
-                elif prob < 0.4:
-                    c3.metric("AI 建議", "📉 看跌/盤", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
+            # 取出結果
+            p_long, a_long, p_short, a_short, price = st.session_state['tsm_result_v2']
+            
+            # --- 顯示介面 ---
+            st.metric("TSM 即時價格", f"${price:.2f}")
+            st.divider()
+
+            col1, col2 = st.columns(2)
+            
+            # 左邊：T+5 (趨勢)
+            with col1:
+                st.info("🔭 T+5 趨勢模型 (舊版)")
+                st.write(f"準確率: `{a_long*100:.1f}%`")
+                if p_long > 0.6: st.success(f"看漲 (機率 {p_long*100:.0f}%)")
+                elif p_long < 0.4: st.error(f"看跌 (機率 {p_long*100:.0f}%)")
+                else: st.warning(f"震盪 (機率 {p_long*100:.0f}%)")
+
+            # 右邊：T+3 (短線)
+            with col2:
+                st.info("⚡ T+3 極速模型 (新版)")
+                if p_short is not None:
+                    st.write(f"準確率: `{a_short*100:.1f}%`")
+                    if p_short > 0.5: st.success(f"短多 (機率 {p_short*100:.0f}%)")
+                    elif p_short < 0.4: st.error(f"短空 (機率 {p_short*100:.0f}%)")
+                    else: st.warning(f"盤整 (機率 {p_short*100:.0f}%)")
                 else:
-                    c3.metric("AI 建議", "⚖️ 震盪", delta=f"信心 {conf*100:.1f}%", delta_color="off")
-                
-                if st.button("📸 記錄預測 (快照)", key="save_tsm"):
-                    if save_prediction("TSM", direction, conf, price):
-                        st.success("✅ 已記錄！")
-                    else: st.warning("⚠️ 今天已存過")
-            else: 
-                st.error(f"系統錯誤: {price}") 
+                    st.error("模型載入失敗")
+
+            # --- 綜合建議 (共振判斷) ---
+            st.subheader("🤖 AI 總結")
+            if p_long > 0.5 and p_short > 0.5:
+                st.success("🔥🔥 強力買進訊號 (長短共振，趨勢與短線皆看好！)")
+                final_dir = "Bull_Strong"
+                final_conf = (p_long + p_short) / 2
+            elif p_long < 0.5 and p_short < 0.5:
+                st.error("❄️❄️ 強力賣出訊號 (長短共振，建議空手)")
+                final_dir = "Bear_Strong"
+                final_conf = (1-p_long + 1-p_short) / 2
+            elif p_long > 0.6 and p_short < 0.4:
+                st.warning("⚠️ 拉回找買點 (長多短空：趨勢向上但短線修正，這通常是好買點)")
+                final_dir = "Dip_Buy"
+                final_conf = p_long
+            else:
+                st.info("👀 訊號分歧，建議觀望 (模型看法不一)")
+                final_dir = "Neutral"
+                final_conf = 0.5
+
+            # 存檔按鈕
+            if st.button("📸 記錄綜合預測", key="save_tsm_dual"):
+                if save_prediction("TSM", final_dir, final_conf, price):
+                    st.success("✅ 已記錄！")
+                else: st.warning("⚠️ 今天已存過")
 
     with tab2:
         st.subheader("全球風險雷達")
@@ -1081,5 +1129,6 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
