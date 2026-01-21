@@ -146,14 +146,27 @@ def verify_ledger():
 # ==========================================
 # ★★★ 3. AI 模型核心 (T+5 與 T+3 雙模並存) ★★★
 # ==========================================
-
-# --- A. TSM (T+5 舊模型) ---
+# ==========================================
+# ★★★ 1. 舊版模型：T+5 波段 (趨勢 / 誠實驗證版) ★★★
+# ==========================================
 @st.cache_resource(ttl=3600)
 def get_tsm_swing_prediction():
     if not HAS_TENSORFLOW: return None, None, "TF缺"
     try:
+        # --- 內建手動計算函式 (避開 pandas_ta 錯誤) ---
+        def manual_rsi(series, period=14):
+            delta = series.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+            rs = gain / loss
+            return 100 - (100 / (1 + rs))
+
+        def manual_sma(series, period=20):
+            return series.rolling(window=period).mean()
+
+        # 1. 定義原始四大因子
         tickers = { 'Main': 'TSM', 'Night': "EWT", 'Rate': "^TNX", 'AI': 'NVDA' }
-        data = yf.download(list(tickers.values()), period="5y", interval="1d", progress=False, auto_adjust=False)
+        data = yf.download(list(tickers.values()), period="3y", interval="1d", progress=False, auto_adjust=False)
         
         if isinstance(data.columns, pd.MultiIndex):
             df_close = data['Close'].copy()
@@ -162,27 +175,39 @@ def get_tsm_swing_prediction():
                 if symbol in df_close.columns:
                     df[f'{key}_Close'] = df_close[symbol]
                 else:
-                    df[f'{key}_Close'] = 0 
-        else: return None, None, "DataFmt"
+                    # 容錯
+                    if len(tickers) == 1: df[f'{key}_Close'] = df_close
+                    else: df[f'{key}_Close'] = 0 
+        else:
+             return None, None, "DataFmt"
 
         df.ffill(inplace=True); df.bfill(inplace=True); df.fillna(0, inplace=True)
 
+        # 2. 特徵工程 (手動計算)
         df['Main_Ret'] = df['Main_Close'].pct_change()
         df['Night_Ret'] = df['Night_Close'].pct_change()
         df['Rate_Chg'] = df['Rate_Close'].pct_change()
         df['AI_Ret'] = df['AI_Close'].pct_change()
-        df['RSI'] = ta.rsi(df['Main_Close'], length=14)
-        df['Bias'] = (df['Main_Close'] - ta.sma(df['Main_Close'], 20)) / ta.sma(df['Main_Close'], 20)
+        
+        # 手算 RSI 和 Bias
+        df['RSI'] = manual_rsi(df['Main_Close'], period=14)
+        sma_20 = manual_sma(df['Main_Close'], period=20)
+        df['Bias'] = (df['Main_Close'] - sma_20) / sma_20
+        
         df.dropna(inplace=True)
 
+        # T+5 標籤
         days_out = 5; threshold = 0.02
         df['Target'] = ((df['Main_Close'].shift(-days_out) / df['Main_Close'] - 1) > threshold).astype(int)
         
+        # 移除最後 5 天 (無答案) 用於訓練
         df_train = df.iloc[:-days_out].copy()
         features = ['Main_Ret', 'Night_Ret', 'Rate_Chg', 'AI_Ret', 'RSI', 'Bias']
         
+        # 3. 準備數據
         scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(df_train[features])
+        scaler.fit(df_train[features]) # Fit 全體
+        scaled_data = scaler.transform(df_train[features])
         
         X, y = [], []
         lookback = 20
@@ -192,6 +217,13 @@ def get_tsm_swing_prediction():
         
         X, y = np.array(X), np.array(y)
         
+        # ★★★ 關鍵修正：切分驗證集 (80/20) ★★★
+        split_idx = int(len(X) * 0.8)
+        X_train, y_train = X[:split_idx], y[:split_idx]
+        X_val, y_val = X[split_idx:], y[split_idx:]
+        
+        # 4. 訓練 LSTM
+        from tensorflow.keras.layers import Input
         model = Sequential()
         model.add(Input(shape=(lookback, len(features))))
         model.add(LSTM(64, return_sequences=True))
@@ -201,28 +233,47 @@ def get_tsm_swing_prediction():
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
         
-        model.fit(X, y, epochs=40, batch_size=16, verbose=0)
+        # 只用 Train 訓練
+        model.fit(X_train, y_train, epochs=40, batch_size=16, verbose=0)
         
-        loss, acc = model.evaluate(X, y, verbose=0)
+        # ★★★ 用 Validation 評估 (誠實分數) ★★★
+        loss, acc = model.evaluate(X_val, y_val, verbose=0)
         
+        # 5. 預測未來 (用最新數據)
         last_seq = df[features].iloc[-lookback:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         
         return prob, acc, df['Main_Close'].iloc[-1]
     except Exception as e: return None, None, str(e)
 
-# --- B. TSM (T+3 新模型 - 極速版) ---
+
+# ==========================================
+# ★★★ 2. 新版模型：T+3 極速 (短線 / 誠實驗證版) ★★★
+# ==========================================
 @st.cache_resource(ttl=3600)
 def get_tsm_short_prediction():
     if not HAS_TENSORFLOW: return None, None
     try:
-        # 五大護法
+        # --- 內建手動計算函式 ---
+        def manual_rsi(series, period=14):
+            delta = series.diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+            rs = gain / loss
+            return 100 - (100 / (1 + rs))
+
+        def manual_macd(series, fast=12, slow=26, signal=9):
+            exp1 = series.ewm(span=fast, adjust=False).mean()
+            exp2 = series.ewm(span=slow, adjust=False).mean()
+            macd = exp1 - exp2
+            return macd
+
+        # 1. 五大護法因子
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
         data = yf.download(tickers, period="2y", interval="1d", progress=False, auto_adjust=False)
         
         if isinstance(data.columns, pd.MultiIndex):
             df_close = data['Close'].copy()
-            # 容錯
             try: df_close = df_close[tickers] 
             except: pass
             df = df_close.copy()
@@ -231,12 +282,13 @@ def get_tsm_short_prediction():
 
         df.ffill(inplace=True); df.dropna(inplace=True)
 
+        # 2. 特徵工程 (手動計算)
         feat_df = pd.DataFrame()
         feat_df['TSM_Ret'] = df['TSM'].pct_change()
         feat_df['SOX_Ret'] = df['^SOX'].pct_change()
         feat_df['NVDA_Ret'] = df['NVDA'].pct_change()
-        feat_df['TSM_RSI'] = ta.rsi(df['TSM'], length=14)
-        feat_df['TSM_MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
+        feat_df['TSM_RSI'] = manual_rsi(df['TSM'], period=14)
+        feat_df['TSM_MACD'] = manual_macd(df['TSM'])
         feat_df['VIX'] = df['^VIX']
         feat_df['TNX_Chg'] = df['^TNX'].pct_change()
         
@@ -249,8 +301,10 @@ def get_tsm_short_prediction():
         
         df_train = feat_df.iloc[:-3].copy()
         
+        # 3. 準備數據
         scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(df_train[feature_cols])
+        scaler.fit(df_train[feature_cols])
+        scaled_data = scaler.transform(df_train[feature_cols])
         
         X, y = [], []
         lookback = 30
@@ -259,7 +313,14 @@ def get_tsm_short_prediction():
             y.append(df_train['Target'].iloc[i])
             
         X, y = np.array(X), np.array(y)
+
+        # ★★★ 關鍵修正：切分驗證集 (80/20) ★★★
+        split_idx = int(len(X) * 0.8)
+        X_train, y_train = X[:split_idx], y[:split_idx]
+        X_val, y_val = X[split_idx:], y[split_idx:]
         
+        # 4. 訓練雙向 LSTM
+        from tensorflow.keras.layers import Input, Bidirectional
         model = Sequential()
         model.add(Input(shape=(lookback, len(feature_cols))))
         model.add(Bidirectional(LSTM(64, return_sequences=True)))
@@ -269,16 +330,23 @@ def get_tsm_short_prediction():
         model.add(Dense(1, activation='sigmoid'))
         
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
-        model.fit(X, y, epochs=40, batch_size=32, verbose=0)
         
-        loss, acc = model.evaluate(X, y, verbose=0)
+        # 只用 Train 訓練
+        model.fit(X_train, y_train, epochs=40, batch_size=32, verbose=0)
         
+        # ★★★ 用 Validation 評估 (誠實分數) ★★★
+        loss, acc = model.evaluate(X_val, y_val, verbose=0)
+        
+        # 5. 預測未來
         latest_seq = feat_df[feature_cols].iloc[-lookback:].values
-        prob = model.predict(np.expand_dims(scaler.transform(latest_seq), axis=0), verbose=0)[0][0]
+        latest_scaled = scaler.transform(latest_seq)
+        latest_input = latest_scaled.reshape(1, lookback, len(feature_cols))
+        
+        prob = model.predict(latest_input, verbose=0)[0][0]
         
         return prob, acc
-    except Exception as e: 
-        print(f"Error: {e}")
+    except Exception as e:
+        print(f"Error in Short Model: {e}")
         return None, None
 
 # --- C. EDZ/Macro ---
