@@ -682,11 +682,12 @@ if st.sidebar.button("🔄 清除快取 (重置 AI)"):
 # ------------------------------------------
 if app_mode == "🤖 AI 深度學習實驗室":
     st.header("🤖 AI 深度學習實驗室")
-    st.caption("神經網路模型 (LSTM) | T+5 波段預測")
+    st.caption("神經網路模型 (LSTM) | T+5 & T+3 雙模預測")
     
-    tab1, tab2, tab3 = st.tabs(["📈 TSM 專用波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦"])
+    tab1, tab2, tab3 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦"])
     
-with tab1:
+    # === Tab 1: TSM ===
+    with tab1:
         st.subheader("TSM 雙核心波段顧問")
         
         # 按鈕：一次觸發兩個模型
@@ -695,6 +696,7 @@ with tab1:
             if 'tsm_result_v2' not in st.session_state:
                 with st.spinner("AI 正在進行雙重驗證..."):
                     # 1. 呼叫舊模型 (T+5)
+                    # 注意：如果您還沒定義 get_tsm_swing_prediction，請確保前面有定義
                     prob_long, acc_long, price = get_tsm_swing_prediction()
                     # 2. 呼叫新模型 (T+3)
                     prob_short, acc_short = get_tsm_short_prediction()
@@ -713,10 +715,13 @@ with tab1:
             # 左邊：T+5 (趨勢)
             with col1:
                 st.info("🔭 T+5 趨勢模型 (舊版)")
-                st.write(f"準確率: `{a_long*100:.1f}%`")
-                if p_long > 0.6: st.success(f"看漲 (機率 {p_long*100:.0f}%)")
-                elif p_long < 0.4: st.error(f"看跌 (機率 {p_long*100:.0f}%)")
-                else: st.warning(f"震盪 (機率 {p_long*100:.0f}%)")
+                if p_long is not None:
+                    st.write(f"準確率: `{a_long*100:.1f}%`")
+                    if p_long > 0.6: st.success(f"看漲 (機率 {p_long*100:.0f}%)")
+                    elif p_long < 0.4: st.error(f"看跌 (機率 {p_long*100:.0f}%)")
+                    else: st.warning(f"震盪 (機率 {p_long*100:.0f}%)")
+                else:
+                    st.error("模型載入失敗")
 
             # 右邊：T+3 (短線)
             with col2:
@@ -731,29 +736,33 @@ with tab1:
 
             # --- 綜合建議 (共振判斷) ---
             st.subheader("🤖 AI 總結")
-            if p_long > 0.5 and p_short > 0.5:
-                st.success("🔥🔥 強力買進訊號 (長短共振，趨勢與短線皆看好！)")
-                final_dir = "Bull_Strong"
-                final_conf = (p_long + p_short) / 2
-            elif p_long < 0.5 and p_short < 0.5:
-                st.error("❄️❄️ 強力賣出訊號 (長短共振，建議空手)")
-                final_dir = "Bear_Strong"
-                final_conf = (1-p_long + 1-p_short) / 2
-            elif p_long > 0.6 and p_short < 0.4:
-                st.warning("⚠️ 拉回找買點 (長多短空：趨勢向上但短線修正，這通常是好買點)")
-                final_dir = "Dip_Buy"
-                final_conf = p_long
-            else:
-                st.info("👀 訊號分歧，建議觀望 (模型看法不一)")
-                final_dir = "Neutral"
-                final_conf = 0.5
+            
+            # 防呆：確保數值存在
+            if p_long is not None and p_short is not None:
+                if p_long > 0.5 and p_short > 0.5:
+                    st.success("🔥🔥 強力買進訊號 (長短共振，趨勢與短線皆看好！)")
+                    final_dir = "Bull_Strong"
+                    final_conf = (p_long + p_short) / 2
+                elif p_long < 0.5 and p_short < 0.5:
+                    st.error("❄️❄️ 強力賣出訊號 (長短共振，建議空手)")
+                    final_dir = "Bear_Strong"
+                    final_conf = (1-p_long + 1-p_short) / 2
+                elif p_long > 0.6 and p_short < 0.4:
+                    st.warning("⚠️ 拉回找買點 (長多短空：趨勢向上但短線修正，這通常是好買點)")
+                    final_dir = "Dip_Buy"
+                    final_conf = p_long
+                else:
+                    st.info("👀 訊號分歧，建議觀望 (模型看法不一)")
+                    final_dir = "Neutral"
+                    final_conf = 0.5
 
-            # 存檔按鈕
-            if st.button("📸 記錄綜合預測", key="save_tsm_dual"):
-                if save_prediction("TSM", final_dir, final_conf, price):
-                    st.success("✅ 已記錄！")
-                else: st.warning("⚠️ 今天已存過")
+                # 存檔按鈕
+                if st.button("📸 記錄綜合預測", key="save_tsm_dual"):
+                    if save_prediction("TSM", final_dir, final_conf, price):
+                        st.success("✅ 已記錄！")
+                    else: st.warning("⚠️ 今天已存過")
 
+    # === Tab 2: EDZ / Macro ===
     with tab2:
         st.subheader("全球風險雷達")
         target_risk = st.selectbox("選擇監測對象", ["EDZ", "GC=F", "CL=F", "HG=F"])
@@ -787,6 +796,7 @@ with tab1:
                         st.success("✅ 已記錄！")
                     else: st.warning("⚠️ 今天已存過")
 
+    # === Tab 3: QQQ Scanner ===
     with tab3:
         st.subheader("QQQ 科技股掃描器")
         tech_list = ["NVDA", "AMD", "AMZN", "MSFT", "GOOGL", "META", "TSLA", "AVGO", "PLTR"]
@@ -1129,6 +1139,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
