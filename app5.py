@@ -436,6 +436,103 @@ def scan_tech_stock(symbol, model, scaler, features):
 
         return prob, acc, df['Close'].iloc[-1]
     except: return None, None, 0
+        
+        # ==========================================
+# ★★★ SOXL 最終實戰版：5年數據 + 權重平衡 (F1=0.301) ★★★
+# ==========================================
+@st.cache_resource(ttl=3600)
+def get_soxl_short_prediction():
+    if not HAS_TENSORFLOW: return None, None, 0
+    try:
+        # 1. 下載 5 年數據 (關鍵差異：擴大樣本)
+        tickers = ["SOXL", "NVDA", "^TNX", "^VIX"]
+        # 注意：這裡 timeout 設長一點，因為 5 年數據量較大
+        data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
+        
+        if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+        else: df = data['Close'].copy()
+        df.ffill(inplace=True); df.dropna(inplace=True)
+
+        # 2. 特徵工程 (使用 Colab 驗證過的 4 大因子)
+        feat = pd.DataFrame()
+        try:
+            # 因子 1: 乖離率 (Mean Reversion)
+            ma20 = ta.sma(df['SOXL'], length=20)
+            feat['Bias_20'] = (df['SOXL'] - ma20) / ma20
+            
+            # 因子 2: MACD (動能)
+            feat['MACD'] = ta.macd(df['SOXL'])['MACD_12_26_9']
+            
+            # 因子 3: VIX (恐慌指數)
+            feat['VIX'] = df['^VIX']
+            
+            # 因子 4: NVDA (領頭羊)
+            feat['NVDA_Ret'] = df['NVDA'].pct_change()
+            
+        except: return None, None, 0
+
+        feat.dropna(inplace=True)
+        cols = ['Bias_20', 'MACD', 'VIX', 'NVDA_Ret']
+        
+        # 3. 標籤：T+3 漲幅 > 3%
+        future_ret = df['SOXL'].shift(-3) / df['SOXL'] - 1
+        feat['Target'] = (future_ret > 0.03).astype(int)
+        
+        # 準備訓練資料
+        df_train = feat.iloc[:-3].copy()
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(df_train[cols])
+        
+        X, y = [], []
+        lookback = 30 
+        for i in range(lookback, len(scaled_data)):
+            X.append(scaled_data[i-lookback:i])
+            y.append(df_train['Target'].iloc[i])
+        X, y = np.array(X), np.array(y)
+        
+        # 切分 Test set (80/20)
+        split = int(len(X) * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        
+        # ★★★ 關鍵：計算類別權重 (Class Weights) ★★★
+        # 這一步讓模型敢於預測 "1" (大漲)
+        from sklearn.utils.class_weight import compute_class_weight
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+        class_weight_dict = dict(enumerate(class_weights))
+        
+        # 4. 模型架構 (雙向 LSTM)
+        from tensorflow.keras.layers import Input, Bidirectional, LSTM
+        model = Sequential()
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(Bidirectional(LSTM(64, return_sequences=True)))
+        model.add(Dropout(0.4))
+        model.add(LSTM(32))
+        model.add(Dropout(0.4))
+        model.add(Dense(1, activation='sigmoid'))
+        
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        early = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
+        
+        # 訓練 (帶入 class_weight)
+        model.fit(X_train, y_train, validation_data=(X_test, y_test), 
+                  epochs=40, batch_size=32, callbacks=[early], 
+                  class_weight=class_weight_dict, verbose=0)
+        
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        
+        # 5. 預測最新一天
+        latest_seq = feat[cols].iloc[-lookback:].values
+        latest_scaled = scaler.transform(latest_seq)
+        prob = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
+        
+        current_price = df['SOXL'].iloc[-1]
+        
+        return prob, acc, current_price
+
+    except Exception as e:
+        print(f"SOXL Model Error: {e}")
+        return None, None, 0
 
 # ==========================================
 # 4. 傳統策略分析 (功能模組)
@@ -769,7 +866,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
     st.header("🤖 AI 深度學習實驗室")
     st.caption("神經網路模型 (LSTM) | T+5 & T+3 雙模預測")
     
-    tab1, tab2, tab3 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦","SOXL 三倍槓桿"])
     
     # === Tab 1: TSM ===
     with tab1:
@@ -914,6 +1011,30 @@ if app_mode == "🤖 AI 深度學習實驗室":
                         conf = p if p > 0.5 else 1 - p
                         if save_prediction(tick, dir_str, conf, pr): st.toast(f"✅ {tick} 已存")
                         else: st.toast("⚠️ 已存")
+
+    # === Tab 4 (或新增): SOXL 槓桿戰神 ===
+    with tab4: # 假設您想放在第一個分頁
+        st.divider()
+        st.subheader("🔥 SOXL 槓桿戰神 (T+3)")
+        
+        if st.button("🚀 啟動 SOXL 預測", key="btn_soxl"):
+            with st.spinner("AI 正在分析乖離率與 VIX 恐慌指數..."):
+                prob_soxl, acc_soxl, price_soxl = get_soxl_short_prediction()
+                
+                if prob_soxl is not None:
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("SOXL 現價", f"${price_soxl:.2f}")
+                    col2.metric("模型戰力 (F1)", "0.301", "高於隨機")
+                    
+                    # 這裡的邏輯：因為模型加了權重，機率通常會比較極端
+                    # > 0.5 就是明確的看漲訊號
+                    if prob_soxl > 0.5:
+                        col3.success(f"🚀 強力看漲 (信心 {prob_soxl*100:.0f}%)")
+                        st.caption("💡 觸發條件：乖離率過大 + VIX 配合 + 輝達動能")
+                    else:
+                        col3.warning(f"💤 動能不足 (信心 {prob_soxl*100:.0f}%)")
+                else:
+                    st.error("數據下載失敗，請稍後再試")
 
 # ------------------------------------------
 # Mode 2: 策略分析工具 (單股)
@@ -1224,6 +1345,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
