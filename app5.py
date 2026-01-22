@@ -179,7 +179,7 @@ def get_tsm_swing_prediction():
         feat['Target'] = (future_ret > 0.025).astype(int)
         
         # 4. 訓練
-        df_train = feat.iloc[:-5].copy()
+        df_train = feat.iloc[:-90].copy()
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[cols])
         
@@ -1467,6 +1467,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
