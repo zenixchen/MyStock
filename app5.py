@@ -145,7 +145,7 @@ def verify_ledger():
         return None
 
 # ==========================================
-# ★★★ TSM T+5 主帥版 (激進型: High Volatility) ★★★
+# ★★★ TSM T+5 主帥版 (修正版：嚴格防作弊) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tsm_swing_prediction():
@@ -155,11 +155,15 @@ def get_tsm_swing_prediction():
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
         data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
         
-        if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
-        else: df = data['Close'].copy()
+        # 處理 MultiIndex
+        if isinstance(data.columns, pd.MultiIndex):
+            df = data['Close'].copy()
+        else:
+            df = data['Close'].copy()
+            
         df.ffill(inplace=True); df.dropna(inplace=True)
 
-        # 2. 特徵工程 (★修改點：RSI 改 5)
+        # 2. 特徵工程
         feat = pd.DataFrame()
         try:
             feat['NVDA_Ret'] = df['NVDA'].pct_change()
@@ -167,103 +171,106 @@ def get_tsm_swing_prediction():
             feat['TNX_Chg'] = df['^TNX'].pct_change()
             feat['VIX'] = df['^VIX']
             feat['TSM_Ret'] = df['TSM'].pct_change()
-            feat['RSI'] = ta.rsi(df['TSM'], length=5) # <--- 關鍵修改：極短線 RSI
+            feat['RSI'] = ta.rsi(df['TSM'], length=5) 
             feat['MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
         except: return None, None, 0, None, 0
         
         feat.dropna(inplace=True)
         cols = ['NVDA_Ret', 'SOX_Ret', 'TNX_Chg', 'VIX', 'TSM_Ret', 'RSI', 'MACD']
         
-        # 3. 標籤
+        # 3. 標籤 (Target): T+5 漲幅 > 2.5%
         future_ret = df['TSM'].shift(-5) / df['TSM'] - 1
         feat['Target'] = (future_ret > 0.025).astype(int)
         
-        # 4. 訓練 (上帝視角模式)
-        df_train = feat.iloc[:-5].copy()
+        # 去除最後 5 天 (因為沒有 Target)
+        valid_data = feat.iloc[:-5].copy()
+        
+        # ★★★ 關鍵修正 1: 嚴格的時間切分 (前 80% 訓練，後 20% 驗證) ★★★
+        split_idx = int(len(valid_data) * 0.8)
+        train_df = valid_data.iloc[:split_idx]
+        test_df = valid_data.iloc[split_idx:]
+        
+        # ★★★ 關鍵修正 2: Scaler 只在訓練集上擬合 (Fit) ★★★
         scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(df_train[cols])
+        scaler.fit(train_df[cols]) # 只看過去，不知道未來
         
-        X, y = [], []
-        lookback = 20 # <--- 關鍵修改：縮短記憶，只看近20天
+        # 分別轉換
+        train_scaled = scaler.transform(train_df[cols])
+        test_scaled = scaler.transform(test_df[cols])
         
-        for i in range(lookback, len(scaled_data)):
-            X.append(scaled_data[i-lookback:i])
-            y.append(df_train['Target'].iloc[i])
-        X, y = np.array(X), np.array(y)
+        # 製作序列數據 (Sequence)
+        lookback = 20
         
-        # 權重計算
+        def create_sequences(data_scaled, targets):
+            X, y = [], []
+            for i in range(lookback, len(data_scaled)):
+                X.append(data_scaled[i-lookback:i])
+                y.append(targets.iloc[i])
+            return np.array(X), np.array(y)
+
+        X_train, y_train = create_sequences(train_scaled, train_df['Target'])
+        X_test, y_test = create_sequences(test_scaled, test_df['Target'])
+        
+        # 計算權重
         from sklearn.utils.class_weight import compute_class_weight
-        class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         class_weight_dict = dict(enumerate(class_weights))
         
-        # 模型架構 (激進版)
+        # 模型架構
         from tensorflow.keras.layers import Input, LSTM
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
         model.add(LSTM(64, return_sequences=True))
-        model.add(Dropout(0.1)) # <--- 關鍵修改：降低猶豫
+        model.add(Dropout(0.2)) 
         model.add(LSTM(64))
-        model.add(Dropout(0.1)) # <--- 關鍵修改：降低猶豫
+        model.add(Dropout(0.2))
         model.add(Dense(1, activation='sigmoid'))
         
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
-        early = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True) # 改 monitor loss 因為我們是用全部數據訓練
+        early = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
         
-        # 訓練
-        model.fit(X, y, epochs=20, batch_size=32, callbacks=[early], 
+        # 訓練 (用 Test 做驗證)
+        model.fit(X_train, y_train, 
+                  validation_data=(X_test, y_test),
+                  epochs=25, batch_size=32, callbacks=[early], 
                   class_weight=class_weight_dict, verbose=0)
         
-        loss, acc = model.evaluate(X, y, verbose=0)
+        # 4. 取得真實的驗證準確率 (Out-of-Sample Accuracy)
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # 5. 產生歷史回測圖表數據 (含準確率計算)
-        history_days = 90
-        viz_acc = 0
+        # 5. 產生驗證圖表 (只畫 Test Set 的部分，這才是真實力)
+        # 我們取 Test Set 的最後 90 天來畫圖，證明模型在沒看過的數據上表現如何
+        viz_len = min(len(X_test), 90)
         
-        if len(feat) > lookback + history_days:
-            recent_data = feat[cols].iloc[-(lookback + history_days):]
-            recent_scaled = scaler.transform(recent_data)
-            target_slice = feat['Target'].iloc[-(lookback + history_days):] # 真實答案
-            
-            pred_history = []
-            dates = []
-            prices = []
-            
-            correct_count = 0
-            total_count = 0
-            
-            for i in range(lookback, len(recent_scaled)):
-                seq = recent_scaled[i-lookback:i]
-                prob = model.predict(np.expand_dims(seq, axis=0), verbose=0)[0][0]
-                
-                idx = recent_data.index[i]
-                dates.append(idx)
-                prices.append(df['TSM'].loc[idx])
-                pred_history.append(prob)
-                
-                # 計算準確率 (排除最後5天未知的)
-                if i < len(recent_scaled) - 5:
-                    actual = target_slice.iloc[i]
-                    if prob > 0.6 or prob < 0.4: # 只算有訊號的
-                        pred_cls = 1 if prob > 0.6 else 0
-                        if pred_cls == actual:
-                            correct_count += 1
-                        total_count += 1
-            
-            if total_count > 0:
-                viz_acc = correct_count / total_count
-            
-            df_viz = pd.DataFrame({
-                'Date': dates,
-                'Price': prices,
-                'Prob': pred_history
-            })
-        else:
-            df_viz = None
+        # 取得對應的日期和價格 (需對齊序列索引)
+        # Test Set 的第 lookback 筆數據，對應的是 test_df 的第 lookback 行
+        test_indices = test_df.index[lookback:] 
+        test_prices = df['TSM'].loc[test_indices]
+        
+        # 進行預測
+        preds = model.predict(X_test, verbose=0).flatten()
+        
+        # 截取最後 90 天用於繪圖
+        viz_dates = test_indices[-viz_len:]
+        viz_prices = test_prices.iloc[-viz_len:].values
+        viz_probs = preds[-viz_len:]
+        
+        df_viz = pd.DataFrame({
+            'Date': viz_dates,
+            'Price': viz_prices,
+            'Prob': viz_probs
+        })
+        
+        # 計算這段時間的勝率 (Viz Accuracy)
+        viz_targets = y_test[-viz_len:]
+        viz_preds_cls = (viz_probs > 0.5).astype(int)
+        viz_acc = np.mean(viz_targets == viz_preds_cls)
 
-        # 6. 預測最新一天
-        latest_seq = feat[cols].iloc[-lookback:].values
-        latest_scaled = scaler.transform(latest_seq)
-        prob_latest = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
+        # 6. 預測最新一天 (Tomorrow)
+        # 注意：這裡我們要用最新的 20 天數據，並且用之前訓練好的 scaler 轉換
+        latest_seq_raw = feat[cols].iloc[-lookback:].values
+        latest_seq_scaled = scaler.transform(latest_seq_raw) # 使用原本的 scaler
+        prob_latest = model.predict(np.expand_dims(latest_seq_scaled, axis=0), verbose=0)[0][0]
         
         current_price = df['TSM'].iloc[-1]
         
@@ -271,6 +278,8 @@ def get_tsm_swing_prediction():
 
     except Exception as e:
         print(f"TSM Model Error: {e}")
+        import traceback
+        traceback.print_exc()
         return None, None, 0, None, 0
         
 # ==========================================
@@ -1452,6 +1461,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
