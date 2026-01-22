@@ -145,6 +145,77 @@ def verify_ledger():
         return None
 
 # ==========================================
+# ★★★ 補漏：TSM 波段預測 (T+5 / 舊版模型) ★★★
+# ==========================================
+@st.cache_resource(ttl=3600)
+def get_tsm_swing_prediction():
+    # 如果沒有 Tensorflow 則直接回傳空值
+    if not HAS_TENSORFLOW: return None, None, 0
+    
+    try:
+        # 1. 取得數據 (只抓 TSM)
+        df = yf.download("TSM", period="2y", interval="1d", progress=False)
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        
+        # 2. 特徵工程 (T+5 經典版)
+        df['Return'] = df['Close'].pct_change()
+        df['RSI'] = ta.rsi(df['Close'], length=14)
+        df['MACD'] = ta.macd(df['Close'])['MACD_12_26_9']
+        df['Vol_Change'] = df['Volume'].pct_change()
+        
+        # 移除空值
+        df.dropna(inplace=True)
+        
+        # 3. 設定標籤：未來 5 天漲幅 > 2%
+        df['Target'] = ((df['Close'].shift(-5) / df['Close'] - 1) > 0.02).astype(int)
+        
+        # 準備訓練資料 (扣掉最後 5 天因為沒有未來答案)
+        feature_cols = ['Return', 'RSI', 'MACD', 'Vol_Change']
+        df_train = df.iloc[:-5].copy()
+        
+        # 4. 數據標準化
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(df_train[feature_cols])
+        
+        X, y = [], []
+        lookback = 60 # 波段看長一點 (60天)
+        
+        for i in range(lookback, len(scaled_data)):
+            X.append(scaled_data[i-lookback:i])
+            y.append(df_train['Target'].iloc[i])
+            
+        X, y = np.array(X), np.array(y)
+        
+        # 5. 模型架構 (LSTM)
+        model = Sequential()
+        model.add(LSTM(50, return_sequences=True, input_shape=(lookback, len(feature_cols))))
+        model.add(Dropout(0.2))
+        model.add(LSTM(50))
+        model.add(Dropout(0.2))
+        model.add(Dense(1, activation='sigmoid'))
+        
+        model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+        # 快速訓練 20 epochs
+        model.fit(X, y, epochs=20, batch_size=32, verbose=0)
+        
+        # 6. 計算準確率
+        loss, acc = model.evaluate(X, y, verbose=0)
+        
+        # 7. 預測最新數據
+        latest_seq = df[feature_cols].iloc[-lookback:].values
+        # 必須使用同樣的 scaler 轉換
+        latest_scaled = scaler.transform(latest_seq)
+        latest_input = latest_scaled.reshape(1, lookback, len(feature_cols))
+        
+        prob = model.predict(latest_input, verbose=0)[0][0]
+        current_price = df['Close'].iloc[-1]
+        
+        return prob, acc, current_price
+
+    except Exception as e:
+        print(f"TSM Swing Model Error: {e}")
+        return None, None, 0
+# ==========================================
 # ★★★ 新增：TSM 短線極速預測 (T+3 / 五大因子) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
@@ -1139,6 +1210,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
