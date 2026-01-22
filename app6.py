@@ -837,18 +837,81 @@ elif app_mode == "📊 策略分析工具 (單股)":
     st.header("📊 單股策略分析")
     
     strategies = {
-        # 你的完整股票清單 (包含 CMF 最佳參數)
-        "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力)", "category": "🤖 AI", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "cmf_len": 10 },
-        "TSM": { "symbol": "TSM", "name": "TSM (台積電)", "category": "🤖 AI", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60, "cmf_len": 20 },
-        "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克)", "category": "📊 指數", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "ma_trend": 200 },
-        "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半3倍)", "category": "📊 指數", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "ma_trend": 100, "cmf_len": 14 },
-        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾)", "category": "🤖 AI", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100, "cmf_len": 25 },
-        "KO": { "symbol": "KO", "name": "KO (可口可樂)", "category": "🛡️ 防禦", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 90, "cmf_len": 40 },
-        "SMCI": { "symbol": "SMCI", "name": "SMCI (美超微)", "category": "🤖 AI", "mode": "BOLL_RSI", "entry_rsi": 15, "cmf_len": 10 },
-        "MSTR": { "symbol": "MSTR", "name": "MSTR (微策略)", "category": "🪙 幣圈", "mode": "RSI_RSI", "entry_rsi": 35, "exit_rsi": 85, "ma_trend": 20, "cmf_len": 14 },
+        # === 📊 指數與外匯 ===
+        "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
+        "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200, "cmf_len": 30 },
+        "QLD": { "symbol": "QLD", "name": "QLD (那斯達克 2倍做多)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200, "cmf_len": 25 },
+        "TQQQ": { "symbol": "TQQQ", "name": "TQQQ (那斯達克 3倍做多)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 85, "rsi_len": 2, "ma_trend": 200, "cmf_len": 40 },
+        "SOXL_S": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 狙擊)", "category": "📊 指數/外匯", "mode": "RSI_RSI", "entry_rsi": 10, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 100, "cmf_len": 25 },
+        "SOXL_F": { "symbol": "SOXL", "name": "SOXL (費半 3倍做多 - 快攻)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 10, "exit_k": 75, "cmf_len": 25 },
+        "EDZ": { "symbol": "EDZ", "name": "EDZ (新興市場 3倍做空 - 避險)", "category": "📊 指數/外匯", "mode": "BOLL_RSI", "entry_rsi": 9, "rsi_len": 2, "ma_trend": 20, "cmf_len": 10 },
+        
+        # === 🤖 AI 硬體/晶片 ===
+        "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5, "cmf_len": 30 },
+        "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60, "cmf_len": 26 },
+        "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200, "cmf_len": 40 },
+        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100, "ma_filter": False, "cmf_len": 25 }, # ★★★ 寬鬆模式範例 ★★★
+        "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100, "cmf_len": 30 },
+        "GLW": { "symbol": "GLW", "name": "GLW (康寧 - 玻璃基板/光通訊)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
+        "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖 - CoWoS 檢測設備)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
+        "AMD": { "symbol": "AMD", "name": "AMD (超微)", "category": "🤖 AI 硬體/晶片", "mode": "KD", "entry_k": 20, "exit_k": 80 },
+        "MU": { "symbol": "MU", "name": "MU (美光 - 記憶體)", "category": "🤖 AI 硬體/晶片", "mode": "KD", "entry_k": 20, "exit_k": 80, "cmf_len": 20 },
+        "SMCI": { "symbol": "SMCI", "name": "SMCI (美超微 - 伺服器妖股)", "category": "🤖 AI 硬體/晶片", "mode": "BOLL_RSI", "entry_rsi": 15, "rsi_len": 4, "ma_trend": 20, "cmf_len": 10 },
+        "ARM": { "symbol": "ARM", "name": "ARM (架構矽智財)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_MA", "entry_rsi": 35, "exit_ma": 20, "rsi_len": 14, "ma_trend": 50, "cmf_len": 20 },
+
+        # === 💻 軟體/巨頭 ===
+        "MSFT": { "symbol": "MSFT", "name": "MSFT (微軟)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14, "ma_trend": 200 },
+        "GOOGL": { "symbol": "GOOGL", "name": "GOOGL (谷歌)", "category": "💻 軟體/巨頭", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5 },
+        "META": { "symbol": "META", "name": "META (臉書)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 40, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200 },
+        "AMZN": { "symbol": "AMZN", "name": "AMZN (亞馬遜)", "category": "💻 軟體/巨頭", "mode": "KD", "entry_k": 20, "exit_k": 85, "cmf_len": 40 },
+        "TSLA": { "symbol": "TSLA", "name": "TSLA (特斯拉)", "category": "💻 軟體/巨頭", "mode": "KD", "entry_k": 20, "exit_k": 80, "cmf_len": 10 },
+        "AAPL": { "symbol": "AAPL", "name": "AAPL (蘋果)", "category": "💻 軟體/巨頭", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 20, "rsi_len": 14, "ma_trend": 200 },
+        "PLTR": { "symbol": "PLTR", "name": "PLTR (Palantir - AI國防)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 35, "exit_rsi": 85, "rsi_len": 14, "ma_trend": 50 },
+        "CRWD": { "symbol": "CRWD", "name": "CRWD (CrowdStrike - 資安)", "category": "💻 軟體/巨頭", "mode": "RSI_RSI", "entry_rsi": 35, "exit_rsi": 90, "rsi_len": 14, "ma_trend": 100, "cmf_len": 20 },
+        "PANW": { "symbol": "PANW", "name": "PANW (Palo Alto - 資安)", "category": "💻 軟體/巨頭", "mode": "KD", "entry_k": 20, "exit_k": 80, "cmf_len": 20 },
+
+        # === 💊 生技醫療 (減肥藥) ===
+        "LLY": { "symbol": "LLY", "name": "LLY (禮來 - 減肥藥王)", "category": "💊 生技醫療", "mode": "FUSION", "entry_rsi": 60, "exit_rsi": 80, "rsi_len": 14, "ma_trend": 20, "ma_filter": True, "cmf_len": 20 },
+        "NVO": { "symbol": "NVO", "name": "NVO (諾和諾德 - 減肥藥)", "category": "💊 生技醫療", "mode": "MA_CROSS", "fast_ma": 10, "slow_ma": 50 },
+
+        # === 🪙 數位資產 (比特幣概念) ===
+        "BTC_W": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 波段)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 44, "exit_rsi": 65, "rsi_len": 14, "ma_trend": 200, "cmf_len": 40 },
+        "BTC_F": { "symbol": "BTC-USD", "name": "BTC (比特幣 - 閃電)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 50, "rsi_len": 2, "ma_trend": 100, "cmf_len": 40 },
+        "MSTR": { "symbol": "MSTR", "name": "MSTR (微策略 - BTC槓桿)", "category": "🪙 數位資產", "mode": "RSI_RSI", "entry_rsi": 35, "exit_rsi": 85, "rsi_len": 14, "ma_trend": 20, "cmf_len": 10 },
+        "COIN": { "symbol": "COIN", "name": "COIN (Coinbase)", "category": "🪙 數位資產", "mode": "FUSION", "entry_rsi": 30, "exit_rsi": 90, "rsi_len": 14, "ma_trend": 100 },
+
+        # === ⚡ 電力與能源 ===
+        "ETN": { "symbol": "ETN", "name": "ETN (伊頓 - 電網)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 40, "exit_rsi": 95, "ma_trend": 200 },
+        "VRT": { "symbol": "VRT", "name": "VRT (維諦 - 液冷)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 35, "exit_rsi": 95, "ma_trend": 100 },
+        "OKLO": { "symbol": "OKLO", "name": "OKLO (微型核電)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 50, "exit_rsi": 95, "ma_trend": 0 },
+        "SMR": { "symbol": "SMR", "name": "SMR (NuScale - 核能)", "category": "⚡ 電力/能源", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 45, "exit_rsi": 90, "ma_trend": 0, "cmf_len": 14 },
+
+        # === 🇹🇼 台股 AI 權值 ===
+        "CHT": { "symbol": "2412.TW", "name": "中華電", "category": "🇹🇼 台股", "mode": "RSI_RSI", "rsi_len": 14, "entry_rsi": 45, "exit_rsi": 70 },
+        "HONHAI": { "symbol": "2317.TW", "name": "鴻海 (AI 伺服器代工)", "category": "🇹🇼 台股", "mode": "KD", "entry_k": 20, "exit_k": 80 },
+        "QUANTA": { "symbol": "2382.TW", "name": "廣達 (AI 伺服器龍頭)", "category": "🇹🇼 台股", "mode": "RSI_MA", "entry_rsi": 40, "exit_ma": 20, "rsi_len": 14, "ma_trend": 60 },
+        "MEDIATEK": { "symbol": "2454.TW", "name": "聯發科 (手機晶片)", "category": "🇹🇼 台股", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 80, "rsi_len": 14, "ma_trend": 0 },
+
+        # === 🛡️ 防禦/傳產/原物料 ===
+        "KO": { "symbol": "KO", "name": "KO (可口可樂)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0, "cmf_len": 20 },
+        "JNJ": { "symbol": "JNJ", "name": "JNJ (嬌生)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 25, "exit_rsi": 90, "ma_trend": 200, "cmf_len": 20 },
+        "PG": { "symbol": "PG", "name": "PG (寶僑)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 20, "exit_rsi": 80, "ma_trend": 0, "cmf_len": 30 },
+        "BA": { "symbol": "BA", "name": "BA (波音)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "rsi_len": 6, "entry_rsi": 15, "exit_rsi": 60, "ma_trend": 0, "cmf_len": 25 },
+        "JPM": { "symbol": "JPM", "name": "JPM (摩根大通)", "category": "🛡️ 防禦/傳產", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 80, "rsi_len": 14, "ma_trend": 200 },
+        "COST": { "symbol": "COST", "name": "COST (好市多)", "category": "🛡️ 防禦/傳產", "mode": "MA_CROSS", "fast_ma": 20, "slow_ma": 60 },
+        
+        "GC": { "symbol": "GC=F", "name": "Gold (黃金期貨)", "category": "⛏️ 原物料", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14 },
+        "CL": { "symbol": "CL=F", "name": "Crude Oil (原油期貨)", "category": "⛏️ 原物料", "mode": "KD", "entry_k": 20, "exit_k": 80 },
+        "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
     }
     
-    target_key = st.selectbox("選擇標的", list(strategies.keys()), format_func=lambda x: strategies[x]['name'])
+    # ★★★ 優化重點：兩段式選擇 (分類 -> 股票) ★★★
+    all_categories = sorted(list(set(s['category'] for s in strategies.values())))
+    selected_cat = st.selectbox("📂 步驟一：選擇板塊分類", all_categories)
+    
+    cat_strategies = {k: v for k, v in strategies.items() if v['category'] == selected_cat}
+    target_key = st.selectbox("📍 步驟二：選擇具體標的", list(cat_strategies.keys()), format_func=lambda x: cat_strategies[x]['name'])
+    
     cfg = strategies[target_key]
     
     df = get_safe_data(cfg['symbol'])
@@ -865,67 +928,214 @@ elif app_mode == "📊 策略分析工具 (單股)":
         
         kelly_msg, kelly_shares = calculate_kelly_position(df, user_capital, win_rate, user_risk/100, current_sig)
         k_pat = identify_k_pattern(df)
+        rsi_val = ta.rsi(df['Close'], 14).iloc[-1]
         fund = get_fundamentals(cfg['symbol'])
         
         with st.container(border=True):
             c1, c2, c3 = st.columns(3)
             c1.metric("即時價格", f"${lp:.2f}", f"{chg:.2f} ({pct_chg:.2f}%)")
-            if trades_count > 0: c2.metric("策略勝率", f"{win_rate*100:.0f}%", f"{trades_count} 次")
-            else: c2.metric("策略勝率", "無交易")
-            c3.metric("凱利建議", f"{kelly_shares} 股", kelly_msg.split(' ')[0])
+            
+            if trades_count > 0:
+                c2.metric("策略勝率 (回測)", f"{win_rate*100:.0f}%", delta=f"{trades_count} 次交易")
+            else:
+                c2.metric("策略勝率 (回測)", "無交易", delta="區間未觸發", delta_color="off")
+                
+            c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望")
+            st.info(f"💡 凱利觀點: {kelly_msg}")
 
+            # ★★★ 補回圖表繪製邏輯 ★★★
             fig = plot_chart(df, cfg, sigs)
             st.plotly_chart(fig, use_container_width=True)
 
         if fund:
-            with st.expander("📊 財報 & 籌碼", expanded=False):
-                f1,f2,f3,f4,f5 = st.columns(5)
-                f1.metric("PE", f"{fund['pe']}" if fund['pe'] else "N/A")
-                f2.metric("EPS", f"{fund['eps']}" if fund['eps'] else "N/A")
-                f3.metric("毛利率", f"{fund['margin']*100:.1f}%")
-                f4.metric("法人持股", f"{fund['inst']*100:.1f}%")
-                f5.metric("空單比", f"{fund['short']*100:.1f}%")
+            with st.expander("📊 財報基本面 & 籌碼數據", expanded=False):
+                f1, f2, f3, f4, f5 = st.columns(5)
+                
+                def check_metric(val, high_good=True, low_good=False, threshold_good=0, threshold_bad=0):
+                    if val is None: return "N/A", "off"
+                    val = float(val)
+                    if high_good:
+                        if val > threshold_good: return f"{val:.1f}% ✅", "normal"
+                        if val < threshold_bad: return f"{val:.1f}% ❌", "inverse"
+                        return f"{val:.1f}% ⚠️", "off"
+                    if low_good:
+                        if val < threshold_good: return f"{val:.1f}% ✅", "normal"
+                        if val > threshold_bad: return f"{val:.1f}% ❌", "inverse"
+                        return f"{val:.1f}% ⚠️", "off"
+                    return f"{val:.1f}", "off"
 
+                pe_val = fund['pe']
+                pe_str = "N/A"; pe_delta = "off"
+                if pe_val:
+                    if pe_val < 25: pe_str, pe_delta = f"{pe_val:.1f} ✅", "normal"
+                    elif pe_val > 50: pe_str, pe_delta = f"{pe_val:.1f} ❌", "inverse"
+                    else: pe_str, pe_delta = f"{pe_val:.1f} ⚠️", "off"
+                f1.metric("本益比 (PE)", pe_str, delta_color=pe_delta)
+
+                eps_val = fund['eps']
+                eps_str = "N/A"; eps_delta = "off"
+                if eps_val:
+                    if eps_val > 0: eps_str, eps_delta = f"${eps_val:.2f} ✅", "normal"
+                    else: eps_str, eps_delta = f"${eps_val:.2f} ❌", "inverse"
+                f2.metric("EPS", eps_str, delta_color=eps_delta)
+
+                m_str, m_delta = check_metric(fund['margin']*100, high_good=True, threshold_good=40, threshold_bad=10)
+                f3.metric("毛利率", m_str, delta_color=m_delta)
+
+                i_str, i_delta = check_metric(fund['inst']*100, high_good=True, threshold_good=60, threshold_bad=20)
+                f4.metric("法人持股", i_str, delta_color=i_delta)
+
+                s_str, s_delta = check_metric(fund['short']*100, low_good=True, threshold_good=5, threshold_bad=15)
+                f5.metric("空單比例", s_str, delta_color=s_delta)
+        else:
+            st.warning("⚠️ 暫無財報數據 (API 忙碌中，請稍後再試)")
+
+        # 1. 顯示策略邏輯文字 (這是錨點，請對齊這裡)
         strat_desc = get_strategy_desc(cfg, df)
-        st.markdown(f"**🛠️ 策略：** `{strat_desc}`")
-        
+        st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
+
+        # ==========================================
+        # ★★★ 修復點：先初始化變數，防止 NameError ★★★
+        # ==========================================
         analyze_btn = False 
+
+        # 2. Gemini 分析區塊 (完整防呆版)
         if ai_provider == "Gemini (User Defined)" and gemini_key:
             st.divider()
-            st.subheader("🧠 Gemini 分析師")
-            with st.expander("📝 筆記", expanded=False): user_notes = st.text_area("補充...", height=68)
-            analyze_btn = st.button("🚀 啟動 AI 分析")
+            st.subheader("🧠 Gemini 首席分析師")
             
+            st.info("ℹ️ 系統將自動抓取 Google News 最新頭條。若您有額外資訊 (如財報細節)，可在下方補充。")
+
+            with st.expander("📝 補充筆記 (選填 / Optional)", expanded=False):
+                user_notes = st.text_area("例如：營收創歷史新高、分析師調升評級...", height=68)
+            
+            # ★★★ 定義按鈕 (注意：這行必須跟上面的 st.info 對齊) ★★★
+            analyze_btn = st.button("🚀 啟動 AI 深度分析 (含新聞解讀)")
+            
+        # ★★★ 檢查按鈕 (現在移到外面也安全了) ★★★
         if analyze_btn and ai_provider == "Gemini (User Defined)":
-            with st.spinner("🔍 AI 思考中..."):
+            with st.spinner("🔍 AI 正在爬取 Google News 並進行大腦運算..."):
+                # A. 自動抓新聞
                 news_items = get_news(cfg['symbol'])
-                tech_txt = f"策略:{strat_desc} | 勝率:{win_rate*100:.0f}% | 訊號:{current_sig}"
                 
+                if news_items:
+                    with st.expander(f"📰 AI 已讀取 {len(news_items)} 則最新新聞", expanded=True):
+                        for n in news_items:
+                            st.caption(f"• {n}")
+                else:
+                    st.warning("⚠️ 暫時抓不到 Google News，AI 將純以技術面分析。")
+                    news_items = []
+
+                # B. 計算策略指標
+                strat_rsi_len = cfg.get('rsi_len', 14)
+                strat_val_txt = ""
+                
+                if "RSI" in cfg['mode'] or cfg['mode'] == "FUSION":
+                    real_rsi = ta.rsi(df['Close'], length=strat_rsi_len).iloc[-1]
+                    strat_val_txt = f"Strategy_RSI({strat_rsi_len}):{real_rsi:.1f}"
+                elif "KD" in cfg['mode']:
+                    k_val = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3).iloc[-1, 0]
+                    strat_val_txt = f"KD_K(9,3):{k_val:.1f}"
+                elif cfg['mode'] == "MA_CROSS":
+                    ma_fast = ta.sma(df['Close'], cfg['fast_ma']).iloc[-1]
+                    ma_slow = ta.sma(df['Close'], cfg['slow_ma']).iloc[-1]
+                    dist = (ma_fast - ma_slow) / ma_slow * 100
+                    strat_val_txt = f"MA_Gap:{dist:.2f}%"
+
+                base_rsi = ta.rsi(df['Close'], 14).iloc[-1]
+                
+                sig_map = { 1: "🚀 買進訊號 (Buy)", -1: "📉 賣出訊號 (Sell)", 0: "💤 觀望/無訊號 (Wait)" }
+                human_sig = sig_map.get(int(current_sig), "未知")
+
+                # C. 財報數據打包 (含成長率)
+                fund_txt = "無財報數據"
+                if fund:
+                    # 籌碼動態
+                    short_trend_str = "N/A"
+                    if fund.get('shares_short') and fund.get('shares_short_prev'):
+                        change = (fund['shares_short'] - fund['shares_short_prev']) / fund['shares_short_prev']
+                        if change > 0.05: short_trend_str = f"🔴 增加 {change*100:.1f}% (空軍集結)"
+                        elif change < -0.05: short_trend_str = f"🟢 減少 {abs(change)*100:.1f}% (空軍回補)"
+                        else: short_trend_str = f"⚪ 持平 ({change*100:.1f}%)"
+
+                    # 預估 PE
+                    pe_trend_str = "N/A"
+                    if fund.get('pe') and fund.get('fwd_pe'):
+                        if fund['fwd_pe'] < fund['pe']: pe_trend_str = f"↘️ 看好 (預估PE {fund['fwd_pe']:.1f} < 當前)"
+                        else: pe_trend_str = f"↗️ 看壞 (預估PE {fund['fwd_pe']:.1f} > 當前)"
+
+                    rev_g = f"{fund.get('rev_growth', 0)*100:.1f}%" if fund.get('rev_growth') is not None else "N/A"
+                    earn_g = f"{fund.get('earn_growth', 0)*100:.1f}%" if fund.get('earn_growth') is not None else "N/A"
+                    
+                    fund_txt = (
+                        f"PE評價趨勢:{pe_trend_str} | "
+                        f"空單變動(MoM):{short_trend_str} | "
+                        f"空單比例:{fund.get('short', 0)*100:.1f}% | "
+                        f"營收成長(YoY):{rev_g} | "
+                        f"獲利成長(YoY):{earn_g} | "
+                        f"毛利率:{fund.get('margin', 0)*100:.1f}%"
+                    )
+
+                # D. 組合小抄
+                tech_txt = (
+                    f"【策略關鍵指標】: {strat_val_txt}\n"
+                    f"【籌碼與基本面】: {fund_txt}\n"
+                    f"【市場大環境 RSI(14)】: {base_rsi:.1f}\n"
+                    f"【回測勝率】: {win_rate*100:.0f}%\n"
+                    f"【當前訊號】: {human_sig}"
+                )
+
+                # E. 定義與呼叫 (內嵌函數以防變數汙染)
                 def analyze_v2(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
                     if not HAS_GEMINI: return "No Gemini", "⚠️", False
                     try:
                         genai.configure(api_key=api_key)
                         model = genai.GenerativeModel(model_name)
-                        news_str = "\n".join([f"- {n}" for n in news]) if news else "無"
-                        base_prompt = f"分析 {symbol}。數據：{tech_txt}。K線：{k_pattern}。新聞：{news_str}。筆記：{user_input}。給出操作建議。"
+                        news_str = "\n".join([f"- {n}" for n in news]) if news else "無最新新聞"
+                        base_prompt = f"""
+                        你是一位華爾街資深操盤手。請根據以下「動態趨勢數據」進行深度分析：
+                        【目標標的】：{symbol}
+                        【綜合數據面板】：
+                        {tech_txt}
+                        【K線型態】：{k_pattern}
+                        【最新新聞焦點】：
+                        {news_str}
+                        【用戶補充筆記】：{user_input}
+                        請給出分析報告：
+                        1. 🎯 核心觀點 (多/空/觀望)
+                        2. 📊 籌碼與基本面解讀 (特別關注空單增減與預估PE的變化意義)
+                        3. 📰 市場情緒
+                        4. 💡 操作建議
+                        """
                         return model.generate_content(base_prompt).text, "🧠", True
                     except Exception as e: return str(e), "⚠️", False
 
                 analysis, icon, success = analyze_v2(gemini_key, cfg['symbol'], news_items, tech_txt, k_pat, gemini_model, user_notes)
+                
                 if success: st.markdown(analysis)
-                else: st.error(f"Error: {analysis}")
+                else: st.error(f"Gemini 連線失敗: {analysis}")
 
 # ------------------------------------------
-# Mode 3: 預測日記
+# Mode 3: 預測日記 (Ledger)
 # ------------------------------------------
 elif app_mode == "📒 預測日記 (自動驗證)":
     st.header("📒 AI 實戰驗證日記")
-    if st.button("🔄 刷新並驗證"):
-        with st.spinner("驗證中..."):
-            verify_ledger()
-            st.success("完成")
+    st.caption(f"檔案路徑: {LEDGER_FILE}")
+    
+    if st.button("🔄 立即刷新並驗證 (Auto-Verify)"):
+        with st.spinner("正在檢查最新股價..."):
+            df_ledger = verify_ledger()
+            if df_ledger is not None: st.success("驗證完成！")
+            else: st.info("尚無記錄")
     
     if os.path.exists(LEDGER_FILE):
         df = pd.read_csv(LEDGER_FILE)
         st.dataframe(df, use_container_width=True)
-    else: st.info("無記錄")
+        if not df.empty:
+            completed = df[df['Status'].isin(['Win', 'Loss'])]
+            if not completed.empty:
+                wins = len(completed[completed['Status'] == 'Win'])
+                total = len(completed)
+                win_rate = wins / total
+                st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
+    else: st.info("目前還沒有日記，請去預測頁面存檔。")
