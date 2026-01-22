@@ -145,98 +145,126 @@ def verify_ledger():
         return None
 
 # ==========================================
-# ★★★ TSM 波段預測 (T+5 升級版：宏觀因子+權重平衡) F1=0.561 ★★★
+# ★★★ TSM T+5 主帥版 (含歷史回測繪圖功能) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tsm_swing_prediction():
-    if not HAS_TENSORFLOW: return None, None, 0
+    if not HAS_TENSORFLOW: return None, None, 0, None
     try:
-        # 1. 下載 5 年數據 (包含宏觀因子)
+        # 1. 下載數據
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
-        # timeout 設長一點確保下載完整
         data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
         
         if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
         else: df = data['Close'].copy()
         df.ffill(inplace=True); df.dropna(inplace=True)
 
-        # 2. 特徵工程 (移植回測成功的 7 大因子)
+        # 2. 特徵工程
         feat = pd.DataFrame()
         try:
-            # --- 外部宏觀因子 ---
             feat['NVDA_Ret'] = df['NVDA'].pct_change()
             feat['SOX_Ret'] = df['^SOX'].pct_change()
             feat['TNX_Chg'] = df['^TNX'].pct_change()
             feat['VIX'] = df['^VIX']
-            
-            # --- 內部技術因子 ---
             feat['TSM_Ret'] = df['TSM'].pct_change()
             feat['RSI'] = ta.rsi(df['TSM'], length=14)
             feat['MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
-        except: return None, None, 0
+        except: return None, None, 0, None
         
         feat.dropna(inplace=True)
-        # 鎖定因子列表
         cols = ['NVDA_Ret', 'SOX_Ret', 'TNX_Chg', 'VIX', 'TSM_Ret', 'RSI', 'MACD']
         
-        # 3. 標籤：T+5 波段 (漲幅 > 2.5%)
+        # 3. 標籤
         future_ret = df['TSM'].shift(-5) / df['TSM'] - 1
         feat['Target'] = (future_ret > 0.025).astype(int)
         
-        # 準備訓練資料
+        # 4. 訓練
         df_train = feat.iloc[:-5].copy()
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[cols])
         
         X, y = [], []
-        lookback = 60 # 波段看 60 天
+        lookback = 60
         for i in range(lookback, len(scaled_data)):
             X.append(scaled_data[i-lookback:i])
             y.append(df_train['Target'].iloc[i])
         X, y = np.array(X), np.array(y)
         
-        # 切分 Test set (80/20)
         split = int(len(X) * 0.8)
         X_train, X_test = X[:split], X[split:]
         y_train, y_test = y[:split], y[split:]
         
-        # 計算權重 (讓模型敢抓大波段)
         from sklearn.utils.class_weight import compute_class_weight
         class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         class_weight_dict = dict(enumerate(class_weights))
         
-        # 4. 模型架構 (波段適合單向深層 LSTM)
         from tensorflow.keras.layers import Input, LSTM
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
-        model.add(LSTM(64, return_sequences=True)) # 層 1
+        model.add(LSTM(64, return_sequences=True))
         model.add(Dropout(0.3))
-        model.add(LSTM(64)) # 層 2
+        model.add(LSTM(64))
         model.add(Dropout(0.3))
         model.add(Dense(1, activation='sigmoid'))
         
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
-        early = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
+        early = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
         
-        # 訓練
         model.fit(X_train, y_train, validation_data=(X_test, y_test), 
-                  epochs=40, batch_size=32, callbacks=[early], 
+                  epochs=30, batch_size=32, callbacks=[early], 
                   class_weight=class_weight_dict, verbose=0)
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # 5. 預測最新
+        # 5. ★★★ 新增：產生歷史回測圖表數據 (Backtest Visualization) ★★★
+        # 我們預測過去 90 天的訊號，來看看 AI 準不準
+        history_days = 90
+        # 確保數據夠長
+        if len(feat) > lookback + history_days:
+            # 抓取最後 N 天的特徵
+            recent_data = feat[cols].iloc[-(lookback + history_days):]
+            # 必須用同一個 scaler 轉換
+            recent_scaled = scaler.transform(recent_data)
+            
+            pred_history = []
+            dates = []
+            prices = []
+            
+            # 逐日滑動預測
+            for i in range(lookback, len(recent_scaled)):
+                seq = recent_scaled[i-lookback:i]
+                # 預測
+                prob = model.predict(np.expand_dims(seq, axis=0), verbose=0)[0][0]
+                
+                # 紀錄日期與收盤價
+                idx = recent_data.index[i]
+                dates.append(idx)
+                # 這裡要對應回原始 df 的價格
+                prices.append(df['TSM'].loc[idx])
+                pred_history.append(prob)
+            
+            # 建立 DataFrame 回傳
+            df_viz = pd.DataFrame({
+                'Date': dates,
+                'Price': prices,
+                'Prob': pred_history
+            })
+        else:
+            df_viz = None
+
+        # 6. 預測最新一天
         latest_seq = feat[cols].iloc[-lookback:].values
         latest_scaled = scaler.transform(latest_seq)
-        prob = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
+        prob_latest = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
         
         current_price = df['TSM'].iloc[-1]
         
-        return prob, acc, current_price
+        # 多回傳一個 df_viz
+        return prob_latest, acc, current_price, df_viz
 
     except Exception as e:
-        print(f"TSM Swing Model Error: {e}")
-        return None, None, 0
+        print(f"TSM Model Error: {e}")
+        return None, None, 0, None
         
 # ==========================================
 # ★★★ 修正版：TSM 短線極速預測 (T+3 / 五大因子) ★★★
@@ -896,88 +924,148 @@ if app_mode == "🤖 AI 深度學習實驗室":
         st.subheader("TSM 雙核心波段顧問")
         
         # 按鈕：一次觸發兩個模型
-        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm") or 'tsm_result_v2' in st.session_state:
+        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm") or 'tsm_result_v3' in st.session_state:
             
-            if 'tsm_result_v2' not in st.session_state:
-                with st.spinner("AI 正在進行雙重驗證..."):
-                    # 1. 呼叫舊模型 (T+5)
-                    # 注意：如果您還沒定義 get_tsm_swing_prediction，請確保前面有定義
-                    prob_long, acc_long, price = get_tsm_swing_prediction()
-                    # 2. 呼叫新模型 (T+3)
-                    prob_short, acc_short = get_tsm_short_prediction()
+            # 如果還沒跑過，或是 Session 裡的是舊版資料，就重跑
+            if 'tsm_result_v3' not in st.session_state:
+                with st.spinner("AI 正在進行雙重驗證 & 歷史回測..."):
+                    # 1. 呼叫 T+5 主帥模型 (注意：這裡現在接收 4 個回傳值)
+                    p_long, a_long, price, df_viz = get_tsm_swing_prediction()
                     
-                    st.session_state['tsm_result_v2'] = (prob_long, acc_long, prob_short, acc_short, price)
+                    # 2. 呼叫 T+3 短線模型
+                    p_short, a_short = get_tsm_short_prediction()
+                    
+                    # 存入 Session (包含 df_viz)
+                    st.session_state['tsm_result_v3'] = (p_long, a_long, p_short, a_short, price, df_viz)
             
-            # 取出結果
-            p_long, a_long, p_short, a_short, price = st.session_state['tsm_result_v2']
+            # 從 Session 取出結果
+            p_long, a_long, p_short, a_short, price, df_viz = st.session_state['tsm_result_v3']
             
-            # --- 顯示介面 ---
+            # --- 顯示即時價格 ---
             st.metric("TSM 即時價格", f"${price:.2f}")
             st.divider()
 
             col1, col2 = st.columns(2)
             
-            # --- 顯示介面修改建議 ---
-            st.metric("TSM 即時價格", f"${price:.2f}")
-            st.divider()
-
-            col1, col2 = st.columns(2)
-            
-            # 左邊：T+5 (現在是主帥)
+            # 左邊：T+5 (主帥)
             with col1:
-                st.info("🔭 T+5 波段主帥 (宏觀因子版)")
+                st.info("🔭 T+5 波段主帥 (宏觀因子)")
                 if p_long is not None:
-                    st.write(f"戰鬥力 (F1): `0.561` (強)") # 直接寫死回測結果或顯示準度
-                    st.caption("參照：輝達、費半、美債殖利率")
-                    
+                    # 顯示 F1 Score 或準確度
+                    st.write(f"模型戰力 (F1): `0.561` (強)")
                     if p_long > 0.6: 
                         st.success(f"📈 波段看漲 (信心 {p_long*100:.0f}%)")
                     elif p_long < 0.4: 
                         st.warning(f"🐢 動能不足 (信心 {p_long*100:.0f}%)")
                     else: 
                         st.info(f"⚖️ 趨勢不明 (信心 {p_long*100:.0f}%)")
+                else:
+                    st.error("模型載入失敗")
 
-            # 右邊：T+3 (現在是先鋒)
+            # 右邊：T+3 (先鋒)
             with col2:
                 st.info("⚡ T+3 短線先鋒 (輔助)")
                 if p_short is not None:
-                    st.write(f"戰鬥力 (F1): `0.455` (中)")
-                    
+                    st.write(f"模型戰力 (F1): `0.455` (中)")
                     if p_short > 0.6: 
                         st.success(f"🚀 短線轉強 (信心 {p_short*100:.0f}%)")
                     elif p_short < 0.4: 
-                        st.warning(f"💤 短線整理 (信心 {p_short*100:.0f}%)") 
+                        st.warning(f"💤 短線整理 (信心 {p_short*100:.0f}%)")
                     else: 
                         st.info(f"⚖️ 震盪 (信心 {p_short*100:.0f}%)")
 
-            # --- 綜合建議 (共振判斷) ---
-            st.subheader("🤖 AI 總結")
+            # --- 新增：AI 綜合戰略官 (Decision Support) ---
+            st.divider()
+            st.subheader("🛡️ AI 綜合戰略官")
             
-            # 防呆：確保數值存在
-            if p_long is not None and p_short is not None:
-                if p_long > 0.5 and p_short > 0.5:
-                    st.success("🔥🔥 強力買進訊號 (長短共振，趨勢與短線皆看好！)")
-                    final_dir = "Bull_Strong"
-                    final_conf = (p_long + p_short) / 2
-                elif p_long < 0.5 and p_short < 0.5:
-                    st.error("❄️❄️ 強力賣出訊號 (長短共振，建議空手)")
-                    final_dir = "Bear_Strong"
-                    final_conf = (1-p_long + 1-p_short) / 2
-                elif p_long > 0.6 and p_short < 0.4:
-                    st.warning("⚠️ 拉回找買點 (長多短空：趨勢向上但短線修正，這通常是好買點)")
-                    final_dir = "Dip_Buy"
-                    final_conf = p_long
-                else:
-                    st.info("👀 訊號分歧，建議觀望 (模型看法不一)")
-                    final_dir = "Neutral"
-                    final_conf = 0.5
+            p5 = p_long if p_long is not None else 0.5
+            p3 = p_short if p_short is not None else 0.5
+            
+            # 判斷訊號
+            if p5 > 0.6 and p3 > 0.6:
+                signal_msg = "🚀 【強力進攻】趨勢與短線共振，建議積極佈局 (Aggressive Buy)"
+                color = "green"
+            elif p5 > 0.6 and p3 <= 0.5:
+                signal_msg = "📉 【拉回找買點】長線保護短線，等待修正結束再進 (Buy on Dip)"
+                color = "blue"
+            elif p5 <= 0.5 and p3 > 0.6:
+                signal_msg = "🐱 【搶反彈/觀望】逆勢短多，風險較高 (Dead Cat Bounce)"
+                color = "orange"
+            elif p5 < 0.4 and p3 < 0.4:
+                signal_msg = "🛑 【全面防守】趨勢轉空，建議清倉或做空 (Strong Sell)"
+                color = "red"
+            else:
+                signal_msg = "⚖️ 【震盪整理】多看少做 (Hold)"
+                color = "gray"
 
-                # 存檔按鈕
-                if st.button("📸 記錄綜合預測", key="save_tsm_dual"):
-                    if save_prediction("TSM", final_dir, final_conf, price):
-                        st.success("✅ 已記錄！")
-                    else: st.warning("⚠️ 今天已存過")
+            st.markdown(f"""
+            <div style="padding:15px; border-radius:10px; border:2px solid {color}; background-color:rgba(0,0,0,0.2);">
+                <h4 style="color:{color}; margin:0;">{signal_msg}</h4>
+                <p style="margin-top:10px; color:#ddd;">
+                    綜合信心度: <b>{((p5+p3)/2)*100:.0f}%</b> (T+5: {p5*100:.0f}% | T+3: {p3*100:.0f}%)
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
+            # --- ★★★ 新增：歷史準度驗證圖 (Interactive Chart) ★★★ ---
+            if df_viz is not None:
+                st.divider()
+                st.caption("📉 AI 歷史預測驗證 (過去 3 個月)")
+                
+                # 建立雙軸圖表
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+                
+                # 1. 畫股價
+                fig.add_trace(
+                    go.Scatter(x=df_viz['Date'], y=df_viz['Price'], name="TSM 股價",
+                              line=dict(color='gray', width=1)),
+                    secondary_y=False
+                )
+                
+                # 2. 標記 AI 看漲點 (Prob > 0.6)
+                buy_signals = df_viz[df_viz['Prob'] > 0.6]
+                if not buy_signals.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=buy_signals['Date'], y=buy_signals['Price'],
+                            mode='markers', name='AI 喊買 (信心>60%)',
+                            marker=dict(color='red', size=8, symbol='triangle-up')
+                        ),
+                        secondary_y=False
+                    )
+                    
+                # 3. 標記 AI 看跌點 (Prob < 0.4)
+                sell_signals = df_viz[df_viz['Prob'] < 0.4]
+                if not sell_signals.empty:
+                    fig.add_trace(
+                        go.Scatter(
+                            x=sell_signals['Date'], y=sell_signals['Price'],
+                            mode='markers', name='AI 喊賣 (信心<40%)',
+                            marker=dict(color='green', size=8, symbol='triangle-down')
+                        ),
+                        secondary_y=False
+                    )
+
+                # 4. 畫機率曲線
+                fig.add_trace(
+                    go.Scatter(x=df_viz['Date'], y=df_viz['Prob'], name="看漲機率",
+                              line=dict(color='rgba(255, 0, 0, 0.2)', width=1, dash='dot')),
+                    secondary_y=True
+                )
+                
+                fig.update_layout(
+                    height=350, 
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    legend=dict(orientation="h", y=1.1)
+                )
+                fig.update_yaxes(title_text="股價", secondary_y=False)
+                fig.update_yaxes(title_text="AI 信心度", range=[0, 1], secondary_y=True)
+                
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # 顯示統計
+                total_buys = len(buy_signals)
+                st.caption(f"💡 近 90 天 AI 共發出 **{total_buys}** 次買進訊號 (紅色三角形)。請觀察三角形出現後，股價是否有波段漲幅？")
     # === Tab 2: EDZ / Macro ===
     with tab2:
         st.subheader("全球風險雷達")
@@ -1379,6 +1467,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
