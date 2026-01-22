@@ -145,158 +145,172 @@ def verify_ledger():
         return None
 
 # ==========================================
-# ★★★ 補漏：TSM 波段預測 (T+5 / 舊版模型) ★★★
+# ★★★ 修正版：TSM 波段預測 (T+5 / 舊版模型) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tsm_swing_prediction():
-    # 如果沒有 Tensorflow 則直接回傳空值
     if not HAS_TENSORFLOW: return None, None, 0
-    
     try:
-        # 1. 取得數據 (只抓 TSM)
+        # 1. 取得數據
         df = yf.download("TSM", period="2y", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # 2. 特徵工程 (T+5 經典版)
+        # 2. 特徵工程
         df['Return'] = df['Close'].pct_change()
         df['RSI'] = ta.rsi(df['Close'], length=14)
         df['MACD'] = ta.macd(df['Close'])['MACD_12_26_9']
         df['Vol_Change'] = df['Volume'].pct_change()
-        
-        # 移除空值
         df.dropna(inplace=True)
         
-        # 3. 設定標籤：未來 5 天漲幅 > 2%
+        # 3. 標籤：未來 5 天漲幅 > 2% (Target=1 代表大漲)
         df['Target'] = ((df['Close'].shift(-5) / df['Close'] - 1) > 0.02).astype(int)
         
-        # 準備訓練資料 (扣掉最後 5 天因為沒有未來答案)
         feature_cols = ['Return', 'RSI', 'MACD', 'Vol_Change']
-        df_train = df.iloc[:-5].copy()
+        df_train = df.iloc[:-5].copy() # 去掉最後 5 天沒答案的
         
-        # 4. 數據標準化
+        # 4. 數據整理 (序列化)
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[feature_cols])
         
         X, y = [], []
-        lookback = 60 # 波段看長一點 (60天)
-        
+        lookback = 60
         for i in range(lookback, len(scaled_data)):
             X.append(scaled_data[i-lookback:i])
             y.append(df_train['Target'].iloc[i])
-            
         X, y = np.array(X), np.array(y)
         
-        # 5. 模型架構 (LSTM)
+        # ★★★ 修正關鍵：強制切分 20% 測試集 ★★★
+        split = int(len(X) * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        
+        # 5. 模型訓練
         model = Sequential()
         model.add(LSTM(50, return_sequences=True, input_shape=(lookback, len(feature_cols))))
-        model.add(Dropout(0.2))
+        model.add(Dropout(0.3))
         model.add(LSTM(50))
-        model.add(Dropout(0.2))
+        model.add(Dropout(0.3))
         model.add(Dense(1, activation='sigmoid'))
         
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-        # 快速訓練 20 epochs
-        model.fit(X, y, epochs=20, batch_size=32, verbose=0)
         
-        # 6. 計算準確率
-        loss, acc = model.evaluate(X, y, verbose=0)
+        # 加入早停機制，防止死記硬背
+        early = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
         
-        # 7. 預測最新數據
+        model.fit(X_train, y_train, 
+                  validation_data=(X_test, y_test), 
+                  epochs=30, batch_size=32, 
+                  callbacks=[early], verbose=0)
+        
+        # ★★★ 重點：只回傳測試集的準度 ★★★
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        
+        # 6. 預測最新
         latest_seq = df[feature_cols].iloc[-lookback:].values
-        # 必須使用同樣的 scaler 轉換
         latest_scaled = scaler.transform(latest_seq)
-        latest_input = latest_scaled.reshape(1, lookback, len(feature_cols))
+        prob = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
         
-        prob = model.predict(latest_input, verbose=0)[0][0]
-        current_price = df['Close'].iloc[-1]
-        
-        return prob, acc, current_price
+        return prob, acc, df['Close'].iloc[-1]
 
     except Exception as e:
-        print(f"TSM Swing Model Error: {e}")
+        print(f"Swing Model Error: {e}")
         return None, None, 0
 # ==========================================
-# ★★★ 新增：TSM 短線極速預測 (T+3 / 五大因子) ★★★
+# ★★★ 修正版：TSM 短線極速預測 (T+3 / 五大因子) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tsm_short_prediction():
-    if not HAS_TENSORFLOW: return None, None, "TF缺"
+    if not HAS_TENSORFLOW: return None, None
     try:
-        # 定義五大護法 (新版因子)
+        # 1. 數據下載
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
+        data = yf.download(tickers, period="2y", interval="1d", progress=False)
         
-        # 下載數據
-        data = yf.download(tickers, period="2y", interval="1d", progress=False, auto_adjust=False)
-        
-        # 處理格式
+        # 兼容 yfinance 新舊版索引
         if isinstance(data.columns, pd.MultiIndex):
-            df_close = data['Close'].copy()
-            # 簡單容錯
-            try: df_close = df_close[tickers] 
-            except: pass
-            df = df_close.copy()
+            df_main = data['Close'].copy()
         else:
-            df = data['Close'].copy()
+            df_main = data['Close'].copy()
+            
+        df_main.ffill(inplace=True); df_main.dropna(inplace=True)
 
-        df.ffill(inplace=True); df.dropna(inplace=True)
-
-        # 特徵工程 (跟 Colab T+3 版一致)
+        # 2. 特徵工程
         feat_df = pd.DataFrame()
-        feat_df['TSM_Ret'] = df['TSM'].pct_change()
-        feat_df['SOX_Ret'] = df['^SOX'].pct_change()
-        feat_df['NVDA_Ret'] = df['NVDA'].pct_change()
-        feat_df['TSM_RSI'] = ta.rsi(df['TSM'], length=14)
-        feat_df['TSM_MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
-        feat_df['VIX'] = df['^VIX']
-        feat_df['TNX_Chg'] = df['^TNX'].pct_change()
+        try:
+            feat_df['TSM_Ret'] = df_main['TSM'].pct_change()
+            feat_df['SOX_Ret'] = df_main['^SOX'].pct_change()
+            feat_df['NVDA_Ret'] = df_main['NVDA'].pct_change()
+            feat_df['TSM_RSI'] = ta.rsi(df_main['TSM'], length=14)
+            feat_df['TSM_MACD'] = ta.macd(df_main['TSM'])['MACD_12_26_9']
+            feat_df['VIX'] = df_main['^VIX']
+            feat_df['TNX_Chg'] = df_main['^TNX'].pct_change()
+        except: return None, None
         
         feat_df.dropna(inplace=True)
         feature_cols = ['TSM_Ret', 'SOX_Ret', 'NVDA_Ret', 'TSM_RSI', 'TSM_MACD', 'VIX', 'TNX_Chg']
         
         # 標籤：T+3 漲幅 > 1.5%
-        future_ret = df['TSM'].shift(-3) / df['TSM'] - 1
+        future_ret = df_main['TSM'].shift(-3) / df_main['TSM'] - 1
         feat_df['Target'] = (future_ret > 0.015).astype(int)
         
+        # 3. 準備數據
         df_train = feat_df.iloc[:-3].copy()
-        
-        # 標準化
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[feature_cols])
         
         X, y = [], []
-        lookback = 30 # T+3 版看 30 天
-        
+        lookback = 30 
         for i in range(lookback, len(scaled_data)):
             X.append(scaled_data[i-lookback:i])
             y.append(df_train['Target'].iloc[i])
             
         X, y = np.array(X), np.array(y)
         
-        # 訓練雙向 LSTM
-        from tensorflow.keras.layers import Input, Bidirectional
+        # ★★★ 訓練/測試集切分 (防止準確率虛高) ★★★
+        split = int(len(X) * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        
+        # --- 模型架構區 ---
+        # 這裡必須 import Bidirectional，防止 NameError
+        from tensorflow.keras.layers import Input, Bidirectional 
+        
         model = Sequential()
         model.add(Input(shape=(lookback, len(feature_cols))))
-        model.add(Bidirectional(LSTM(64, return_sequences=True)))
-        model.add(Dropout(0.3))
-        model.add(Bidirectional(LSTM(32)))
-        model.add(Dropout(0.3))
+        
+        # ★★★ 這裡就是雙向 LSTM (Layer 1) ★★★
+        model.add(Bidirectional(LSTM(64, return_sequences=True))) 
+        model.add(Dropout(0.4))
+        
+        # ★★★ 這裡就是雙向 LSTM (Layer 2) ★★★
+        model.add(Bidirectional(LSTM(32))) 
+        model.add(Dropout(0.4))
+        
         model.add(Dense(1, activation='sigmoid'))
         
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
-        model.fit(X, y, epochs=40, batch_size=32, verbose=0)
         
-        loss, acc = model.evaluate(X, y, verbose=0)
+        # 早停機制
+        early = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
         
-        # 預測
+        # 4. 訓練與驗證
+        model.fit(X_train, y_train, 
+                  validation_data=(X_test, y_test), 
+                  epochs=30, batch_size=32, 
+                  callbacks=[early], verbose=0)
+        
+        # 只看 Test 準確率
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        
+        # 5. 預測最新
         latest_seq = feat_df[feature_cols].iloc[-lookback:].values
         latest_scaled = scaler.transform(latest_seq)
-        latest_input = latest_scaled.reshape(1, lookback, len(feature_cols))
-        
-        prob = model.predict(latest_input, verbose=0)[0][0]
+        prob = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
         
         return prob, acc
+
     except Exception as e:
-        print(f"Error in Short Model: {e}")
+        print(f"Short Model Error: {e}")
         return None, None
 
 # --- B. EDZ/Macro ---
@@ -1210,6 +1224,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
