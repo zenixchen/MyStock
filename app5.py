@@ -994,34 +994,156 @@ def quick_backtest(df, config, fee=0.0005):
         return last_sig, stats, sigs
     except Exception as e: return 0, None, None
 
+# ==========================================
+# ★ 新增模組：籌碼健康度診斷 (OBV + CMF 解讀)
+# ==========================================
+def analyze_chip_health(df, cmf_len=20):
+    try:
+        close = df['Close']
+        vol = df['Volume']
+        
+        # 1. 計算 OBV 與其均線 (判斷籌碼趨勢)
+        obv = ta.obv(close, vol)
+        obv_ma = ta.sma(obv, length=20)
+        
+        # 2. 計算 CMF (判斷資金流向力度)
+        cmf = ta.cmf(df['High'], df['Low'], close, vol, length=cmf_len)
+        
+        curr_obv = obv.iloc[-1]
+        curr_obv_ma = obv_ma.iloc[-1]
+        curr_cmf = cmf.iloc[-1]
+        
+        # 價格趨勢 (簡單判斷)
+        price_trend = "漲" if close.iloc[-1] > close.iloc[-20] else "跌"
+        
+        msg = ""
+        status = "neutral" # healthy, divergence, weak
+        
+        # --- 診斷邏輯 ---
+        
+        # A. OBV 趨勢判斷
+        if curr_obv > curr_obv_ma:
+            obv_msg = "🟢 籌碼健康 (OBV在均線上)"
+        else:
+            obv_msg = "⚠️ 籌碼鬆動 (OBV跌破均線)"
+            
+        # B. CMF 資金流向
+        if curr_cmf > 0.15: flow_msg = "🔥 主力強力買進"
+        elif curr_cmf > 0: flow_msg = "🔼 資金緩步流入"
+        elif curr_cmf < -0.15: flow_msg = "🛑 主力大幅出貨"
+        else: flow_msg = "🔽 資金流出"
+        
+        # C. 關鍵：價格與籌碼背離 (Price-Volume Divergence)
+        # 情況 1: 價格上漲，但 OBV 卻下跌 (量價背離 - 危險)
+        if price_trend == "漲" and curr_obv < curr_obv_ma:
+            msg = "💀 頂部背離警戒：股價創高但籌碼沒跟上 (主力在跑)"
+            status = "danger"
+        # 情況 2: 價格下跌，但 CMF 卻翻紅 (底部吸籌 - 機會)
+        elif price_trend == "跌" and curr_cmf > 0.05:
+            msg = "💎 底部吸籌跡象：股價跌但主力資金進場"
+            status = "gold"
+        # 情況 3: 價格漲 + OBV 漲 + CMF 紅 (健康多頭)
+        elif price_trend == "漲" and curr_obv > curr_obv_ma and curr_cmf > 0:
+            msg = "🚀 量價齊揚：籌碼完美配合，趨勢健康"
+            status = "healthy"
+        else:
+            msg = f"{obv_msg} | {flow_msg}"
+            
+        return msg, status, curr_cmf
+    except:
+        return "籌碼數據不足", "neutral", 0
+
 def plot_chart(df, config, sigs):
-    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.02, specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": True}]])
+    # 設定圖表佈局 (Row 3 使用雙軸: 左軸 CMF, 右軸 OBV)
+    fig = make_subplots(
+        rows=3, cols=1, 
+        shared_xaxes=True, 
+        row_heights=[0.6, 0.2, 0.25], # 增加下方籌碼區的高度
+        vertical_spacing=0.03, 
+        specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": True}]]
+    )
+    
+    # --- Row 1: K線圖與主圖指標 ---
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
+    
     if config.get('ma_trend', 0) > 0:
         ma = ta.ema(df['Close'], length=config['ma_trend'])
-        fig.add_trace(go.Scatter(x=df.index, y=ma, name=f"EMA {config['ma_trend']}", line=dict(color='purple')), row=1, col=1)
-    if "RSI" in config['mode']:
+        fig.add_trace(go.Scatter(x=df.index, y=ma, name=f"EMA {config['ma_trend']}", line=dict(color='orange', width=1)), row=1, col=1)
+        
+    if "BOLL" in config['mode']:
+        bb = ta.bbands(df['Close'], length=20, std=2)
+        fig.add_trace(go.Scatter(x=df.index, y=bb.iloc[:, 2], name="Upper", line=dict(color='rgba(255,255,255,0.3)', width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=bb.iloc[:, 0], name="Lower", line=dict(color='rgba(255,255,255,0.3)', width=1), fill='tonexty'), row=1, col=1)
+
+    # --- Row 2: 副圖 (RSI / KD) ---
+    if "RSI" in config['mode'] or config['mode'] == "FUSION":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
         fig.add_trace(go.Scatter(x=df.index, y=rsi, name="RSI", line=dict(color='#b39ddb')), row=2, col=1)
-        fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", row=2, col=1)
+        fig.add_hline(y=config.get('entry_rsi', 30), line_dash="dash", line_color="green", row=2, col=1)
+        fig.add_hline(y=config.get('exit_rsi', 70), line_dash="dash", line_color="red", row=2, col=1)
     elif "KD" in config['mode']:
         k = ta.stoch(df['High'], df['Low'], df['Close'], k=9, d=3)
         fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 0], name="K", line=dict(color='yellow')), row=2, col=1)
-        fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", row=2, col=1)
-    
-    # ★★★ 優化：CMF 使用自訂週期 ★★★
+        fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 1], name="D", line=dict(color='lightblue')), row=2, col=1)
+        fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", line_color="green", row=2, col=1)
+
+    # --- Row 3: 升級版籌碼透視 (CMF + OBV) ---
+    # 1. CMF (Chaikin Money Flow) - 使用左軸 (secondary_y=False)
+    # 改進：使用 Filled Area (山脈圖) 而不是 Bar，並區分顏色
     target_len = config.get('cmf_len', 20)
     cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=target_len)
     
-    colors = ['#089981' if v >= 0 else '#f23645' for v in cmf]
-    fig.add_trace(go.Bar(x=df.index, y=cmf, name=f'CMF ({target_len})', marker_color=colors, opacity=0.5), row=3, col=1, secondary_y=False)
+    # 製作漸層色或正負分色
+    cmf_color = ['#00E676' if v >= 0 else '#FF5252' for v in cmf] # 亮綠/亮紅
+    
+    fig.add_trace(go.Bar(
+        x=df.index, y=cmf, 
+        name=f'資金流向 CMF({target_len})', 
+        marker_color=cmf_color,
+        opacity=0.4  # 半透明，避免擋住後面的線
+    ), row=3, col=1, secondary_y=False)
+    
+    # 加入 CMF 零軸線
+    fig.add_hline(y=0, line_color="gray", line_width=1, row=3, col=1, secondary_y=False)
+
+    # 2. OBV (On Balance Volume) - 使用右軸 (secondary_y=True)
+    # 改進：加入 OBV 均線 (Signal Line)
     obv = ta.obv(df['Close'], df['Volume'])
-    fig.add_trace(go.Scatter(x=df.index, y=obv, name='OBV', line=dict(color='cyan', width=1)), row=3, col=1, secondary_y=True)
+    obv_ma = ta.sma(obv, length=20)
+    
+    # 繪製 OBV 主線 (青色)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=obv, 
+        name='籌碼 OBV', 
+        line=dict(color='cyan', width=2)
+    ), row=3, col=1, secondary_y=True)
+    
+    # 繪製 OBV 均線 (黃色虛線)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=obv_ma, 
+        name='OBV均線(20)', 
+        line=dict(color='yellow', width=1, dash='dot')
+    ), row=3, col=1, secondary_y=True)
+
+    # 買賣訊號標記
     if sigs is not None:
         buy = df[sigs==1]; sell = df[sigs==-1]
-        fig.add_trace(go.Scatter(x=buy.index, y=buy['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', color='green', size=10), name='Buy'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=sell.index, y=sell['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', color='red', size=10), name='Sell'), row=1, col=1)
-    fig.update_layout(height=700, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False)
+        fig.add_trace(go.Scatter(x=buy.index, y=buy['Low']*0.98, mode='markers', marker=dict(symbol='triangle-up', color='#00E676', size=12), name='Buy Signal'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=sell.index, y=sell['High']*1.02, mode='markers', marker=dict(symbol='triangle-down', color='#FF5252', size=12), name='Sell Signal'), row=1, col=1)
+
+    # 版面設定
+    fig.update_layout(
+        height=800, # 加高一點
+        template="plotly_dark", 
+        xaxis_rangeslider_visible=False, 
+        showlegend=False,
+        margin=dict(l=10, r=10, t=30, b=30)
+    )
+    
+    # 設定 Y 軸標籤
+    fig.update_yaxes(title_text="CMF 資金流向", row=3, col=1, secondary_y=False, range=[-0.5, 0.5]) # 固定 CMF 範圍使其對稱
+    fig.update_yaxes(title_text="OBV 累積量", row=3, col=1, secondary_y=True, showgrid=False) # 隱藏右軸網格避免混亂
+
     return fig
 
 def get_strategy_desc(cfg, df=None):
@@ -1507,11 +1629,41 @@ elif app_mode == "📊 策略分析工具 (單股)":
             else:
                 c2.metric("策略勝率 (回測)", "無交易", delta="區間未觸發", delta_color="off")
                 
-            c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望")
+            c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望") 
+            
             st.info(f"💡 凱利觀點: {kelly_msg}")
+            
+            # --- ★★★ 新增：籌碼診斷面板 ★★★ ---
+            chip_msg, chip_status, cmf_val = analyze_chip_health(df, cmf_len=cfg.get('cmf_len', 20))
+            
+            # 根據狀態顯示不同顏色的提示框
+            if chip_status == "danger":
+                st.error(f"💣 籌碼診斷: {chip_msg}")
+            elif chip_status == "gold":
+                st.success(f"💰 籌碼診斷: {chip_msg}")
+            elif chip_status == "healthy":
+                st.success(f"✅ 籌碼診斷: {chip_msg}")
+            else:
+                st.warning(f"⚖️ 籌碼診斷: {chip_msg}")
 
+            # 繪製新版圖表
             fig = plot_chart(df, cfg, sigs)
             st.plotly_chart(fig, use_container_width=True)
+            
+            # 加入圖表解讀說明 (幫助你看懂)
+            with st.expander("📖 如何解讀下方籌碼圖 (Row 3)?"):
+                st.markdown("""
+                **1. 資金流向 (CMF) - 柱狀圖/山脈**:
+                * **<span style='color:#00E676'>綠色柱狀</span>**: 資金淨流入 (收盤價收在高點)。越高代表買盤越強。
+                * **<span style='color:#FF5252'>紅色柱狀</span>**: 資金淨流出 (收盤價收在低點)。越低代表賣壓越重。
+                * **背離訊號**: 股價創新低，但紅色柱狀變短 (底部背離) -> 買點。
+
+                **2. 籌碼能量 (OBV) - 線條**:
+                * **<span style='color:cyan'>青色實線 (OBV)</span>** vs **<span style='color:yellow'>黃色虛線 (OBV均線)</span>**。
+                * **OBV 穿過 均線向上**: 主力進場控盤，安全。
+                * **OBV 跌破 均線向下**: 主力棄守，危險。
+                * **頂部背離**: 股價創新高，但 OBV 沒有過前高 -> 假突破。
+                """, unsafe_allow_html=True)
 
         if fund:
             with st.expander("📊 財報基本面 & 籌碼數據", expanded=False):
@@ -1682,6 +1834,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
