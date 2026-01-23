@@ -1375,7 +1375,11 @@ if app_mode == "🤖 AI 深度學習實驗室":
 elif app_mode == "📊 策略分析工具 (單股)":
     st.header("📊 單股策略分析")
     
+    # 1. 定義所有策略 (包含 ACHR)
     strategies = {
+        # === 🚀 潛力飆股 (新增) ===
+        "ACHR": { "symbol": "ACHR", "name": "ACHR (飛行計程車 - 妖股)", "category": "🚀 潛力飆股", "mode": "BOLL_BREAK" },
+
         # === 📊 指數與外匯 ===
         "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
         "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200, "cmf_len": 30 },
@@ -1389,7 +1393,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
         "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5, "cmf_len": 30 },
         "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60, "cmf_len": 26 },
         "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200, "cmf_len": 40 },
-        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100, "ma_filter": False, "cmf_len": 25 }, # ★★★ 寬鬆模式範例 ★★★
+        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100, "ma_filter": False, "cmf_len": 25 },
         "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100, "cmf_len": 30 },
         "GLW": { "symbol": "GLW", "name": "GLW (康寧 - 玻璃基板/光通訊)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
         "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖 - CoWoS 檢測設備)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
@@ -1441,35 +1445,21 @@ elif app_mode == "📊 策略分析工具 (單股)":
         
         "GC": { "symbol": "GC=F", "name": "Gold (黃金期貨)", "category": "⛏️ 原物料", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14 },
         "CL": { "symbol": "CL=F", "name": "Crude Oil (原油期貨)", "category": "⛏️ 原物料", "mode": "KD", "entry_k": 20, "exit_k": 80 },
-        "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 },
-        
-        # ★★★ 新增：ACHR 專區 ★★★
-        "ACHR": { 
-            "symbol": "ACHR", 
-            "name": "ACHR (飛行計程車 - 妖股)", 
-            "category": "🚀 潛力飆股", 
-            "mode": "BOLL_BREAK"  
-        }
+        "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
     }
-
-    # ↑ 字典在這裡結束
-
-    # ==========================================
-    # ★★★ 選單與數據讀取區 (請保留這一段，確保只有一份) ★★★
-    # ==========================================
     
-    # 1. 製作分類選單
+    # 2. 製作分類選單 (先執行)
     all_categories = sorted(list(set(s['category'] for s in strategies.values())))
     selected_cat = st.selectbox("📂 步驟一：選擇板塊分類", all_categories)
     
-    # 2. 根據分類篩選股票
+    # 3. 根據分類篩選股票 (次執行)
     cat_strategies = {k: v for k, v in strategies.items() if v['category'] == selected_cat}
     target_key = st.selectbox("📍 步驟二：選擇具體標的", list(cat_strategies.keys()), format_func=lambda x: cat_strategies[x]['name'])
     
-    # 3. 定義 cfg (關鍵變數)
+    # 4. 定義 cfg (關鍵！必須在選單之後)
     cfg = strategies[target_key]
     
-    # 4. 讀取數據
+    # 5. 最後才讀取數據 (確保 cfg 已經存在)
     df = get_safe_data(cfg['symbol'])
     lp = get_real_live_price(cfg['symbol'])
     
@@ -1499,7 +1489,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
             c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望")
             st.info(f"💡 凱利觀點: {kelly_msg}")
 
-            # ★★★ 補回圖表繪製邏輯 ★★★
             fig = plot_chart(df, cfg, sigs)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -1546,34 +1535,21 @@ elif app_mode == "📊 策略分析工具 (單股)":
         else:
             st.warning("⚠️ 暫無財報數據 (API 忙碌中，請稍後再試)")
 
-        # 1. 顯示策略邏輯文字 (這是錨點，請對齊這裡)
         strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
 
-        # ==========================================
-        # ★★★ 修復點：先初始化變數，防止 NameError ★★★
-        # ==========================================
         analyze_btn = False 
-
-        # 2. Gemini 分析區塊 (完整防呆版)
         if ai_provider == "Gemini (User Defined)" and gemini_key:
             st.divider()
             st.subheader("🧠 Gemini 首席分析師")
-            
             st.info("ℹ️ 系統將自動抓取 Google News 最新頭條。若您有額外資訊 (如財報細節)，可在下方補充。")
-
             with st.expander("📝 補充筆記 (選填 / Optional)", expanded=False):
                 user_notes = st.text_area("例如：營收創歷史新高、分析師調升評級...", height=68)
-            
-            # ★★★ 定義按鈕 (注意：這行必須跟上面的 st.info 對齊) ★★★
             analyze_btn = st.button("🚀 啟動 AI 深度分析 (含新聞解讀)")
             
-        # ★★★ 檢查按鈕 (現在移到外面也安全了) ★★★
         if analyze_btn and ai_provider == "Gemini (User Defined)":
             with st.spinner("🔍 AI 正在爬取 Google News 並進行大腦運算..."):
-                # A. 自動抓新聞
                 news_items = get_news(cfg['symbol'])
-                
                 if news_items:
                     with st.expander(f"📰 AI 已讀取 {len(news_items)} 則最新新聞", expanded=True):
                         for n in news_items:
@@ -1582,10 +1558,8 @@ elif app_mode == "📊 策略分析工具 (單股)":
                     st.warning("⚠️ 暫時抓不到 Google News，AI 將純以技術面分析。")
                     news_items = []
 
-                # B. 計算策略指標
                 strat_rsi_len = cfg.get('rsi_len', 14)
                 strat_val_txt = ""
-                
                 if "RSI" in cfg['mode'] or cfg['mode'] == "FUSION":
                     real_rsi = ta.rsi(df['Close'], length=strat_rsi_len).iloc[-1]
                     strat_val_txt = f"Strategy_RSI({strat_rsi_len}):{real_rsi:.1f}"
@@ -1599,14 +1573,11 @@ elif app_mode == "📊 策略分析工具 (單股)":
                     strat_val_txt = f"MA_Gap:{dist:.2f}%"
 
                 base_rsi = ta.rsi(df['Close'], 14).iloc[-1]
-                
                 sig_map = { 1: "🚀 買進訊號 (Buy)", -1: "📉 賣出訊號 (Sell)", 0: "💤 觀望/無訊號 (Wait)" }
                 human_sig = sig_map.get(int(current_sig), "未知")
 
-                # C. 財報數據打包 (含成長率)
                 fund_txt = "無財報數據"
                 if fund:
-                    # 籌碼動態
                     short_trend_str = "N/A"
                     if fund.get('shares_short') and fund.get('shares_short_prev'):
                         change = (fund['shares_short'] - fund['shares_short_prev']) / fund['shares_short_prev']
@@ -1614,7 +1585,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
                         elif change < -0.05: short_trend_str = f"🟢 減少 {abs(change)*100:.1f}% (空軍回補)"
                         else: short_trend_str = f"⚪ 持平 ({change*100:.1f}%)"
 
-                    # 預估 PE
                     pe_trend_str = "N/A"
                     if fund.get('pe') and fund.get('fwd_pe'):
                         if fund['fwd_pe'] < fund['pe']: pe_trend_str = f"↘️ 看好 (預估PE {fund['fwd_pe']:.1f} < 當前)"
@@ -1632,7 +1602,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
                         f"毛利率:{fund.get('margin', 0)*100:.1f}%"
                     )
 
-                # D. 組合小抄
                 tech_txt = (
                     f"【策略關鍵指標】: {strat_val_txt}\n"
                     f"【籌碼與基本面】: {fund_txt}\n"
@@ -1641,7 +1610,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
                     f"【當前訊號】: {human_sig}"
                 )
 
-                # E. 定義與呼叫 (內嵌函數以防變數汙染)
                 def analyze_v2(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
                     if not HAS_GEMINI: return "No Gemini", "⚠️", False
                     try:
@@ -1667,7 +1635,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
                     except Exception as e: return str(e), "⚠️", False
 
                 analysis, icon, success = analyze_v2(gemini_key, cfg['symbol'], news_items, tech_txt, k_pat, gemini_model, user_notes)
-                
                 if success: st.markdown(analysis)
                 else: st.error(f"Gemini 連線失敗: {analysis}")
 
@@ -1695,6 +1662,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
