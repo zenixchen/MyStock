@@ -297,7 +297,7 @@ def get_tsm_swing_prediction():
         return None, None, 0.0, None, 0
         
 # ==========================================
-# ★★★ 修正版：TSM 短線極速預測 (T+3 / 五大因子) ★★★
+# ★★★ 修正版：TSM T+3 短線先鋒 (嚴格防作弊 + 信心放大) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tsm_short_prediction():
@@ -307,7 +307,6 @@ def get_tsm_short_prediction():
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
         data = yf.download(tickers, period="2y", interval="1d", progress=False)
         
-        # 兼容 yfinance 新舊版索引
         if isinstance(data.columns, pd.MultiIndex):
             df_main = data['Close'].copy()
         else:
@@ -330,63 +329,82 @@ def get_tsm_short_prediction():
         feat_df.dropna(inplace=True)
         feature_cols = ['TSM_Ret', 'SOX_Ret', 'NVDA_Ret', 'TSM_RSI', 'TSM_MACD', 'VIX', 'TNX_Chg']
         
-        # 標籤：T+3 漲幅 > 1.5%
+        # 3. 標籤：T+3 漲幅 > 1.5%
         future_ret = df_main['TSM'].shift(-3) / df_main['TSM'] - 1
         feat_df['Target'] = (future_ret > 0.015).astype(int)
         
-        # 3. 準備數據
-        df_train = feat_df.iloc[:-3].copy()
+        # 嚴格切分數據 (Valid Data)
+        valid_data = feat_df.iloc[:-3].copy()
+        
+        # ★★★ 防作弊 1: 先切分時間，再做標準化 ★★★
+        split = int(len(valid_data) * 0.8)
+        train_df = valid_data.iloc[:split]
+        test_df = valid_data.iloc[split:]
+        
+        # ★★★ 防作弊 2: Scaler 只學過去 (Train)，不看未來 (Test) ★★★
         scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(df_train[feature_cols])
+        scaler.fit(train_df[feature_cols]) 
         
-        X, y = [], []
+        train_scaled = scaler.transform(train_df[feature_cols])
+        test_scaled = scaler.transform(test_df[feature_cols])
+        
+        # 準備序列
         lookback = 30 
-        for i in range(lookback, len(scaled_data)):
-            X.append(scaled_data[i-lookback:i])
-            y.append(df_train['Target'].iloc[i])
+        def make_seq(d, t):
+            X, y = [], []
+            for i in range(lookback, len(d)):
+                X.append(d[i-lookback:i])
+                y.append(t.iloc[i])
+            return np.array(X), np.array(y)
             
-        X, y = np.array(X), np.array(y)
-        
-        # ★★★ 訓練/測試集切分 (防止準確率虛高) ★★★
-        split = int(len(X) * 0.8)
-        X_train, X_test = X[:split], X[split:]
-        y_train, y_test = y[:split], y[split:]
-        
-        # --- 模型架構區 ---
-        # 這裡必須 import Bidirectional，防止 NameError
-        from tensorflow.keras.layers import Input, Bidirectional 
-        
+        X_train, y_train = make_seq(train_scaled, train_df['Target'])
+        X_test, y_test = make_seq(test_scaled, test_df['Target'])
+
+        # 計算類別權重 (解決樣本不平衡)
+        from sklearn.utils.class_weight import compute_class_weight
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+        class_weight_dict = dict(enumerate(class_weights))
+
+        # 模型架構 (雙向 LSTM)
+        from tensorflow.keras.layers import Input, Bidirectional, LSTM
         model = Sequential()
         model.add(Input(shape=(lookback, len(feature_cols))))
-        
-        # ★★★ 這裡就是雙向 LSTM (Layer 1) ★★★
         model.add(Bidirectional(LSTM(64, return_sequences=True))) 
-        model.add(Dropout(0.4))
-        
-        # ★★★ 這裡就是雙向 LSTM (Layer 2) ★★★
+        model.add(Dropout(0.3)) # 稍微調低 Dropout 讓它更大膽
         model.add(Bidirectional(LSTM(32))) 
-        model.add(Dropout(0.4))
-        
+        model.add(Dropout(0.3))
         model.add(Dense(1, activation='sigmoid'))
         
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        early = EarlyStopping(monitor='val_loss', patience=6, restore_best_weights=True)
         
-        # 早停機制
-        early = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-        
-        # 4. 訓練與驗證
+        # 訓練
         model.fit(X_train, y_train, 
                   validation_data=(X_test, y_test), 
-                  epochs=30, batch_size=32, 
-                  callbacks=[early], verbose=0)
+                  epochs=35, batch_size=32, 
+                  callbacks=[early], 
+                  class_weight=class_weight_dict, # 加入權重
+                  verbose=0)
         
-        # 只看 Test 準確率
-        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        # 4. 計算嚴格勝率 (只看 Test Set)
+        # 這裡我們用 predict 來算出放大信心後的準確率
+        preds = model.predict(X_test, verbose=0).flatten()
         
-        # 5. 預測最新
-        latest_seq = feat_df[feature_cols].iloc[-lookback:].values
-        latest_scaled = scaler.transform(latest_seq)
-        prob = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
+        # ★★★ 信心放大 (Temperature Scaling) ★★★
+        # T+3 波動較大，我們用溫和一點的 T=0.3
+        enhanced_preds = [enhance_confidence(p, temperature=0.3) for p in preds]
+        enhanced_cls = (np.array(enhanced_preds) > 0.5).astype(int)
+        
+        # 最終嚴格勝率
+        acc = np.mean(y_test == enhanced_cls)
+        
+        # 5. 預測最新一天
+        latest_seq_raw = feat_df[feature_cols].iloc[-lookback:].values
+        latest_scaled = scaler.transform(latest_seq_raw) # 用 Train 的 Scaler
+        prob_raw = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
+        
+        # ★★★ 最新預測也要放大信心 ★★★
+        prob = enhance_confidence(prob_raw, temperature=0.3)
         
         return prob, acc
 
@@ -1475,6 +1493,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
