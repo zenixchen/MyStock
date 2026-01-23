@@ -81,68 +81,149 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# ★★★ 核心模組：AI 交易日記系統 ★★★
+# ★★★ 核心模組：AI 交易資料庫 (Google Sheets 雲端版) ★★★
 # ==========================================
-LEDGER_FILE = os.path.join(os.getcwd(), "ai_prediction_history.csv")
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
-def get_real_live_price(symbol):
-    try:
-        t = yf.Ticker(symbol)
-        price = t.fast_info.get('last_price')
-        if price is None or np.isnan(price):
-            df = yf.download(symbol, period='1d', interval='1m', progress=False)
-            if not df.empty:
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                return float(df['Close'].iloc[-1])
-        return float(price) if price else None
-    except: return None
+# 請填入你的 Google Sheet 網址 (必須先將 Sheet 分享給服務帳號 Email)
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1hNsWxQq3aYD7msroBVJdMnC6vA64khsSUF90yIKeS7w/edit?gid=0#gid=0"
 
-def save_prediction(symbol, direction, confidence, entry_price, target_days=5):
+# 連線快取 (避免每次按按鈕都重新連線)
+@st.cache_resource
+def get_gsheet_connection():
     try:
-        today = datetime.now().date()
-        target_date = today + timedelta(days=target_days)
-        new_record = {
-            "Date": today, "Symbol": symbol, "Direction": direction,
-            "Confidence": round(float(confidence), 4), "Entry_Price": round(float(entry_price), 2),
-            "Target_Date": target_date, "Status": "Pending", "Exit_Price": 0.0, "Return": 0.0
-        }
-        if os.path.exists(LEDGER_FILE):
-            df = pd.read_csv(LEDGER_FILE)
-            mask = (df['Date'] == str(today)) & (df['Symbol'] == symbol)
-            if not df[mask].empty: return False
-            df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
-        else:
-            df = pd.DataFrame([new_record])
-        df.to_csv(LEDGER_FILE, index=False)
-        return True
+        # 從 st.secrets 讀取憑證
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        # 這裡假設你在 secrets 裡的標題是 gcp_service_account
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        return client
     except Exception as e:
-        st.error(f"存檔失敗: {e}")
-        return False
-
-def verify_ledger():
-    if not os.path.exists(LEDGER_FILE): return None
-    try:
-        df = pd.read_csv(LEDGER_FILE)
-        df['Target_Date'] = pd.to_datetime(df['Target_Date']).dt.date
-        today = datetime.now().date()
-        updated = False
-        for i, row in df.iterrows():
-            if row['Status'] == 'Pending' or 'Run' in row['Status']:
-                current_price = get_real_live_price(row['Symbol'])
-                if current_price and current_price > 0:
-                    entry = row['Entry_Price']
-                    ret = (current_price - entry) / entry
-                    df.at[i, 'Exit_Price'] = current_price
-                    df.at[i, 'Return'] = round(ret * 100, 2)
-                    res = "Win" if (row['Direction'] == "Bull" and ret > 0) or (row['Direction'] == "Bear" and ret < 0) else "Loss"
-                    if today >= row['Target_Date']: df.at[i, 'Status'] = res
-                    else: df.at[i, 'Status'] = f"Run ({res})"
-                    updated = True
-        if updated: df.to_csv(LEDGER_FILE, index=False)
-        return df
-    except Exception as e:
-        st.error(f"讀取日記失敗: {e}")
         return None
+
+def init_db():
+    """檢查並初始化 Sheet (如果沒標題就加上)"""
+    client = get_gsheet_connection()
+    if not client: return
+    try:
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        # 檢查第一列是否為標題，如果空則初始化
+        if not sheet.row_values(1):
+            sheet.append_row(["date", "symbol", "direction", "confidence", "entry_price", "status", "exit_price", "return_pct"])
+    except: pass
+
+# 確保 Sheet 已準備好
+init_db()
+
+def save_prediction_db(symbol, direction, confidence, entry_price):
+    """存入一筆新的預測 (Append Row)"""
+    client = get_gsheet_connection()
+    if not client: return False, "❌ 無法連線 Google Sheets (請檢查 Secrets)"
+    
+    try:
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        
+        # 讀取所有資料檢查重複 (稍微耗時，但安全)
+        records = sheet.get_all_records()
+        df = pd.DataFrame(records)
+        
+        if not df.empty:
+            # 確保欄位都是字串以進行比對
+            if not df[(df['date'].astype(str) == today_str) & (df['symbol'] == symbol)].empty:
+                return False, "⚠️ 今天已經記錄過了 (雲端)"
+
+        # 插入新紀錄
+        # 注意：GSpread 寫入時數值最好轉為標準格式
+        new_row = [today_str, symbol, direction, float(confidence), float(entry_price), "Pending", 0.0, 0.0]
+        sheet.append_row(new_row)
+        return True, "✅ 戰報已上傳雲端！"
+    except Exception as e:
+        return False, f"❌ 上傳失敗: {e}"
+
+def get_history_df(symbol=None):
+    """讀取歷史資料 (從雲端下載)"""
+    client = get_gsheet_connection()
+    if not client: return pd.DataFrame()
+    
+    try:
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        records = sheet.get_all_records()
+        df = pd.DataFrame(records)
+        
+        if df.empty: return df
+        
+        # 簡單的型別轉換
+        df['confidence'] = pd.to_numeric(df['confidence'], errors='coerce')
+        df['entry_price'] = pd.to_numeric(df['entry_price'], errors='coerce')
+        df['return_pct'] = pd.to_numeric(df['return_pct'], errors='coerce')
+        
+        if symbol:
+            df = df[df['symbol'] == symbol].copy()
+            
+        df = df.sort_values(by="date", ascending=True)
+        return df
+    except: return pd.DataFrame()
+
+def verify_performance_db():
+    """自動驗證績效 (批量更新雲端)"""
+    client = get_gsheet_connection()
+    if not client: return 0
+    
+    try:
+        sheet = client.open_by_url(SHEET_URL).sheet1
+        # 讀取全部資料
+        data = sheet.get_all_records()
+        df = pd.DataFrame(data)
+        
+        if df.empty: return 0
+        
+        updates = 0
+        has_change = False
+        
+        # 遍歷資料檢查 Pending
+        for index, row in df.iterrows():
+            if row['status'] == 'Pending':
+                sym = row['symbol']
+                entry = float(row['entry_price'])
+                direction = row['direction']
+                
+                curr_price = get_real_live_price(sym)
+                if curr_price:
+                    ret = (curr_price - entry) / entry
+                    new_status = "Pending"
+                    
+                    # 驗證邏輯
+                    if direction == "Bull":
+                        if ret > 0.02: new_status = "Win"
+                        elif ret < -0.02: new_status = "Loss"
+                    elif direction == "Bear":
+                        if ret < -0.02: new_status = "Win"
+                        elif ret > 0.02: new_status = "Loss"
+                    
+                    if new_status != "Pending":
+                        # 更新 DataFrame
+                        df.at[index, 'status'] = new_status
+                        df.at[index, 'exit_price'] = curr_price
+                        df.at[index, 'return_pct'] = ret * 100
+                        has_change = True
+                        updates += 1
+        
+        if has_change:
+            # ★ 關鍵：GSpread 更新整張表比一格一格改快且穩定
+            # 準備寫入的資料 (包含標題)
+            header = df.columns.values.tolist()
+            values = df.values.tolist()
+            # 清空並重寫
+            sheet.clear()
+            sheet.update([header] + values)
+            
+        return updates
+    except Exception as e:
+        print(f"Verify Error: {e}")
+        return 0
 
 # ==========================================
 # ★★★ TSM T+5 主帥版 (最終版：嚴格防作弊 + 信心放大 + 價格防呆) ★★★
@@ -1522,6 +1603,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
