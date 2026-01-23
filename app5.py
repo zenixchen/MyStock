@@ -1069,27 +1069,22 @@ if app_mode == "🤖 AI 深度學習實驗室":
     with tab1:
         st.subheader("TSM 雙核心波段顧問")
         
-        # 按鈕：一次觸發兩個模型
-        # 注意：這裡我們改用 v6 版本號，強迫 session 重新抓取資料
-        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm") or 'tsm_result_v6' in st.session_state:
+        # 1. 啟動按鈕
+        # 使用 v7 版本號強迫刷新，確保抓到最新的 Code
+        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm_gsheet") or 'tsm_result_v7' in st.session_state:
             
-            # 如果 Session 裡沒有新版資料，就重跑
-            if 'tsm_result_v6' not in st.session_state:
-                with st.spinner("AI 正在進行雙重驗證 & 歷史回測..."):
-                    # 1. 呼叫 T+5 主帥模型 (維持原樣，接收 5 個回傳值)
+            # 如果 Session 裡沒有資料，就跑模型
+            if 'tsm_result_v7' not in st.session_state:
+                with st.spinner("AI 正在進行雙重驗證..."):
+                    # 呼叫 T+5
                     p_long, a_long, price, df_viz_long, backtest_score = get_tsm_swing_prediction()
-                    
-                    # 2. 呼叫 T+3 短線模型 (★修改點：這裡現在接收 3 個回傳值了)
-                    # p_short: 最新預測機率
-                    # a_short: 回測準確率
-                    # df_viz_short: 用來畫圖的歷史數據表
+                    # 呼叫 T+3
                     p_short, a_short, df_viz_short = get_tsm_short_prediction()
-                    
-                    # 存入 Session (把 df_viz_short 也存進去)
-                    st.session_state['tsm_result_v6'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
+                    # 存入 Session
+                    st.session_state['tsm_result_v7'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
             
-            # 從 Session 取出結果 (記得變數順序要對)
-            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v6']
+            # 解包數據
+            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v7']
             
             # --- 顯示即時價格 ---
             st.metric("TSM 即時價格", f"${price:.2f}")
@@ -1097,51 +1092,42 @@ if app_mode == "🤖 AI 深度學習實驗室":
 
             col1, col2 = st.columns(2)
             
-            # 左邊：T+5 (主帥)
+            # 左邊：T+5
             with col1:
-                st.info("🔭 T+5 波段主帥 (宏觀因子)")
+                st.info("🔭 T+5 波段主帥")
                 if p_long is not None:
-                    st.write(f"近期擬合度: `{backtest_score*100:.1f}%` (極佳)")
-                    if p_long > 0.6: 
-                        st.success(f"📈 波段看漲 (信心 {p_long*100:.0f}%)")
-                    elif p_long < 0.4: 
-                        st.warning(f"🐢 動能不足 (信心 {p_long*100:.0f}%)")
-                    else: 
-                        st.info(f"⚖️ 趨勢不明 (信心 {p_long*100:.0f}%)")
-                else:
-                    st.error("模型載入失敗")
+                    st.write(f"擬合度: `{backtest_score*100:.1f}%`")
+                    if p_long > 0.6: st.success(f"📈 看漲 ({p_long*100:.0f}%)")
+                    elif p_long < 0.4: st.warning(f"🐢 弱勢 ({p_long*100:.0f}%)")
+                    else: st.info(f"⚖️ 盤整 ({p_long*100:.0f}%)")
 
-            # 右邊：T+3 (先鋒)
+            # 右邊：T+3
             with col2:
-                st.info("⚡ T+3 短線狙擊 (技術)")
+                st.info("⚡ T+3 狙擊先鋒")
                 if p_short is not None:
-                    st.write(f"狙擊準度: `{a_short*100:.1f}%`")
-                    if p_short > 0.6: # 門檻 0.6 是因為我們在函數裡做過平移了 (0.60 -> 0.5)
-                        st.success(f"🚀 短線轉強 (信心 {p_short*100:.0f}%)")
-                    elif p_short < 0.4: 
-                        st.warning(f"💤 短線整理 (信心 {p_short*100:.0f}%)")
-                    else: 
-                        st.info(f"⚖️ 觀望 (信心 {p_short*100:.0f}%)")
+                    st.write(f"準確率: `{a_short*100:.1f}%`")
+                    if p_short > 0.6: st.success(f"🚀 轉強 ({p_short*100:.0f}%)")
+                    elif p_short < 0.4: st.warning(f"💤 休息 ({p_short*100:.0f}%)")
+                    else: st.info(f"⚖️ 觀望 ({p_short*100:.0f}%)")
 
-            # --- AI 綜合戰略官 ---
             st.divider()
-            st.subheader("🛡️ AI 綜合戰略官")
             
+            # --- 綜合戰略訊號 ---
             p5 = p_long if p_long is not None else 0.5
             p3 = p_short if p_short is not None else 0.5
             
             if p5 > 0.6 and p3 > 0.6:
-                signal_msg = "🚀 【強力進攻】趨勢與短線共振，建議積極佈局 (Aggressive Buy)"
-                color = "#00c853" 
+                signal_msg = "🚀 【強力進攻】建議積極佈局 (Aggressive Buy)"
+                color = "#00c853"
             elif p5 > 0.6 and p3 <= 0.5:
-                signal_msg = "📉 【拉回找買點】長線保護短線，等待修正結束再進 (Buy on Dip)"
-                color = "#2962ff" 
+                signal_msg = "📉 【拉回找買點】分批建倉 (Buy on Dip)"
+                color = "#2962ff"
             elif p5 <= 0.5 and p3 > 0.6:
-                signal_msg = "🐱 【搶反彈/觀望】逆勢短多，風險較高 (Dead Cat Bounce)"
-                color = "#ff6d00" 
+                signal_msg = "🐱 【搶反彈/觀望】風險較高 (Dead Cat Bounce)"
+                color = "#ff6d00"
             elif p5 < 0.4 and p3 < 0.4:
-                signal_msg = "🛑 【全面防守】趨勢轉空，建議清倉或做空 (Strong Sell)"
-                color = "#d50000" 
+                signal_msg = "🛑 【全面防守】建議清倉或做空 (Strong Sell)"
+                color = "#d50000"
             else:
                 signal_msg = "⚖️ 【震盪整理】多看少做 (Hold)"
                 color = "gray"
@@ -1150,57 +1136,121 @@ if app_mode == "🤖 AI 深度學習實驗室":
             <div style="padding:15px; border-radius:10px; border:2px solid {color}; background-color:rgba(0,0,0,0.2);">
                 <h4 style="color:{color}; margin:0;">{signal_msg}</h4>
                 <p style="margin-top:10px; color:#ddd;">
-                    綜合信心度: <b>{((p5+p3)/2)*100:.0f}%</b> (T+5: {p5*100:.0f}% | T+3: {p3*100:.0f}%)
+                    綜合信心: <b>{((p5+p3)/2)*100:.0f}%</b>
                 </p>
             </div>
             """, unsafe_allow_html=True)
 
-            # --- 歷史準度驗證圖 (第一張：T+5) ---
+            # ==========================================
+            # ★★★ 這裡就是你要的按鈕與雲端圖表 ★★★
+            # ==========================================
+            st.divider()
+            c_save, c_chart = st.columns([1, 2])
+            
+            # 左邊：存檔按鈕
+            with c_save:
+                st.subheader("💾 雲端戰報")
+                st.caption("將今日訊號寫入 Google Sheet")
+                
+                # 自動判斷方向
+                final_dir = "Neutral"
+                if (p5 > 0.6) or (p3 > 0.6): final_dir = "Bull"
+                elif (p5 < 0.4) and (p3 < 0.4): final_dir = "Bear"
+                
+                avg_conf = (p5 + p3) / 2
+                
+                # ★ 按鈕在這裡！
+                if st.button("📥 寫入資料庫", key="btn_save_gsheet", use_container_width=True):
+                    if final_dir == "Neutral":
+                        st.warning("⚠️ 趨勢不明，建議不記錄。")
+                    else:
+                        # 呼叫核心模組的存檔函數
+                        ok, msg = save_prediction_db("TSM", final_dir, avg_conf, price)
+                        if ok: 
+                            st.success(msg)
+                            time.sleep(1) # 停一秒讓使用者看到成功訊息
+                            st.rerun()    # 重新整理頁面以顯示最新圖表
+                        else: 
+                            st.warning(msg)
+                
+                # 顯示最近 3 筆雲端紀錄
+                df_hist = get_history_df("TSM") # 從 Google Sheet 抓資料
+                if not df_hist.empty:
+                    st.markdown("---")
+                    st.caption("📜 雲端最近紀錄")
+                    # 只顯示重要欄位
+                    st.dataframe(
+                        df_hist.tail(3)[['date', 'direction', 'return_pct']], 
+                        use_container_width=True, hide_index=True
+                    )
+
+            # 右邊：畫出雲端歷史圖
+            with c_chart:
+                st.subheader("📊 雲端戰績回顧")
+                
+                if not df_hist.empty and len(df_hist) > 1:
+                    # 建立雙軸圖表
+                    fig_rec = make_subplots(specs=[[{"secondary_y": True}]])
+                    
+                    # 軸1：當時記錄的股價
+                    fig_rec.add_trace(
+                        go.Scatter(x=df_hist['date'], y=df_hist['entry_price'], name="紀錄點位", line=dict(color='gray', width=2)),
+                        secondary_y=False
+                    )
+                    
+                    # 軸2：當時的 AI 信心
+                    fig_rec.add_trace(
+                        go.Scatter(x=df_hist['date'], y=df_hist['confidence'], name="AI 信心", 
+                                   line=dict(color='#ff5252', width=3), mode='lines+markers'),
+                        secondary_y=True
+                    )
+                    
+                    # 標記贏家點位
+                    if 'status' in df_hist.columns:
+                        wins = df_hist[df_hist['status'] == 'Win']
+                        if not wins.empty:
+                            fig_rec.add_trace(
+                                go.Scatter(x=wins['date'], y=wins['confidence'], mode='markers', 
+                                           marker=dict(symbol='star', size=15, color='gold'), name="獲利"),
+                                secondary_y=True
+                            )
+
+                    fig_rec.update_layout(height=350, margin=dict(t=30, b=20, l=10, r=10), hovermode="x unified")
+                    fig_rec.update_yaxes(title_text="股價", secondary_y=False)
+                    fig_rec.update_yaxes(title_text="信心度", range=[0, 1.1], secondary_y=True)
+                    
+                    st.plotly_chart(fig_rec, use_container_width=True)
+                else:
+                    st.info("📉 這裡會顯示從 Google Sheet 抓下來的「信心 vs 股價」走勢圖。")
+                    st.caption("目前資料不足 (需要至少 2 筆)，請按下左邊按鈕開始累積！")
+
+            # --- 原本的回測驗證圖 (保持不變) ---
             if df_viz_long is not None:
                 st.divider()
-                st.subheader("🔭 T+5 波段回測 (主帥)")
-                
-                k1, k2 = st.columns([1, 2])
-                k1.metric("回測勝率", f"{backtest_score*100:.1f}%", f"{int(backtest_score*len(df_viz_long))} / {len(df_viz_long)} Days")
-                k2.caption("💡 紅色三角形代表買進訊號 (Lookback=20, RSI=5)")
-
+                st.caption("🔭 T+5 波段回測圖")
                 fig = make_subplots(specs=[[{"secondary_y": True}]])
-                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Price'], name="TSM 股價", line=dict(color='gray', width=1)), secondary_y=False)
+                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Price'], name="股價", line=dict(color='gray')), secondary_y=False)
                 
-                buy_signals = df_viz_long[df_viz_long['Prob'] > 0.6]
-                if not buy_signals.empty:
-                    fig.add_trace(go.Scatter(x=buy_signals['Date'], y=buy_signals['Price'], mode='markers', name='AI 喊買', marker=dict(color='red', size=8, symbol='triangle-up')), secondary_y=False)
-                    
-                sell_signals = df_viz_long[df_viz_long['Prob'] < 0.4]
-                if not sell_signals.empty:
-                    fig.add_trace(go.Scatter(x=sell_signals['Date'], y=sell_signals['Price'], mode='markers', name='AI 喊賣', marker=dict(color='green', size=8, symbol='triangle-down')), secondary_y=False)
-
-                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Prob'], name="看漲機率", line=dict(color='rgba(255, 0, 0, 0.5)', width=1.5)), secondary_y=True)
-                fig.add_hline(y=0.6, line_dash="dot", line_color="red", opacity=0.3, secondary_y=True)
-                fig.add_hline(y=0.4, line_dash="dot", line_color="green", opacity=0.3, secondary_y=True)
+                buy = df_viz_long[df_viz_long['Prob'] > 0.6]
+                if not buy.empty: fig.add_trace(go.Scatter(x=buy['Date'], y=buy['Price'], mode='markers', marker=dict(color='red', size=8, symbol='triangle-up'), name='Buy'), secondary_y=False)
                 
-                fig.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", y=1.1))
+                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Prob'], name="信心", line=dict(color='rgba(255,0,0,0.5)')), secondary_y=True)
+                fig.add_hline(y=0.6, line_dash="dot", line_color="red", secondary_y=True)
+                fig.update_layout(height=350, margin=dict(t=10, b=10))
                 st.plotly_chart(fig, use_container_width=True)
 
-            # --- 歷史準度驗證圖 (第二張：T+3) ★新增部分★ ---
             if df_viz_short is not None:
-                st.divider()
-                st.subheader("⚡ T+3 狙擊回測 (先鋒)")
-                st.caption("💡 高頻訊號：黃色星星代表 AI 偵測到「短線起漲動能」。這些點位通常是勝率 75% 的精華。")
+                st.caption("⚡ T+3 狙擊回測圖")
+                fig_s = make_subplots(specs=[[{"secondary_y": True}]])
+                fig_s.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Price'], name="股價", line=dict(color='gray')), secondary_y=False)
                 
-                fig_short = make_subplots(specs=[[{"secondary_y": True}]])
-                fig_short.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Price'], name="股價", line=dict(color='gray', width=1)), secondary_y=False)
+                buy_s = df_viz_short[df_viz_short['Prob'] > 0.5]
+                if not buy_s.empty: fig_s.add_trace(go.Scatter(x=buy_s['Date'], y=buy_s['Price'], mode='markers', marker=dict(color='yellow', size=10, symbol='star'), name='Sniper Buy'), secondary_y=False)
                 
-                # T+3 買點 (門檻 > 0.5，因為已經平移過了)
-                buy_pts_s = df_viz_short[df_viz_short['Prob'] > 0.5]
-                if not buy_pts_s.empty:
-                    fig_short.add_trace(go.Scatter(x=buy_pts_s['Date'], y=buy_pts_s['Price'], mode='markers', name='狙擊買點', marker=dict(color='yellow', size=10, symbol='star')), secondary_y=False)
-
-                fig_short.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Prob'], name="短線信心", line=dict(color='rgba(0,255,0,0.5)', width=1.5)), secondary_y=True)
-                fig_short.add_hline(y=0.5, line_dash="dot", line_color="green", secondary_y=True)
-                
-                fig_short.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", y=1.1))
-                st.plotly_chart(fig_short, use_container_width=True)
+                fig_s.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Prob'], name="短線信心", line=dict(color='rgba(0,255,0,0.5)')), secondary_y=True)
+                fig_s.add_hline(y=0.5, line_dash="dot", line_color="green", secondary_y=True)
+                fig_s.update_layout(height=350, margin=dict(t=10, b=10))
+                st.plotly_chart(fig_s, use_container_width=True)
                 
     # === Tab 2: EDZ / Macro ===
     with tab2:
@@ -1603,6 +1653,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
