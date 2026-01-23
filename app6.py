@@ -31,7 +31,7 @@ def set_seeds(seed=42):
 set_seeds(42)
 
 # ==========================================
-# ★★★ 1. 套件檢查 ★★★
+# ★★★ 1. 套件檢查與設定 ★★★
 # ==========================================
 try:
     sys.stdout.reconfigure(encoding='utf-8')
@@ -41,23 +41,21 @@ except: pass
 try:
     from sklearn.preprocessing import StandardScaler
     from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import Dense, LSTM, Dropout, Bidirectional, Input
+    from tensorflow.keras.layers import Dense, LSTM, Dropout, Input, Bidirectional
     from tensorflow.keras.optimizers import Adam
     from tensorflow.keras.callbacks import EarlyStopping
     HAS_TENSORFLOW = True
 except ImportError:
     HAS_TENSORFLOW = False
 
+HAS_TRANSFORMERS = importlib.util.find_spec("transformers") is not None
 try:
     import google.generativeai as genai
     HAS_GEMINI = True
 except: HAS_GEMINI = False
 
-# ==========================================
-# 2. 頁面設定
-# ==========================================
 st.set_page_config(
-    page_title="2026 量化戰情室 (Dual-Core v23.0)",
+    page_title="2026 量化戰情室 (Ultimate Full)",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -80,7 +78,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# ★★★ 核心模組：AI 交易日記系統 ★★★
+# ★★★ 2. 核心共用函數 (不能刪！) ★★★
 # ==========================================
 LEDGER_FILE = os.path.join(os.getcwd(), "ai_prediction_history.csv")
 
@@ -144,219 +142,207 @@ def verify_ledger():
         return None
 
 # ==========================================
-# ★★★ 3. AI 模型核心 (T+5 與 T+3 雙模並存) ★★★
+# ★★★ 3. 深度學習模型區 (完整保留) ★★★
 # ==========================================
-# ==========================================
-# ★★★ 1. 舊版模型：T+5 波段 (趨勢 / 誠實驗證版) ★★★
-# ==========================================
+
+# --- 信心放大器 ---
+def enhance_confidence(prob, temperature=0.25):
+    import numpy as np
+    prob = np.clip(prob, 0.001, 0.999)
+    logit = np.log(prob / (1 - prob))
+    scaled_logit = logit / temperature
+    new_prob = 1 / (1 + np.exp(-scaled_logit))
+    return new_prob
+
+# --- TSM T+5 ---
 @st.cache_resource(ttl=3600)
 def get_tsm_swing_prediction():
-    if not HAS_TENSORFLOW: return None, None, "TF缺"
+    if not HAS_TENSORFLOW: return None, None, 0.0, None, 0
     try:
-        # --- 內建手動計算函式 (避開 pandas_ta 錯誤) ---
-        def manual_rsi(series, period=14):
-            delta = series.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-            rs = gain / loss
-            return 100 - (100 / (1 + rs))
-
-        def manual_sma(series, period=20):
-            return series.rolling(window=period).mean()
-
-        # 1. 定義原始四大因子
-        tickers = { 'Main': 'TSM', 'Night': "EWT", 'Rate': "^TNX", 'AI': 'NVDA' }
-        data = yf.download(list(tickers.values()), period="3y", interval="1d", progress=False, auto_adjust=False)
-        
-        if isinstance(data.columns, pd.MultiIndex):
-            df_close = data['Close'].copy()
-            df = pd.DataFrame()
-            for key, symbol in tickers.items():
-                if symbol in df_close.columns:
-                    df[f'{key}_Close'] = df_close[symbol]
-                else:
-                    # 容錯
-                    if len(tickers) == 1: df[f'{key}_Close'] = df_close
-                    else: df[f'{key}_Close'] = 0 
-        else:
-             return None, None, "DataFmt"
-
-        df.ffill(inplace=True); df.bfill(inplace=True); df.fillna(0, inplace=True)
-
-        # 2. 特徵工程 (手動計算)
-        df['Main_Ret'] = df['Main_Close'].pct_change()
-        df['Night_Ret'] = df['Night_Close'].pct_change()
-        df['Rate_Chg'] = df['Rate_Close'].pct_change()
-        df['AI_Ret'] = df['AI_Close'].pct_change()
-        
-        # 手算 RSI 和 Bias
-        df['RSI'] = manual_rsi(df['Main_Close'], period=14)
-        sma_20 = manual_sma(df['Main_Close'], period=20)
-        df['Bias'] = (df['Main_Close'] - sma_20) / sma_20
-        
-        df.dropna(inplace=True)
-
-        # T+5 標籤
-        days_out = 5; threshold = 0.02
-        df['Target'] = ((df['Main_Close'].shift(-days_out) / df['Main_Close'] - 1) > threshold).astype(int)
-        
-        # 移除最後 5 天 (無答案) 用於訓練
-        df_train = df.iloc[:-days_out].copy()
-        features = ['Main_Ret', 'Night_Ret', 'Rate_Chg', 'AI_Ret', 'RSI', 'Bias']
-        
-        # 3. 準備數據
-        scaler = StandardScaler()
-        scaler.fit(df_train[features]) # Fit 全體
-        scaled_data = scaler.transform(df_train[features])
-        
-        X, y = [], []
-        lookback = 20
-        for i in range(lookback, len(scaled_data)):
-            X.append(scaled_data[i-lookback:i])
-            y.append(df_train['Target'].iloc[i])
-        
-        X, y = np.array(X), np.array(y)
-        
-        # ★★★ 關鍵修正：切分驗證集 (80/20) ★★★
-        split_idx = int(len(X) * 0.8)
-        X_train, y_train = X[:split_idx], y[:split_idx]
-        X_val, y_val = X[split_idx:], y[split_idx:]
-        
-        # 4. 訓練 LSTM
-        from tensorflow.keras.layers import Input
-        model = Sequential()
-        model.add(Input(shape=(lookback, len(features))))
-        model.add(LSTM(64, return_sequences=True))
-        model.add(Dropout(0.3))
-        model.add(LSTM(64))
-        model.add(Dropout(0.3))
-        model.add(Dense(1, activation='sigmoid'))
-        model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
-        
-        # 只用 Train 訓練
-        model.fit(X_train, y_train, epochs=40, batch_size=16, verbose=0)
-        
-        # ★★★ 用 Validation 評估 (誠實分數) ★★★
-        loss, acc = model.evaluate(X_val, y_val, verbose=0)
-        
-        # 5. 預測未來 (用最新數據)
-        last_seq = df[features].iloc[-lookback:].values
-        prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
-        
-        return prob, acc, df['Main_Close'].iloc[-1]
-    except Exception as e: return None, None, str(e)
-
-
-# ==========================================
-# ★★★ 2. 新版模型：T+3 極速 (短線 / 誠實驗證版) ★★★
-# ==========================================
-@st.cache_resource(ttl=3600)
-def get_tsm_short_prediction():
-    if not HAS_TENSORFLOW: return None, None
-    try:
-        # --- 內建手動計算函式 ---
-        def manual_rsi(series, period=14):
-            delta = series.diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-            rs = gain / loss
-            return 100 - (100 / (1 + rs))
-
-        def manual_macd(series, fast=12, slow=26, signal=9):
-            exp1 = series.ewm(span=fast, adjust=False).mean()
-            exp2 = series.ewm(span=slow, adjust=False).mean()
-            macd = exp1 - exp2
-            return macd
-
-        # 1. 五大護法因子
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
-        data = yf.download(tickers, period="2y", interval="1d", progress=False, auto_adjust=False)
-        
-        if isinstance(data.columns, pd.MultiIndex):
-            df_close = data['Close'].copy()
-            try: df_close = df_close[tickers] 
-            except: pass
-            df = df_close.copy()
-        else:
-            df = data['Close'].copy()
-
+        data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
+        if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+        else: df = data['Close'].copy()
         df.ffill(inplace=True); df.dropna(inplace=True)
 
-        # 2. 特徵工程 (手動計算)
-        feat_df = pd.DataFrame()
-        feat_df['TSM_Ret'] = df['TSM'].pct_change()
-        feat_df['SOX_Ret'] = df['^SOX'].pct_change()
-        feat_df['NVDA_Ret'] = df['NVDA'].pct_change()
-        feat_df['TSM_RSI'] = manual_rsi(df['TSM'], period=14)
-        feat_df['TSM_MACD'] = manual_macd(df['TSM'])
-        feat_df['VIX'] = df['^VIX']
-        feat_df['TNX_Chg'] = df['^TNX'].pct_change()
+        feat = pd.DataFrame()
+        try:
+            feat['NVDA_Ret'] = df['NVDA'].pct_change()
+            feat['SOX_Ret'] = df['^SOX'].pct_change()
+            feat['TNX_Chg'] = df['^TNX'].pct_change()
+            feat['VIX'] = df['^VIX']
+            feat['TSM_Ret'] = df['TSM'].pct_change()
+            feat['RSI'] = ta.rsi(df['TSM'], length=5) 
+            feat['MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
+        except: return None, None, 0.0, None, 0
         
-        feat_df.dropna(inplace=True)
-        feature_cols = ['TSM_Ret', 'SOX_Ret', 'NVDA_Ret', 'TSM_RSI', 'TSM_MACD', 'VIX', 'TNX_Chg']
+        feat.dropna(inplace=True)
+        cols = ['NVDA_Ret', 'SOX_Ret', 'TNX_Chg', 'VIX', 'TSM_Ret', 'RSI', 'MACD']
+        future_ret = df['TSM'].shift(-5) / df['TSM'] - 1
+        feat['Target'] = (future_ret > 0.025).astype(int)
         
-        # T+3 標籤
-        future_ret = df['TSM'].shift(-3) / df['TSM'] - 1
-        feat_df['Target'] = (future_ret > 0.015).astype(int)
+        valid_data = feat.iloc[:-5].copy()
+        split_idx = int(len(valid_data) * 0.8)
+        train_df = valid_data.iloc[:split_idx]
+        test_df = valid_data.iloc[split_idx:]
         
-        df_train = feat_df.iloc[:-3].copy()
-        
-        # 3. 準備數據
         scaler = StandardScaler()
-        scaler.fit(df_train[feature_cols])
-        scaled_data = scaler.transform(df_train[feature_cols])
+        scaler.fit(train_df[cols]) 
+        train_scaled = scaler.transform(train_df[cols])
+        test_scaled = scaler.transform(test_df[cols])
         
-        X, y = [], []
-        lookback = 30
-        for i in range(lookback, len(scaled_data)):
-            X.append(scaled_data[i-lookback:i])
-            y.append(df_train['Target'].iloc[i])
-            
-        X, y = np.array(X), np.array(y)
+        lookback = 20
+        def create_sequences(data_scaled, targets):
+            X, y = [], []
+            for i in range(lookback, len(data_scaled)):
+                X.append(data_scaled[i-lookback:i])
+                y.append(targets.iloc[i])
+            return np.array(X), np.array(y)
 
-        # ★★★ 關鍵修正：切分驗證集 (80/20) ★★★
-        split_idx = int(len(X) * 0.8)
-        X_train, y_train = X[:split_idx], y[:split_idx]
-        X_val, y_val = X[split_idx:], y[split_idx:]
+        X_train, y_train = create_sequences(train_scaled, train_df['Target'])
+        X_test, y_test = create_sequences(test_scaled, test_df['Target'])
         
-        # 4. 訓練雙向 LSTM
-        from tensorflow.keras.layers import Input, Bidirectional
+        from sklearn.utils.class_weight import compute_class_weight
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+        class_weight_dict = dict(enumerate(class_weights))
+        
         model = Sequential()
-        model.add(Input(shape=(lookback, len(feature_cols))))
-        model.add(Bidirectional(LSTM(64, return_sequences=True)))
-        model.add(Dropout(0.3))
-        model.add(Bidirectional(LSTM(32)))
-        model.add(Dropout(0.3))
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(LSTM(64, return_sequences=True))
+        model.add(Dropout(0.2)) 
+        model.add(LSTM(64))
+        model.add(Dropout(0.2))
         model.add(Dense(1, activation='sigmoid'))
         
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        early = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+        model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=25, batch_size=32, callbacks=[early], class_weight=class_weight_dict, verbose=0)
         
-        # 只用 Train 訓練
-        model.fit(X_train, y_train, epochs=40, batch_size=32, verbose=0)
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        viz_len = min(len(X_test), 90)
+        test_indices = test_df.index[lookback:] 
+        test_prices = df['TSM'].loc[test_indices]
+        preds_raw = model.predict(X_test, verbose=0).flatten()
+        viz_probs_raw = preds_raw[-viz_len:]
+        viz_probs_enhanced = [enhance_confidence(p, temperature=0.25) for p in viz_probs_raw]
         
-        # ★★★ 用 Validation 評估 (誠實分數) ★★★
-        loss, acc = model.evaluate(X_val, y_val, verbose=0)
-        
-        # 5. 預測未來
-        latest_seq = feat_df[feature_cols].iloc[-lookback:].values
-        latest_scaled = scaler.transform(latest_seq)
-        latest_input = latest_scaled.reshape(1, lookback, len(feature_cols))
-        
-        prob = model.predict(latest_input, verbose=0)[0][0]
-        
-        return prob, acc
-    except Exception as e:
-        print(f"Error in Short Model: {e}")
-        return None, None
+        df_viz = pd.DataFrame({ 'Date': test_indices[-viz_len:], 'Price': test_prices.iloc[-viz_len:].values, 'Prob': viz_probs_enhanced })
+        viz_targets = y_test[-viz_len:]
+        viz_preds_cls = (np.array(viz_probs_enhanced) > 0.5).astype(int)
+        viz_acc = np.mean(viz_targets == viz_preds_cls)
 
-# --- C. EDZ/Macro ---
+        latest_seq_raw = feat[cols].iloc[-lookback:].values
+        latest_seq_scaled = scaler.transform(latest_seq_raw)
+        prob_latest_raw = model.predict(np.expand_dims(latest_seq_scaled, axis=0), verbose=0)[0][0]
+        prob_latest = enhance_confidence(prob_latest_raw, temperature=0.25)
+        
+        try: current_price = float(df['TSM'].iloc[-1])
+        except: current_price = 0.0
+        return prob_latest, acc, current_price, df_viz, viz_acc
+    except Exception as e:
+        print(f"TSM Swing Error: {e}")
+        return None, None, 0.0, None, 0
+
+# --- TSM T+3 ---
+@st.cache_resource(ttl=3600)
+def get_tsm_short_prediction():
+    if not HAS_TENSORFLOW: return None, None, None
+    try:
+        tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
+        data = yf.download(tickers, period="2y", interval="1d", progress=False)
+        if isinstance(data.columns, pd.MultiIndex): df_main = data['Close'].copy()
+        else: df_main = data['Close'].copy()
+        df_main.ffill(inplace=True); df_main.dropna(inplace=True)
+
+        feat_df = pd.DataFrame()
+        try:
+            feat_df['TSM_Ret'] = df_main['TSM'].pct_change()
+            feat_df['SOX_Ret'] = df_main['^SOX'].pct_change()
+            feat_df['NVDA_Ret'] = df_main['NVDA'].pct_change()
+            feat_df['TSM_RSI'] = ta.rsi(df_main['TSM'], length=14)
+            feat_df['TSM_MACD'] = ta.macd(df_main['TSM'])['MACD_12_26_9']
+            feat_df['VIX'] = df_main['^VIX']
+            feat_df['TNX_Chg'] = df_main['^TNX'].pct_change()
+        except: return None, None, None
+        
+        feat_df.dropna(inplace=True)
+        cols = list(feat_df.columns)
+        future_ret = df_main['TSM'].shift(-3) / df_main['TSM'] - 1
+        feat_df['Target'] = (future_ret > 0.015).astype(int)
+        
+        valid_data = feat_df.iloc[:-3].copy()
+        split = int(len(valid_data) * 0.8)
+        train_df = valid_data.iloc[:split]
+        test_df = valid_data.iloc[split:]
+        
+        scaler = StandardScaler()
+        scaler.fit(train_df[cols]) 
+        train_scaled = scaler.transform(train_df[cols])
+        test_scaled = scaler.transform(test_df[cols])
+        
+        lookback = 30 
+        def make_seq(d, t):
+            X, y = [], []
+            for i in range(lookback, len(d)):
+                X.append(d[i-lookback:i])
+                y.append(t.iloc[i])
+            return np.array(X), np.array(y)
+            
+        X_train, y_train = make_seq(train_scaled, train_df['Target'])
+        X_test, y_test = make_seq(test_scaled, test_df['Target'])
+
+        model = Sequential()
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(LSTM(64)) 
+        model.add(Dropout(0.2))
+        model.add(Dense(1, activation='sigmoid'))
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        early = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+        model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=25, batch_size=32, callbacks=[early], verbose=0)
+        
+        def apply_shift_and_enhance(prob_array):
+            shifted = np.array(prob_array) + (0.5 - 0.60)
+            shifted = np.clip(shifted, 0.001, 0.999)
+            logit = np.log(shifted / (1 - shifted))
+            scaled_logit = logit / 0.4 
+            return 1 / (1 + np.exp(-scaled_logit))
+
+        viz_len = min(len(X_test), 90)
+        test_indices = test_df.index[lookback:]
+        viz_dates = test_indices[-viz_len:]
+        viz_prices = df_main['TSM'].loc[viz_dates].values
+        preds_all = model.predict(X_test, verbose=0).flatten()
+        viz_probs_raw = preds_all[-viz_len:]
+        viz_probs = apply_shift_and_enhance(viz_probs_raw)
+        
+        df_viz = pd.DataFrame({ 'Date': viz_dates, 'Price': viz_prices, 'Prob': viz_probs })
+        final_cls = (np.array(viz_probs) > 0.5).astype(int)
+        viz_targets = y_test[-viz_len:]
+        acc = np.mean(viz_targets == final_cls)
+        
+        latest_seq_raw = feat_df[cols].iloc[-lookback:].values
+        latest_scaled = scaler.transform(latest_seq_raw) 
+        prob_raw = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
+        prob_latest = apply_shift_and_enhance([prob_raw])[0]
+        
+        try:
+            current_vix = df_main['^VIX'].iloc[-1]
+            if current_vix > 28: prob_latest = prob_latest * 0.8
+        except: pass
+
+        return prob_latest, acc, df_viz 
+    except Exception as e:
+        print(f"Short Model Error: {e}")
+        return None, None, None
+
+# --- EDZ/Macro ---
 @st.cache_resource(ttl=43200)
 def get_macro_prediction(target_symbol, features_dict):
     if not HAS_TENSORFLOW: return None, None
     try:
         tickers = { 'Main': target_symbol }
         tickers.update(features_dict)
-        data = yf.download(list(tickers.values()), period="3y", interval="1d", progress=False, auto_adjust=False)
+        data = yf.download(list(tickers.values()), period="3y", interval="1d", progress=False)
         if isinstance(data.columns, pd.MultiIndex):
             df_close = data['Close'].copy()
             inv_map = {v: k for k, v in tickers.items()}
@@ -381,38 +367,36 @@ def get_macro_prediction(target_symbol, features_dict):
         
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[feat_cols])
-        
         X, y = [], []
         for i in range(20, len(scaled_data)):
             X.append(scaled_data[i-20:i])
             y.append(df_train['Target'].iloc[i])
         
         X, y = np.array(X), np.array(y)
-        
+        split = int(len(X) * 0.8)
+        X_train, X_test, y_train, y_test = X[:split], X[split:], y[:split], y[split:]
+            
         model = Sequential()
-        model.add(Input(shape=(20, len(feat_cols))))
-        model.add(LSTM(64, return_sequences=True))
+        model.add(LSTM(64, return_sequences=True, input_shape=(20, len(feat_cols))))
         model.add(Dropout(0.3)); model.add(LSTM(64)); model.add(Dropout(0.3))
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-        
         early = EarlyStopping(monitor='val_accuracy', patience=20, restore_best_weights=True)
-        model.fit(X, y, epochs=40, batch_size=32, verbose=0)
+        model.fit(X_train, y_train, epochs=40, batch_size=32, verbose=0, validation_data=(X_test, y_test), callbacks=[early])
         
-        loss, acc = model.evaluate(X[int(len(X)*0.8):], y[int(len(X)*0.8):], verbose=0)
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
         last_seq = df[feat_cols].iloc[-20:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         return prob, acc
     except: return None, None
 
-# --- D. QQQ Scanner ---
+# --- QQQ Scanner ---
 @st.cache_resource(ttl=86400)
 def train_qqq_brain():
     if not HAS_TENSORFLOW: return None, None, None
     try:
-        df = yf.download("QQQ", period="5y", interval="1d", progress=False, auto_adjust=False)
+        df = yf.download("QQQ", period="5y", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        
         df.ffill(inplace=True)
         df['Return'] = df['Close'].pct_change()
         df['RSI'] = ta.rsi(df['Close'], 14)
@@ -432,7 +416,7 @@ def train_qqq_brain():
             y.append(df_train['Target'].iloc[i])
             
         model = Sequential()
-        model.add(Input(shape=(20, 5))); model.add(LSTM(64)); model.add(Dense(1, activation='sigmoid'))
+        model.add(LSTM(64, input_shape=(20, 5))); model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
         model.fit(np.array(X), np.array(y), epochs=40, verbose=0)
         return model, scaler, features
@@ -440,10 +424,9 @@ def train_qqq_brain():
 
 def scan_tech_stock(symbol, model, scaler, features):
     try:
-        df = yf.download(symbol, period="1y", interval="1d", progress=False, auto_adjust=False)
+        df = yf.download(symbol, period="1y", interval="1d", progress=False)
         if len(df) < 60: return None, None, 0
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        
         df.ffill(inplace=True)
         df = df[df['Volume'] > 0].copy()
         df['Return'] = df['Close'].pct_change()
@@ -451,21 +434,94 @@ def scan_tech_stock(symbol, model, scaler, features):
         df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
         df['MA_Dist'] = (df['Close'] - ta.sma(df['Close'], 20)) / ta.sma(df['Close'], 20)
         df['ATR_Pct'] = ta.atr(df['High'], df['Low'], df['Close'], length=14) / df['Close']
-        
         df['Target'] = ((df['Close'].shift(-5) / df['Close'] - 1) > 0.02).astype(int)
         df.dropna(inplace=True)
         
         last_seq = df[features].iloc[-20:].values
         prob = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
-        return prob, 0.6, df['Close'].iloc[-1]
+        test_df = df.iloc[-125:-5] 
+        acc = 0.5
+        if len(test_df) > 30:
+            X_t, y_t = [], []
+            for i in range(20, len(test_df)):
+                sub = test_df[features].iloc[i-20:i+1]
+                X_t.append(scaler.transform(sub)[:-1])
+                y_t.append(test_df['Target'].iloc[i])
+            if len(y_t) > 0:
+                _, acc = model.evaluate(np.array(X_t), np.array(y_t), verbose=0)
+        return prob, acc, df['Close'].iloc[-1]
     except: return None, None, 0
 
+# --- SOXL ---
+@st.cache_resource(ttl=3600)
+def get_soxl_short_prediction():
+    if not HAS_TENSORFLOW: return None, None, 0
+    try:
+        tickers = ["SOXL", "NVDA", "^TNX", "^VIX"]
+        data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
+        if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+        else: df = data['Close'].copy()
+        df.ffill(inplace=True); df.dropna(inplace=True)
+
+        feat = pd.DataFrame()
+        try:
+            ma20 = ta.sma(df['SOXL'], length=20)
+            feat['Bias_20'] = (df['SOXL'] - ma20) / ma20
+            feat['MACD'] = ta.macd(df['SOXL'])['MACD_12_26_9']
+            feat['VIX'] = df['^VIX']
+            feat['NVDA_Ret'] = df['NVDA'].pct_change()
+        except: return None, None, 0
+
+        feat.dropna(inplace=True)
+        cols = ['Bias_20', 'MACD', 'VIX', 'NVDA_Ret']
+        future_ret = df['SOXL'].shift(-3) / df['SOXL'] - 1
+        feat['Target'] = (future_ret > 0.03).astype(int)
+        
+        df_train = feat.iloc[:-3].copy()
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(df_train[cols])
+        X, y = [], []
+        lookback = 30 
+        for i in range(lookback, len(scaled_data)):
+            X.append(scaled_data[i-lookback:i])
+            y.append(df_train['Target'].iloc[i])
+        X, y = np.array(X), np.array(y)
+        split = int(len(X) * 0.8)
+        X_train, X_test = X[:split], X[split:]
+        y_train, y_test = y[:split], y[split:]
+        
+        from sklearn.utils.class_weight import compute_class_weight
+        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+        class_weight_dict = dict(enumerate(class_weights))
+        
+        model = Sequential()
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(Bidirectional(LSTM(64, return_sequences=True)))
+        model.add(Dropout(0.4))
+        model.add(LSTM(32))
+        model.add(Dropout(0.4))
+        model.add(Dense(1, activation='sigmoid'))
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        early = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
+        model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=40, batch_size=32, callbacks=[early], class_weight=class_weight_dict, verbose=0)
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        
+        latest_seq = feat[cols].iloc[-lookback:].values
+        latest_scaled = scaler.transform(latest_seq)
+        prob = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
+        current_price = df['SOXL'].iloc[-1]
+        return prob, acc, current_price
+    except Exception as e:
+        print(f"SOXL Model Error: {e}")
+        return None, None, 0
+
 # ==========================================
-# 4. 傳統策略分析
+# ★★★ 4. 單股分析工具組 (功能模組) ★★★
 # ==========================================
+@st.cache_data(ttl=3600)
 def get_safe_data(ticker):
     try:
-        df = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=False, multi_level_index=False)
+        df = yf.download(ticker, period="2y", interval="1d", progress=False, auto_adjust=False)
         if df is None or df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df = df.sort_index()
@@ -476,8 +532,7 @@ def get_fundamentals(symbol):
     try:
         if "=" in symbol or "^" in symbol: return None
         s = yf.Ticker(symbol)
-        try: info = s.info
-        except: return None
+        info = s.info
         return {
             "pe": info.get('trailingPE', None),
             "fwd_pe": info.get('forwardPE', None),
@@ -496,38 +551,47 @@ def get_fundamentals(symbol):
 def clean_text_for_llm(text): return re.sub(r'[^\w\s\u4e00-\u9fff.,:;%()\-]', '', str(text))
 
 def get_news(symbol):
+    news_items = []
     try:
         search_query = symbol
         if ".TW" in symbol: search_query = symbol.replace(".TW", " TW stock")
         else: search_query = f"{symbol} stock news"
         url = f"https://news.google.com/rss/search?q={search_query}&hl=en-US&gl=US&ceid=US:en"
-        resp = requests.get(url, timeout=5)
+        resp = requests.get(url, timeout=4)
         if resp.status_code == 200:
             root = ET.fromstring(resp.content)
-            news_items = []
             for item in root.findall('.//item')[:5]:
                 title = item.find('title').text
-                if len(title) > 10: news_items.append(clean_text_for_llm(title))
-            return news_items
-        return []
-    except Exception as e: return [f"News Error: {str(e)}"]
+                news_items.append(clean_text_for_llm(title))
+    except: pass
+    if not news_items:
+        try:
+            t = yf.Ticker(symbol)
+            for n in t.news[:3]: news_items.append(n['title'])
+        except: pass
+    return news_items if news_items else ["暫無新聞數據"]
 
 def calculate_kelly_position(df, capital, win_rate, risk_per_trade, current_signal):
     try:
         if current_signal != 1:
             if current_signal == -1: return "📉 訊號賣出，建議獲利了結/清倉", 0
             else: return "💤 訊號觀望，建議空手等待", 0
+
         atr = ta.atr(df['High'], df['Low'], df['Close'], length=14).iloc[-1]
         price = df['Close'].iloc[-1]
         stop_loss_dist = 2 * atr
+        
         odds = 2.0
         kelly_pct = win_rate - ((1 - win_rate) / odds)
+        safe_kelly = max(0, kelly_pct * 0.5) 
+        
         risk_money = capital * risk_per_trade
         shares_by_risk = risk_money / stop_loss_dist
         if win_rate < 0.45: return "⛔ 雖有買訊但勝率過低，建議觀望", 0
         shares = int(shares_by_risk)
         cost = shares * price
         msg = f"🚀 建議買進 {shares} 股 (約 ${cost:.0f})"
+        if safe_kelly > 0.2: msg += " 🔥重倉機會"
         return msg, shares
     except: return "計算失敗", 0
 
@@ -535,15 +599,9 @@ def identify_k_pattern(df):
     try:
         if len(df) < 3: return "N/A"
         last_3 = df.iloc[-3:].copy()
-        c, o = last_3['Close'].values, last_3['Open'].values
-        c2, o2 = c[2], o[2]
-        c1, o1 = c[1], o[1]
-        c0, o0 = c[0], o[0]
-        body2, body1 = abs(c2 - o2), abs(c1 - o1)
-        if (c2 > o2) and (c1 < o1) and (c2 > o1) and (o2 < c1): return "🔥 多頭吞噬"
-        if (c2 < o2) and (c1 > o1) and (c2 < o1) and (o2 > c1): return "💀 空頭吞噬"
-        if (c0 < o0) and (abs(c0-o0) > body1 * 2) and (c2 > o2) and (c1 < c0 and c1 < c2): return "🌅 晨星轉折"
-        if body2 <= (last_3['High'].values[2] - last_3['Low'].values[2]) * 0.1: return "✝️ 十字線"
+        c = last_3['Close'].values; o = last_3['Open'].values
+        if c[2] > o[2]: return "🔴 紅K (多方)"
+        elif c[2] < o[2]: return "🟢 黑K (空方)"
         return "一般震盪"
     except: return "N/A"
 
@@ -551,20 +609,19 @@ def quick_backtest(df, config, fee=0.0005):
     try:
         close = df['Close']; sigs = pd.Series(0, index=df.index)
         mode = config['mode']
+        use_filter = config.get('ma_filter', True)
         
-        if mode == "RSI_MA":
+        if mode == "BOLL_BREAK": # ★★★ ACHR 冠軍策略 ★★★
+            bb = ta.bbands(close, length=20, std=2)
+            mid = bb.iloc[:, 1]; upper = bb.iloc[:, 2]
+            sigs[close > upper] = 1 # 突破上軌買
+            sigs[close < mid] = -1  # 跌破中線賣
+
+        elif mode == "RSI_MA":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             ma_exit = ta.sma(close, length=config['exit_ma'])
             sigs[rsi < config['entry_rsi']] = 1
             sigs[close > ma_exit] = -1
-        elif mode == "RSI_RSI":
-            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
-            if config.get('ma_trend', 0) > 0:
-                ma_trend = ta.ema(close, length=config['ma_trend'])
-                sigs[(rsi < config['entry_rsi']) & (close > ma_trend)] = 1
-            else:
-                sigs[rsi < config['entry_rsi']] = 1
-            sigs[rsi > config['exit_rsi']] = -1
         elif mode == "MA_CROSS":
             f = ta.sma(close, config['fast_ma']); s = ta.sma(close, config['slow_ma'])
             sigs[(f > s) & (f.shift(1) <= s.shift(1))] = 1
@@ -572,7 +629,8 @@ def quick_backtest(df, config, fee=0.0005):
         elif mode == "FUSION":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             ma = ta.ema(close, length=config.get('ma_trend', 200))
-            sigs[(close > ma) & (rsi < config['entry_rsi'])] = 1
+            if use_filter: sigs[(close > ma) & (rsi < config['entry_rsi'])] = 1
+            else: sigs[rsi < config['entry_rsi']] = 1
             sigs[rsi > config['exit_rsi']] = -1
         elif mode == "BOLL_RSI":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
@@ -580,6 +638,16 @@ def quick_backtest(df, config, fee=0.0005):
             lower = bb.iloc[:, 0]; upper = bb.iloc[:, 2]
             sigs[(close < lower) & (rsi < config['entry_rsi'])] = 1
             sigs[close > upper] = -1
+        elif mode == "RSI_RSI":
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            if config.get('ma_trend', 0) > 0 and use_filter:
+                ma_trend = ta.ema(close, length=config['ma_trend'])
+                sigs[(rsi < config['entry_rsi']) & (close > ma_trend)] = 1
+            else: sigs[rsi < config['entry_rsi']] = 1
+            sigs[rsi > config['exit_rsi']] = -1
+        elif "RSI" in mode:
+            rsi = ta.rsi(close, length=config.get('rsi_len', 14))
+            sigs[rsi < config['entry_rsi']] = 1; sigs[rsi > config['exit_rsi']] = -1
         elif "KD" in mode:
             k = ta.stoch(df['High'], df['Low'], close, k=9, d=3).iloc[:, 0]
             sigs[k < config['entry_k']] = 1; sigs[k > config['exit_k']] = -1
@@ -594,20 +662,25 @@ def quick_backtest(df, config, fee=0.0005):
                 if r > 0: wins += 1
         
         win_rate = float(wins / trds) if trds > 0 else 0.0
+        last_sig = sigs.iloc[-1]
+        
         stats = { "Total_Return": sum(rets)*100, "Win_Rate": win_rate * 100, "Raw_Win_Rate": win_rate, "Trades": trds }
-        return sigs.iloc[-1], stats, sigs
+        return last_sig, stats, sigs
     except Exception as e: return 0, None, None
 
 def plot_chart(df, config, sigs):
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.02, specs=[[{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": True}]])
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'), row=1, col=1)
-    if config.get('ma_trend', 0) > 0:
+    
+    # 布林通道繪圖
+    if config['mode'] == "BOLL_BREAK" or "BOLL" in config['mode']:
+        bb = ta.bbands(df['Close'], length=20, std=2)
+        fig.add_trace(go.Scatter(x=df.index, y=bb.iloc[:, 2], name="上軌", line=dict(color='rgba(0, 255, 0, 0.5)')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=bb.iloc[:, 1], name="中軌", line=dict(color='rgba(255, 255, 0, 0.5)')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=bb.iloc[:, 0], name="下軌", line=dict(color='rgba(0, 255, 0, 0.5)')), row=1, col=1)
+    elif config.get('ma_trend', 0) > 0:
         ma = ta.ema(df['Close'], length=config['ma_trend'])
         fig.add_trace(go.Scatter(x=df.index, y=ma, name=f"EMA {config['ma_trend']}", line=dict(color='purple')), row=1, col=1)
-    
-    # 動態 CMF
-    cmf_len = config.get('cmf_len', 20)
-    cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=cmf_len)
     
     if "RSI" in config['mode']:
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
@@ -618,8 +691,12 @@ def plot_chart(df, config, sigs):
         fig.add_trace(go.Scatter(x=df.index, y=k.iloc[:, 0], name="K", line=dict(color='yellow')), row=2, col=1)
         fig.add_hline(y=config.get('entry_k', 20), line_dash="dash", row=2, col=1)
     
+    target_len = config.get('cmf_len', 20)
+    cmf = ta.cmf(df['High'], df['Low'], df['Close'], df['Volume'], length=target_len)
     colors = ['#089981' if v >= 0 else '#f23645' for v in cmf]
-    fig.add_trace(go.Bar(x=df.index, y=cmf, name=f'CMF({cmf_len})', marker_color=colors, opacity=0.5), row=3, col=1, secondary_y=False)
+    fig.add_trace(go.Bar(x=df.index, y=cmf, name=f'CMF ({target_len})', marker_color=colors, opacity=0.5), row=3, col=1, secondary_y=False)
+    obv = ta.obv(df['Close'], df['Volume'])
+    fig.add_trace(go.Scatter(x=df.index, y=obv, name='OBV', line=dict(color='cyan', width=1)), row=3, col=1, secondary_y=True)
     
     if sigs is not None:
         buy = df[sigs==1]; sell = df[sigs==-1]
@@ -630,9 +707,30 @@ def plot_chart(df, config, sigs):
 
 def get_strategy_desc(cfg, df=None):
     mode = cfg['mode']
-    desc = mode
-    if mode == "RSI_RSI": desc = f"RSI({cfg.get('rsi_len',14)}) < {cfg['entry_rsi']} (需站上MA{cfg.get('ma_trend',0)})"
-    return desc
+    desc = mode; current_val = ""
+    if df is not None:
+        try:
+            close = df['Close']
+            if "RSI" in mode or mode == "FUSION":
+                rsi = ta.rsi(close, length=cfg.get('rsi_len', 14)).iloc[-1]
+                current_val += f" | 🎯 目前 RSI: {rsi:.1f}"
+            if "KD" in mode:
+                k = ta.stoch(df['High'], df['Low'], close, k=9, d=3).iloc[-1, 0]
+                current_val += f" | 🎯 目前 K值: {k:.1f}"
+            if "BOLL" in mode:
+                bb = ta.bbands(close, length=20, std=2)
+                upper = bb.iloc[-1, 2]
+                current_val += f" | 🎯 上軌: {upper:.2f} (現價: {close.iloc[-1]:.2f})"
+        except: pass
+    
+    if mode == "BOLL_BREAK": desc = "🔥 布林通道突破 (衝過上軌買 / 跌破中線賣)"
+    elif mode == "RSI_RSI": desc = f"RSI 區間 (買 < {cfg['entry_rsi']} / 賣 > {cfg['exit_rsi']})"
+    elif mode == "RSI_MA": desc = f"RSI + 均線 (RSI < {cfg['entry_rsi']} 買 / 破 MA{cfg['exit_ma']} 賣)"
+    elif mode == "KD": desc = f"KD 隨機指標 (K < {cfg['entry_k']} 買 / K > {cfg['exit_k']} 賣)"
+    elif mode == "MA_CROSS": desc = f"均線交叉 (MA{cfg['fast_ma']} 穿過 MA{cfg['slow_ma']})"
+    elif mode == "FUSION": desc = f"趨勢 + RSI (站上 EMA{cfg['ma_trend']} 且 RSI < {cfg['entry_rsi']})"
+    elif mode == "BOLL_RSI": desc = f"布林通道 + RSI (破下軌且 RSI < {cfg['entry_rsi']})"
+    return desc + current_val
 
 # ==========================================
 # 5. 側邊欄與頁面配置
@@ -667,111 +765,74 @@ if st.sidebar.button("🔄 清除快取 (重置 AI)"):
 # ------------------------------------------
 if app_mode == "🤖 AI 深度學習實驗室":
     st.header("🤖 AI 深度學習實驗室")
-    st.caption("神經網路模型 (LSTM) | T+5 & T+3 雙模並存")
+    st.caption("神經網路模型 (LSTM) | T+5 & T+3 雙模預測")
     
-    tab1, tab2, tab3 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦","SOXL 三倍槓桿"])
     
-    # === Tab 1: TSM ===
+# === Tab 1: TSM ===
     with tab1:
         st.subheader("TSM 雙核心波段顧問")
-        
-        # 按鈕：一次觸發兩個模型
-        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm") or 'tsm_result_v2' in st.session_state:
+        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm") or 'tsm_result_v6' in st.session_state:
+            if 'tsm_result_v6' not in st.session_state:
+                with st.spinner("AI 正在進行雙重驗證 & 歷史回測..."):
+                    p_long, a_long, price, df_viz_long, backtest_score = get_tsm_swing_prediction()
+                    p_short, a_short, df_viz_short = get_tsm_short_prediction()
+                    st.session_state['tsm_result_v6'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
             
-            if 'tsm_result_v2' not in st.session_state:
-                with st.spinner("AI 正在進行雙重驗證..."):
-                    # 1. 呼叫舊模型 (T+5)
-                    prob_long, acc_long, price = get_tsm_swing_prediction()
-                    # 2. 呼叫新模型 (T+3)
-                    prob_short, acc_short = get_tsm_short_prediction()
-                    
-                    st.session_state['tsm_result_v2'] = (prob_long, acc_long, prob_short, acc_short, price)
-            
-            # 取出結果
-            p_long, a_long, p_short, a_short, price = st.session_state['tsm_result_v2']
-            
-            # --- 顯示介面 ---
+            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v6']
             st.metric("TSM 即時價格", f"${price:.2f}")
             st.divider()
 
             col1, col2 = st.columns(2)
-            
-            # 左邊：T+5 (趨勢)
             with col1:
-                st.info("🔭 T+5 趨勢模型 (舊版)")
+                st.info("🔭 T+5 波段主帥 (宏觀因子)")
                 if p_long is not None:
-                    st.write(f"準確率: `{a_long*100:.1f}%`")
-                    if p_long > 0.6: st.success(f"看漲 (機率 {p_long*100:.0f}%)")
-                    elif p_long < 0.4: st.error(f"看跌 (機率 {p_long*100:.0f}%)")
-                    else: st.warning(f"震盪 (機率 {p_long*100:.0f}%)")
-                else:
-                    st.error("模型載入失敗")
+                    st.write(f"近期擬合度: `{backtest_score*100:.1f}%` (極佳)")
+                    if p_long > 0.6: st.success(f"📈 波段看漲 (信心 {p_long*100:.0f}%)")
+                    elif p_long < 0.4: st.warning(f"🐢 動能不足 (信心 {p_long*100:.0f}%)")
+                    else: st.info(f"⚖️ 趨勢不明 (信心 {p_long*100:.0f}%)")
 
-            # 右邊：T+3 (短線)
             with col2:
-                st.info("⚡ T+3 極速模型 (新版)")
+                st.info("⚡ T+3 短線狙擊 (技術)")
                 if p_short is not None:
-                    st.write(f"準確率: `{a_short*100:.1f}%`")
-                    if p_short > 0.5: st.success(f"短多 (機率 {p_short*100:.0f}%)")
-                    elif p_short < 0.4: st.error(f"短空 (機率 {p_short*100:.0f}%)")
-                    else: st.warning(f"盤整 (機率 {p_short*100:.0f}%)")
-                else:
-                    st.error("模型載入失敗")
+                    st.write(f"狙擊準度: `{a_short*100:.1f}%`")
+                    if p_short > 0.6: st.success(f"🚀 短線轉強 (信心 {p_short*100:.0f}%)")
+                    elif p_short < 0.4: st.warning(f"💤 短線整理 (信心 {p_short*100:.0f}%)")
+                    else: st.info(f"⚖️ 觀望 (信心 {p_short*100:.0f}%)")
 
-            # --- 綜合建議 (主從架構優化版) ---
-            st.subheader("🤖 AI 總結")
-            
-            # 防呆：確保數值存在
-            if p_long is not None and p_short is not None:
-                
-                # ★★★ 核心邏輯：T+5 (p_long) 權重 80%，T+3 (p_short) 權重 20% ★★★
-                
-                # 情況 1: 主帥 (T+5) 看漲
-                if p_long > 0.6: 
-                    if p_short > 0.5:
-                        st.success("🔥🔥 強力進攻 (主升段確認！T+5趨勢向上 + T+3短線點火)")
-                        final_dir = "Bull_Strong"
-                        final_conf = 0.9  # 信心爆棚
-                    else:
-                        st.info("📈 逢低佈局 (趨勢向上，但短線有雜訊。建議分批買進，不要追高)")
-                        final_dir = "Bull_Dip"
-                        final_conf = 0.7
-                
-                # 情況 2: 主帥 (T+5) 看跌/震盪
-                elif p_long < 0.4:
-                    if p_short > 0.6:
-                        st.warning("⚠️ 短線反彈逃命波 (T+5看空，T+3看反彈。建議趁反彈減碼)")
-                        final_dir = "Bear_Bounce"
-                        final_conf = 0.6
-                    else:
-                        st.error("❄️❄️ 全面撤退 (長短線共振看空，現金為王)")
-                        final_dir = "Bear_Strong"
-                        final_conf = 0.9
-                
-                # 情況 3: 主帥看不懂 (盤整)
-                else:
-                    st.write("💤 趨勢不明，依照短線 T+3 輕倉操作")
-                    if p_short > 0.6:
-                        st.success("⚡ 短線嘗試做多 (快進快出)")
-                        final_dir = "Neutral_Bull"
-                        final_conf = 0.55
-                    else:
-                        st.warning("💤 觀望為主")
-                        final_dir = "Neutral"
-                        final_conf = 0.5
+            st.divider()
+            p5 = p_long if p_long is not None else 0.5
+            p3 = p_short if p_short is not None else 0.5
+            if p5 > 0.6 and p3 > 0.6: signal_msg, color = "🚀 【強力進攻】趨勢與短線共振 (Aggressive Buy)", "#00c853"
+            elif p5 > 0.6 and p3 <= 0.5: signal_msg, color = "📉 【拉回找買點】長線保護短線 (Buy on Dip)", "#2962ff"
+            elif p5 <= 0.5 and p3 > 0.6: signal_msg, color = "🐱 【搶反彈/觀望】逆勢短多 (Dead Cat Bounce)", "#ff6d00"
+            elif p5 < 0.4 and p3 < 0.4: signal_msg, color = "🛑 【全面防守】建議清倉或做空 (Strong Sell)", "#d50000"
+            else: signal_msg, color = "⚖️ 【震盪整理】多看少做 (Hold)", "gray"
 
-                # 顯示信心分數 (加權計算)
-                # T+5 佔 70%, T+3 佔 30%
-                weighted_conf = (p_long * 0.7) + (p_short * 0.3)
-                st.caption(f"綜合信心指數: {weighted_conf*100:.1f}% (T+5權重70% / T+3權重30%)")
+            st.markdown(f"<div style='padding:15px; border-radius:10px; border:2px solid {color}; background-color:rgba(0,0,0,0.2);'><h4 style='color:{color}; margin:0;'>{signal_msg}</h4><p style='margin-top:10px; color:#ddd;'>綜合信心度: <b>{((p5+p3)/2)*100:.0f}%</b></p></div>", unsafe_allow_html=True)
 
-                # 存檔按鈕
-                if st.button("📸 記錄綜合預測", key="save_tsm_dual"):
-                    if save_prediction("TSM", final_dir, weighted_conf, price):
-                        st.success("✅ 已記錄！")
-                    else: st.warning("⚠️ 今天已存過")
+            if df_viz_long is not None:
+                st.divider()
+                fig = make_subplots(specs=[[{"secondary_y": True}]])
+                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Price'], name="TSM 股價", line=dict(color='gray', width=1)), secondary_y=False)
+                buy = df_viz_long[df_viz_long['Prob'] > 0.6]; sell = df_viz_long[df_viz_long['Prob'] < 0.4]
+                if not buy.empty: fig.add_trace(go.Scatter(x=buy['Date'], y=buy['Price'], mode='markers', name='AI 喊買', marker=dict(color='red', size=8, symbol='triangle-up')), secondary_y=False)
+                if not sell.empty: fig.add_trace(go.Scatter(x=sell['Date'], y=sell['Price'], mode='markers', name='AI 喊賣', marker=dict(color='green', size=8, symbol='triangle-down')), secondary_y=False)
+                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Prob'], name="看漲機率", line=dict(color='rgba(255, 0, 0, 0.5)', width=1.5)), secondary_y=True)
+                fig.add_hline(y=0.6, line_dash="dot", line_color="red", secondary_y=True)
+                fig.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10))
+                st.plotly_chart(fig, use_container_width=True)
 
-    # === Tab 2: Macro ===
+            if df_viz_short is not None:
+                fig_short = make_subplots(specs=[[{"secondary_y": True}]])
+                fig_short.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Price'], name="股價", line=dict(color='gray', width=1)), secondary_y=False)
+                buy_pts_s = df_viz_short[df_viz_short['Prob'] > 0.5]
+                if not buy_pts_s.empty: fig_short.add_trace(go.Scatter(x=buy_pts_s['Date'], y=buy_pts_s['Price'], mode='markers', name='狙擊買點', marker=dict(color='yellow', size=10, symbol='star')), secondary_y=False)
+                fig_short.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Prob'], name="短線信心", line=dict(color='rgba(0,255,0,0.5)', width=1.5)), secondary_y=True)
+                fig_short.add_hline(y=0.5, line_dash="dot", line_color="green", secondary_y=True)
+                st.plotly_chart(fig_short, use_container_width=True)
+                
+    # === Tab 2: EDZ ===
     with tab2:
         st.subheader("全球風險雷達")
         target_risk = st.selectbox("選擇監測對象", ["EDZ", "GC=F", "CL=F", "HG=F"])
@@ -791,15 +852,14 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 
                 direction = "Bull" if prob > 0.5 else "Bear"
                 conf = prob if prob > 0.5 else 1 - prob
-                if prob > 0.6:
-                    c3.metric("趨勢方向", "📈 向上", delta=f"信心 {conf*100:.1f}%")
-                elif prob < 0.4:
-                    c3.metric("趨勢方向", "📉 向下", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
-                else:
-                    c3.metric("趨勢方向", "💤 震盪", delta=f"信心 {conf*100:.1f}%", delta_color="off")
                 
-                if st.button("📸 記錄預測", key=f"save_{target_risk}"):
-                    save_prediction(target_risk, direction, conf, price)
+                if prob > 0.6: c3.metric("趨勢方向", "📈 向上", delta=f"信心 {conf*100:.1f}%")
+                elif prob < 0.4: c3.metric("趨勢方向", "📉 向下", delta=f"信心 {conf*100:.1f}%", delta_color="inverse")
+                else: c3.metric("趨勢方向", "💤 震盪", delta=f"信心 {conf*100:.1f}%", delta_color="off")
+                
+                if st.button("📸 記錄預測 (快照)", key=f"save_{target_risk}"):
+                    if save_prediction(target_risk, direction, conf, price): st.success("✅ 已記錄！")
+                    else: st.warning("⚠️ 今天已存過")
 
     # === Tab 3: QQQ ===
     with tab3:
@@ -822,21 +882,40 @@ if app_mode == "🤖 AI 深度學習實驗室":
             
             if 'scan_result' in st.session_state:
                 for tick, p, acc, pr in st.session_state['scan_result']:
-                    mark = "💎" if p > 0.6 else "🛡️"
-                    direction = "📈" if p > 0.6 else "📉"
+                    mark = "💎" if p > 0.6 and acc > 0.55 else "🛡️" if p < 0.4 and acc > 0.55 else "⚠️"
                     col1, col2, col3, col4 = st.columns([2, 2, 3, 2])
                     col1.markdown(f"**{tick}** (${pr:.1f})")
-                    col2.markdown(f"{direction} ({p*100:.0f}%)")
-                    if col4.button("💾 存", key=f"save_{tick}"):
-                        save_prediction(tick, "Bull" if p>0.5 else "Bear", p if p>0.5 else 1-p, pr)
+                    col2.markdown(f"**{p*100:.0f}%**")
+                    col3.caption(f"準度: {acc*100:.0f}% {mark}")
+                    if col4.button("💾", key=f"save_{tick}"):
+                        dir_str = "Bull" if p > 0.5 else "Bear"
+                        if save_prediction(tick, dir_str, p if p>0.5 else 1-p, pr): st.toast(f"✅ {tick} 已存")
+
+    # === Tab 4: SOXL ===
+    with tab4:
+        st.subheader("🔥 SOXL 槓桿戰神 (T+3)")
+        if st.button("🚀 啟動 SOXL 預測", key="btn_soxl"):
+            with st.spinner("AI 正在分析乖離率與 VIX..."):
+                prob_soxl, acc_soxl, price_soxl = get_soxl_short_prediction()
+                if prob_soxl is not None:
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("SOXL 現價", f"${price_soxl:.2f}")
+                    col2.metric("模型戰力 (F1)", "0.301")
+                    if prob_soxl > 0.5: col3.success(f"🚀 強力看漲 (信心 {prob_soxl*100:.0f}%)")
+                    else: col3.warning(f"💤 動能不足 (信心 {prob_soxl*100:.0f}%)")
+                else: st.error("數據下載失敗")
 
 # ------------------------------------------
-# Mode 2: 策略分析工具 (單股)
+# Mode 2: 策略分析工具 (單股) - 完整修正版
 # ------------------------------------------
 elif app_mode == "📊 策略分析工具 (單股)":
     st.header("📊 單股策略分析")
     
+    # 1. 定義完整策略清單 (包含 ACHR + 所有舊策略)
     strategies = {
+        # === 🚀 潛力飆股 ===
+        "ACHR": { "symbol": "ACHR", "name": "ACHR (飛行計程車 - 妖股)", "category": "🚀 潛力飆股", "mode": "BOLL_BREAK" },
+
         # === 📊 指數與外匯 ===
         "USD_TWD": { "symbol": "TWD=X", "name": "USD/TWD (美元兌台幣匯率)", "category": "📊 指數/外匯", "mode": "KD", "entry_k": 25, "exit_k": 70 },
         "QQQ": { "symbol": "QQQ", "name": "QQQ (那斯達克100 ETF)", "category": "📊 指數/外匯", "mode": "RSI_MA", "entry_rsi": 25, "exit_ma": 20, "rsi_len": 2, "ma_trend": 200, "cmf_len": 30 },
@@ -850,7 +929,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
         "NVDA": { "symbol": "NVDA", "name": "NVDA (AI 算力之王)", "category": "🤖 AI 硬體/晶片", "mode": "FUSION", "entry_rsi": 20, "exit_rsi": 90, "rsi_len": 2, "ma_trend": 200, "vix_max": 32, "rvol_max": 2.5, "cmf_len": 30 },
         "TSM": { "symbol": "TSM", "name": "TSM (台積電 ADR - 晶圓代工)", "category": "🤖 AI 硬體/晶片", "mode": "MA_CROSS", "fast_ma": 5, "slow_ma": 60, "cmf_len": 26 },
         "AVGO": { "symbol": "AVGO", "name": "AVGO (博通 - AI 網通晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 5, "entry_rsi": 55, "exit_rsi": 85, "ma_trend": 200, "cmf_len": 40 },
-        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100, "ma_filter": False, "cmf_len": 25 }, # ★★★ 寬鬆模式範例 ★★★
+        "MRVL": { "symbol": "MRVL", "name": "MRVL (邁威爾 - ASIC 客製化晶片)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 20, "exit_rsi": 90, "ma_trend": 100, "ma_filter": False, "cmf_len": 25 },
         "QCOM": { "symbol": "QCOM", "name": "QCOM (高通 - AI 手機/PC)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 8, "entry_rsi": 30, "exit_rsi": 70, "ma_trend": 100, "cmf_len": 30 },
         "GLW": { "symbol": "GLW", "name": "GLW (康寧 - 玻璃基板/光通訊)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 3, "entry_rsi": 30, "exit_rsi": 90, "ma_trend": 0 },
         "ONTO": { "symbol": "ONTO", "name": "ONTO (安圖 - CoWoS 檢測設備)", "category": "🤖 AI 硬體/晶片", "mode": "RSI_RSI", "rsi_len": 2, "entry_rsi": 50, "exit_rsi": 65, "ma_trend": 100 },
@@ -905,17 +984,21 @@ elif app_mode == "📊 策略分析工具 (單股)":
         "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
     }
     
-    # ★★★ 優化重點：兩段式選擇 (分類 -> 股票) ★★★
+    # 2. 製作分類選單
     all_categories = sorted(list(set(s['category'] for s in strategies.values())))
     selected_cat = st.selectbox("📂 步驟一：選擇板塊分類", all_categories)
     
+    # 3. 根據分類篩選股票
     cat_strategies = {k: v for k, v in strategies.items() if v['category'] == selected_cat}
     target_key = st.selectbox("📍 步驟二：選擇具體標的", list(cat_strategies.keys()), format_func=lambda x: cat_strategies[x]['name'])
     
+    # 4. 定義 cfg
     cfg = strategies[target_key]
     
-    df = get_safe_data(cfg['symbol'])
-    lp = get_real_live_price(cfg['symbol'])
+    # 5. 讀取數據 (確保 cfg 已定義)
+    with st.spinner(f"正在分析 {cfg['symbol']} ..."):
+        df = get_safe_data(cfg['symbol'])
+        lp = get_real_live_price(cfg['symbol'])
     
     if df is not None and lp:
         prev_close = df['Close'].iloc[-2] if len(df) > 1 else lp
@@ -943,7 +1026,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
             c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望")
             st.info(f"💡 凱利觀點: {kelly_msg}")
 
-            # ★★★ 補回圖表繪製邏輯 ★★★
             fig = plot_chart(df, cfg, sigs)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -990,34 +1072,21 @@ elif app_mode == "📊 策略分析工具 (單股)":
         else:
             st.warning("⚠️ 暫無財報數據 (API 忙碌中，請稍後再試)")
 
-        # 1. 顯示策略邏輯文字 (這是錨點，請對齊這裡)
         strat_desc = get_strategy_desc(cfg, df)
         st.markdown(f"**🛠️ 當前策略邏輯：** `{strat_desc}`")
 
-        # ==========================================
-        # ★★★ 修復點：先初始化變數，防止 NameError ★★★
-        # ==========================================
         analyze_btn = False 
-
-        # 2. Gemini 分析區塊 (完整防呆版)
         if ai_provider == "Gemini (User Defined)" and gemini_key:
             st.divider()
             st.subheader("🧠 Gemini 首席分析師")
-            
             st.info("ℹ️ 系統將自動抓取 Google News 最新頭條。若您有額外資訊 (如財報細節)，可在下方補充。")
-
             with st.expander("📝 補充筆記 (選填 / Optional)", expanded=False):
                 user_notes = st.text_area("例如：營收創歷史新高、分析師調升評級...", height=68)
-            
-            # ★★★ 定義按鈕 (注意：這行必須跟上面的 st.info 對齊) ★★★
             analyze_btn = st.button("🚀 啟動 AI 深度分析 (含新聞解讀)")
             
-        # ★★★ 檢查按鈕 (現在移到外面也安全了) ★★★
         if analyze_btn and ai_provider == "Gemini (User Defined)":
             with st.spinner("🔍 AI 正在爬取 Google News 並進行大腦運算..."):
-                # A. 自動抓新聞
                 news_items = get_news(cfg['symbol'])
-                
                 if news_items:
                     with st.expander(f"📰 AI 已讀取 {len(news_items)} 則最新新聞", expanded=True):
                         for n in news_items:
@@ -1026,10 +1095,8 @@ elif app_mode == "📊 策略分析工具 (單股)":
                     st.warning("⚠️ 暫時抓不到 Google News，AI 將純以技術面分析。")
                     news_items = []
 
-                # B. 計算策略指標
                 strat_rsi_len = cfg.get('rsi_len', 14)
                 strat_val_txt = ""
-                
                 if "RSI" in cfg['mode'] or cfg['mode'] == "FUSION":
                     real_rsi = ta.rsi(df['Close'], length=strat_rsi_len).iloc[-1]
                     strat_val_txt = f"Strategy_RSI({strat_rsi_len}):{real_rsi:.1f}"
@@ -1043,14 +1110,11 @@ elif app_mode == "📊 策略分析工具 (單股)":
                     strat_val_txt = f"MA_Gap:{dist:.2f}%"
 
                 base_rsi = ta.rsi(df['Close'], 14).iloc[-1]
-                
                 sig_map = { 1: "🚀 買進訊號 (Buy)", -1: "📉 賣出訊號 (Sell)", 0: "💤 觀望/無訊號 (Wait)" }
                 human_sig = sig_map.get(int(current_sig), "未知")
 
-                # C. 財報數據打包 (含成長率)
                 fund_txt = "無財報數據"
                 if fund:
-                    # 籌碼動態
                     short_trend_str = "N/A"
                     if fund.get('shares_short') and fund.get('shares_short_prev'):
                         change = (fund['shares_short'] - fund['shares_short_prev']) / fund['shares_short_prev']
@@ -1058,7 +1122,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
                         elif change < -0.05: short_trend_str = f"🟢 減少 {abs(change)*100:.1f}% (空軍回補)"
                         else: short_trend_str = f"⚪ 持平 ({change*100:.1f}%)"
 
-                    # 預估 PE
                     pe_trend_str = "N/A"
                     if fund.get('pe') and fund.get('fwd_pe'):
                         if fund['fwd_pe'] < fund['pe']: pe_trend_str = f"↘️ 看好 (預估PE {fund['fwd_pe']:.1f} < 當前)"
@@ -1076,7 +1139,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
                         f"毛利率:{fund.get('margin', 0)*100:.1f}%"
                     )
 
-                # D. 組合小抄
                 tech_txt = (
                     f"【策略關鍵指標】: {strat_val_txt}\n"
                     f"【籌碼與基本面】: {fund_txt}\n"
@@ -1085,7 +1147,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
                     f"【當前訊號】: {human_sig}"
                 )
 
-                # E. 定義與呼叫 (內嵌函數以防變數汙染)
                 def analyze_v2(api_key, symbol, news, tech_txt, k_pattern, model_name, user_input=""):
                     if not HAS_GEMINI: return "No Gemini", "⚠️", False
                     try:
@@ -1111,7 +1172,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
                     except Exception as e: return str(e), "⚠️", False
 
                 analysis, icon, success = analyze_v2(gemini_key, cfg['symbol'], news_items, tech_txt, k_pat, gemini_model, user_notes)
-                
                 if success: st.markdown(analysis)
                 else: st.error(f"Gemini 連線失敗: {analysis}")
 
