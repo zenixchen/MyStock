@@ -1188,6 +1188,19 @@ if app_mode == "🤖 AI 深度學習實驗室":
             with c_chart:
                 st.subheader("📊 雲端戰績回顧")
                 
+                # 1. 自動對帳
+                with st.spinner("🤖 AI 正在雲端後台自動對帳..."):
+                    updated_count = verify_performance_db()
+                    
+                    if updated_count > 0:
+                        st.toast(f"🎉 已自動結算 {updated_count} 筆歷史交易！", icon="💰")
+                        time.sleep(1)
+                        st.rerun() # ★ 強烈建議加這行！讓整個網頁重整，這樣左邊的表格也會同步更新狀態
+                
+                # 2. ★★★ 關鍵修正：這裡必須重新從 Google Sheet 抓一次最新資料 ★★★
+                # 因為剛剛可能更新過了，如果不重抓，圖表會是舊的
+                df_hist = get_history_df("TSM")
+                
                 if not df_hist.empty and len(df_hist) > 1:
                     # 建立雙軸圖表
                     fig_rec = make_subplots(specs=[[{"secondary_y": True}]])
@@ -1653,6 +1666,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
