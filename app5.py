@@ -145,18 +145,38 @@ def verify_ledger():
         return None
 
 # ==========================================
-# ★★★ TSM T+5 主帥版 (修正版：嚴格防作弊 + 價格防呆) ★★★
+# ★★★ TSM T+5 主帥版 (最終版：嚴格防作弊 + 信心放大 + 價格防呆) ★★★
 # ==========================================
+
+# 1. 定義信心放大函數 (可以放在函數外，也可以放在函數內)
+def enhance_confidence(prob, temperature=0.25):
+    """
+    溫度縮放 (Temperature Scaling)
+    temperature = 1.0 : 原始信心 (不做改變)
+    temperature < 1.0 : 放大信心 (讓 0.55 變 0.7, 0.45 變 0.3)
+    建議值: 0.2 ~ 0.3
+    """
+    import numpy as np
+    # 避免數值溢出 (Logit變換不能有0或1)
+    prob = np.clip(prob, 0.001, 0.999)
+    # 轉為 Logits (反S型)
+    logit = np.log(prob / (1 - prob))
+    # 應用溫度 (縮小分母 = 放大數值)
+    scaled_logit = logit / temperature
+    # 轉回機率 (Sigmoid)
+    new_prob = 1 / (1 + np.exp(-scaled_logit))
+    return new_prob
+
 @st.cache_resource(ttl=3600)
 def get_tsm_swing_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0, None, 0
     try:
         # 1. 下載數據
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
-        # 強制單層索引並關閉 auto_adjust 以確保結構一致
+        # 強制單層索引並關閉 auto_adjust
         data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
         
-        # 處理 MultiIndex (兼容 yfinance 新舊版本)
+        # 處理 MultiIndex
         if isinstance(data.columns, pd.MultiIndex):
             df = data['Close'].copy()
         else:
@@ -183,15 +203,13 @@ def get_tsm_swing_prediction():
         future_ret = df['TSM'].shift(-5) / df['TSM'] - 1
         feat['Target'] = (future_ret > 0.025).astype(int)
         
-        # 去除最後 5 天
+        # 嚴格切分
         valid_data = feat.iloc[:-5].copy()
-        
-        # ★★★ 關鍵修正 1: 嚴格的時間切分 ★★★
         split_idx = int(len(valid_data) * 0.8)
         train_df = valid_data.iloc[:split_idx]
         test_df = valid_data.iloc[split_idx:]
         
-        # ★★★ 關鍵修正 2: Scaler 只在訓練集上擬合 ★★★
+        # Scaler 只 Fit 訓練集
         scaler = StandardScaler()
         scaler.fit(train_df[cols]) 
         
@@ -234,29 +252,39 @@ def get_tsm_swing_prediction():
         # 4. 驗證結果
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # 5. 繪圖數據 (取 Test Set 最後一段)
+        # 5. 繪圖數據
         viz_len = min(len(X_test), 90)
         test_indices = test_df.index[lookback:] 
         test_prices = df['TSM'].loc[test_indices]
         
-        preds = model.predict(X_test, verbose=0).flatten()
+        # 取得原始預測 (通常在 0.45 ~ 0.55 之間)
+        preds_raw = model.predict(X_test, verbose=0).flatten()
+        viz_probs_raw = preds_raw[-viz_len:]
+
+        # ★★★ 關鍵修改：應用信心放大器 (Temperature = 0.25) ★★★
+        # 這會讓 0.53 變成 0.7，讓紅線波動變大
+        viz_probs_enhanced = [enhance_confidence(p, temperature=0.25) for p in viz_probs_raw]
         
         df_viz = pd.DataFrame({
             'Date': test_indices[-viz_len:],
             'Price': test_prices.iloc[-viz_len:].values,
-            'Prob': preds[-viz_len:]
+            'Prob': viz_probs_enhanced  # 使用放大後的機率
         })
         
+        # 計算勝率 (使用放大後的機率來判斷，其實結果一樣，因為只是拉大差距，0.5還是0.5)
         viz_targets = y_test[-viz_len:]
-        viz_preds_cls = (preds[-viz_len:] > 0.5).astype(int)
+        viz_preds_cls = (np.array(viz_probs_enhanced) > 0.5).astype(int)
         viz_acc = np.mean(viz_targets == viz_preds_cls)
 
         # 6. 預測最新一天
         latest_seq_raw = feat[cols].iloc[-lookback:].values
         latest_seq_scaled = scaler.transform(latest_seq_raw)
-        prob_latest = model.predict(np.expand_dims(latest_seq_scaled, axis=0), verbose=0)[0][0]
+        prob_latest_raw = model.predict(np.expand_dims(latest_seq_scaled, axis=0), verbose=0)[0][0]
         
-        # ★★★ 這裡就是修正重點：強制轉為 float 純數字，防止格式錯誤 ★★★
+        # ★★★ 關鍵修改：最新預測也要放大信心 ★★★
+        prob_latest = enhance_confidence(prob_latest_raw, temperature=0.25)
+        
+        # 價格防呆 (防止 ValueError)
         try:
             current_price = float(df['TSM'].iloc[-1])
         except:
@@ -266,7 +294,6 @@ def get_tsm_swing_prediction():
 
     except Exception as e:
         print(f"TSM Model Error: {e}")
-        # 確保回傳的也是浮點數 0.0
         return None, None, 0.0, None, 0
         
 # ==========================================
@@ -1448,6 +1475,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
