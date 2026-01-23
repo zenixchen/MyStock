@@ -1451,6 +1451,25 @@ elif app_mode == "📊 策略分析工具 (單股)":
             "mode": "BOLL_BREAK"  
         }
     }
+
+    # ==========================================
+    # ★★★ 請補回這段：選單與變數定義 ★★★
+    # ==========================================
+    
+    # 1. 製作分類選單
+    all_categories = sorted(list(set(s['category'] for s in strategies.values())))
+    selected_cat = st.selectbox("📂 步驟一：選擇板塊分類", all_categories)
+    
+    # 2. 根據分類篩選股票
+    cat_strategies = {k: v for k, v in strategies.items() if v['category'] == selected_cat}
+    target_key = st.selectbox("📍 步驟二：選擇具體標的", list(cat_strategies.keys()), format_func=lambda x: cat_strategies[x]['name'])
+    
+    # 3. ★★★ 關鍵一行：定義 cfg 變數 ★★★ (原本缺了這行導致報錯)
+    cfg = strategies[target_key]
+    
+    # 4. 讀取數據
+    df = get_safe_data(cfg['symbol'])
+    lp = get_real_live_price(cfg['symbol'])
     
     # ★★★ 優化重點：兩段式選擇 (分類 -> 股票) ★★★
     all_categories = sorted(list(set(s['category'] for s in strategies.values())))
@@ -1686,6 +1705,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
