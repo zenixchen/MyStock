@@ -17,6 +17,27 @@ import requests
 import xml.etree.ElementTree as ET
 
 # ==========================================
+# ★★★ 請補上這個遺失的關鍵函數！ ★★★
+# ==========================================
+def get_real_live_price(symbol):
+    try:
+        # 嘗試從 yfinance 快速獲取
+        t = yf.Ticker(symbol)
+        price = t.fast_info.get('last_price')
+        
+        # 如果失敗，改用下載數據方式
+        if price is None or np.isnan(price):
+            df = yf.download(symbol, period='1d', interval='1m', progress=False)
+            if not df.empty:
+                if isinstance(df.columns, pd.MultiIndex): 
+                    df.columns = df.columns.get_level_values(0)
+                return float(df['Close'].iloc[-1])
+                
+        return float(price) if price else None
+    except: 
+        return None
+
+# ==========================================
 # ★★★ 0. God Mode: 鎖定隨機種子 ★★★
 # ==========================================
 def set_seeds(seed=42):
@@ -1661,6 +1682,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
