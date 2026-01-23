@@ -902,6 +902,17 @@ def quick_backtest(df, config, fee=0.0005):
             ma_exit = ta.sma(close, length=config['exit_ma'])
             sigs[rsi < config['entry_rsi']] = 1
             sigs[close > ma_exit] = -1
+            # ... (接在其他 elif 下面)
+        elif mode == "BOLL_BREAK":
+            # 策略：突破上軌買進，跌破中線賣出 (ACHR 冠軍策略)
+            bb = ta.bbands(close, length=20, std=2)
+            mid = bb.iloc[:, 1]   # 中軌 (20MA)
+            upper = bb.iloc[:, 2] # 上軌
+            
+            # 訊號：收盤價 > 上軌 = 買進 (1)
+            sigs[close > upper] = 1
+            # 訊號：收盤價 < 中軌 = 賣出 (-1)
+            sigs[close < mid] = -1
         elif mode == "MA_CROSS":
             f = ta.sma(close, config['fast_ma']); s = ta.sma(close, config['slow_ma'])
             sigs[(f > s) & (f.shift(1) <= s.shift(1))] = 1
@@ -1026,6 +1037,7 @@ def get_strategy_desc(cfg, df=None):
     elif mode == "MA_CROSS": desc = f"均線交叉 (MA{cfg['fast_ma']} 穿過 MA{cfg['slow_ma']})"
     elif mode == "FUSION": desc = f"趨勢 + RSI (站上 EMA{cfg['ma_trend']} 且 RSI < {cfg['entry_rsi']})"
     elif mode == "BOLL_RSI": desc = f"布林通道 + RSI (破下軌且 RSI < {cfg['entry_rsi']})"
+    elif mode == "BOLL_BREAK": desc = f"布林通道突破 (衝過上軌買 / 跌破中線賣)"
     return desc + current_val
 
 # ==========================================
@@ -1430,6 +1442,11 @@ elif app_mode == "📊 策略分析工具 (單股)":
         "GC": { "symbol": "GC=F", "name": "Gold (黃金期貨)", "category": "⛏️ 原物料", "mode": "RSI_RSI", "entry_rsi": 30, "exit_rsi": 70, "rsi_len": 14 },
         "CL": { "symbol": "CL=F", "name": "Crude Oil (原油期貨)", "category": "⛏️ 原物料", "mode": "KD", "entry_k": 20, "exit_k": 80 },
         "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
+        
+        # ★★★ 新增：ACHR 專區 ★★★
+        "ACHR": { "symbol": "ACHR", "name": "ACHR (飛行計程車 - 妖股)", "category": "🚀 潛力飆股", "mode": "BOLL_BREAK" },
+               
+    }
     }
     
     # ★★★ 優化重點：兩段式選擇 (分類 -> 股票) ★★★
@@ -1666,6 +1683,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
