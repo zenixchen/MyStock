@@ -8,3 +8,5 @@ tensorflow
 scikit-learn
 groq
 google-generativeai
+gspread
+oauth2client
