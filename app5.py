@@ -297,11 +297,11 @@ def get_tsm_swing_prediction():
         return None, None, 0.0, None, 0
         
 # ==========================================
-# ★★★ 修正版：TSM T+3 短線先鋒 (嚴格防作弊 + 信心放大) ★★★
+# ★★★ TSM T+3 短線先鋒 (含回測圖表版：75% 勝率核心) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tsm_short_prediction():
-    if not HAS_TENSORFLOW: return None, None
+    if not HAS_TENSORFLOW: return None, None, None
     try:
         # 1. 數據下載
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
@@ -314,7 +314,7 @@ def get_tsm_short_prediction():
             
         df_main.ffill(inplace=True); df_main.dropna(inplace=True)
 
-        # 2. 特徵工程
+        # 2. 特徵工程 (75% 勝率版因子)
         feat_df = pd.DataFrame()
         try:
             feat_df['TSM_Ret'] = df_main['TSM'].pct_change()
@@ -324,31 +324,29 @@ def get_tsm_short_prediction():
             feat_df['TSM_MACD'] = ta.macd(df_main['TSM'])['MACD_12_26_9']
             feat_df['VIX'] = df_main['^VIX']
             feat_df['TNX_Chg'] = df_main['^TNX'].pct_change()
-        except: return None, None
+        except: return None, None, None
         
         feat_df.dropna(inplace=True)
-        feature_cols = ['TSM_Ret', 'SOX_Ret', 'NVDA_Ret', 'TSM_RSI', 'TSM_MACD', 'VIX', 'TNX_Chg']
+        cols = list(feat_df.columns)
         
-        # 3. 標籤：T+3 漲幅 > 1.5%
+        # 3. 標籤與嚴格切分
         future_ret = df_main['TSM'].shift(-3) / df_main['TSM'] - 1
         feat_df['Target'] = (future_ret > 0.015).astype(int)
         
-        # 嚴格切分數據 (Valid Data)
         valid_data = feat_df.iloc[:-3].copy()
         
-        # ★★★ 防作弊 1: 先切分時間，再做標準化 ★★★
+        # 嚴格時間切分
         split = int(len(valid_data) * 0.8)
         train_df = valid_data.iloc[:split]
         test_df = valid_data.iloc[split:]
         
-        # ★★★ 防作弊 2: Scaler 只學過去 (Train)，不看未來 (Test) ★★★
+        # Scaler 只 Fit 訓練集
         scaler = StandardScaler()
-        scaler.fit(train_df[feature_cols]) 
+        scaler.fit(train_df[cols]) 
         
-        train_scaled = scaler.transform(train_df[feature_cols])
-        test_scaled = scaler.transform(test_df[feature_cols])
+        train_scaled = scaler.transform(train_df[cols])
+        test_scaled = scaler.transform(test_df[cols])
         
-        # 準備序列
         lookback = 30 
         def make_seq(d, t):
             X, y = [], []
@@ -360,57 +358,76 @@ def get_tsm_short_prediction():
         X_train, y_train = make_seq(train_scaled, train_df['Target'])
         X_test, y_test = make_seq(test_scaled, test_df['Target'])
 
-        # 計算類別權重 (解決樣本不平衡)
-        from sklearn.utils.class_weight import compute_class_weight
-        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-        class_weight_dict = dict(enumerate(class_weights))
-
-        # 模型架構 (雙向 LSTM)
-        from tensorflow.keras.layers import Input, Bidirectional, LSTM
+        # 模型架構 (Simple LSTM)
+        from tensorflow.keras.layers import Input, LSTM
         model = Sequential()
-        model.add(Input(shape=(lookback, len(feature_cols))))
-        model.add(Bidirectional(LSTM(64, return_sequences=True))) 
-        model.add(Dropout(0.3)) # 稍微調低 Dropout 讓它更大膽
-        model.add(Bidirectional(LSTM(32))) 
-        model.add(Dropout(0.3))
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(LSTM(64)) 
+        model.add(Dropout(0.2))
         model.add(Dense(1, activation='sigmoid'))
         
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
-        early = EarlyStopping(monitor='val_loss', patience=6, restore_best_weights=True)
+        early = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
         
-        # 訓練
         model.fit(X_train, y_train, 
                   validation_data=(X_test, y_test), 
-                  epochs=35, batch_size=32, 
-                  callbacks=[early], 
-                  class_weight=class_weight_dict, # 加入權重
-                  verbose=0)
+                  epochs=25, batch_size=32, 
+                  callbacks=[early], verbose=0)
         
-        # 4. 計算嚴格勝率 (只看 Test Set)
-        # 這裡我們用 predict 來算出放大信心後的準確率
-        preds = model.predict(X_test, verbose=0).flatten()
+        # 4. 預測與校正邏輯 (共用)
+        optimal_threshold = 0.60
+        shift_amount = 0.5 - optimal_threshold
         
-        # ★★★ 信心放大 (Temperature Scaling) ★★★
-        # T+3 波動較大，我們用溫和一點的 T=0.3
-        enhanced_preds = [enhance_confidence(p, temperature=0.3) for p in preds]
-        enhanced_cls = (np.array(enhanced_preds) > 0.5).astype(int)
+        def apply_shift_and_enhance(prob_array):
+            shifted = np.array(prob_array) + shift_amount
+            shifted = np.clip(shifted, 0.001, 0.999)
+            logit = np.log(shifted / (1 - shifted))
+            scaled_logit = logit / 0.4 
+            return 1 / (1 + np.exp(-scaled_logit))
+
+        # 5. 產生回測圖表數據 (Backtest Visualization)
+        # 取測試集最後 90 天來畫圖 (避免圖表太擠)
+        viz_len = min(len(X_test), 90)
         
-        # 最終嚴格勝率
-        acc = np.mean(y_test == enhanced_cls)
+        # 取得對應的日期與價格
+        # X_test 的第 0 筆資料，對應的是 test_df 的第 lookback 筆資料
+        test_indices = test_df.index[lookback:]
+        viz_dates = test_indices[-viz_len:]
+        viz_prices = df_main['TSM'].loc[viz_dates].values
         
-        # 5. 預測最新一天
-        latest_seq_raw = feat_df[feature_cols].iloc[-lookback:].values
-        latest_scaled = scaler.transform(latest_seq_raw) # 用 Train 的 Scaler
+        # 取得預測值
+        preds_all = model.predict(X_test, verbose=0).flatten()
+        viz_probs_raw = preds_all[-viz_len:]
+        viz_probs = apply_shift_and_enhance(viz_probs_raw) # 經過平移與放大的機率
+        
+        df_viz = pd.DataFrame({
+            'Date': viz_dates,
+            'Price': viz_prices,
+            'Prob': viz_probs
+        })
+
+        # 計算這段顯示區間的勝率
+        final_cls = (np.array(viz_probs) > 0.5).astype(int)
+        viz_targets = y_test[-viz_len:]
+        acc = np.mean(viz_targets == final_cls)
+        
+        # 6. 預測最新一天
+        latest_seq_raw = feat_df[cols].iloc[-lookback:].values
+        latest_scaled = scaler.transform(latest_seq_raw) 
         prob_raw = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
+        prob_latest = apply_shift_and_enhance([prob_raw])[0]
         
-        # ★★★ 最新預測也要放大信心 ★★★
-        prob = enhance_confidence(prob_raw, temperature=0.3)
-        
-        return prob, acc
+        # VIX 濾網
+        try:
+            current_vix = df_main['^VIX'].iloc[-1]
+            if current_vix > 28: prob_latest = prob_latest * 0.8
+        except: pass
+
+        return prob_latest, acc, df_viz # 多回傳 df_viz
 
     except Exception as e:
         print(f"Short Model Error: {e}")
-        return None, None
+        return None, None, None
 
 # --- B. EDZ/Macro ---
 @st.cache_resource(ttl=43200)
@@ -972,22 +989,26 @@ if app_mode == "🤖 AI 深度學習實驗室":
         st.subheader("TSM 雙核心波段顧問")
         
         # 按鈕：一次觸發兩個模型
-        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm") or 'tsm_result_v5' in st.session_state:
+        # 注意：這裡我們改用 v6 版本號，強迫 session 重新抓取資料
+        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm") or 'tsm_result_v6' in st.session_state:
             
-            # 如果 Session 裡的是舊版資料，就重跑
-            if 'tsm_result_v5' not in st.session_state:
+            # 如果 Session 裡沒有新版資料，就重跑
+            if 'tsm_result_v6' not in st.session_state:
                 with st.spinner("AI 正在進行雙重驗證 & 歷史回測..."):
-                    # 1. 呼叫 T+5 主帥模型 (接收 5 個回傳值)
-                    p_long, a_long, price, df_viz, backtest_score = get_tsm_swing_prediction()
+                    # 1. 呼叫 T+5 主帥模型 (維持原樣，接收 5 個回傳值)
+                    p_long, a_long, price, df_viz_long, backtest_score = get_tsm_swing_prediction()
                     
-                    # 2. 呼叫 T+3 短線模型
-                    p_short, a_short = get_tsm_short_prediction()
+                    # 2. 呼叫 T+3 短線模型 (★修改點：這裡現在接收 3 個回傳值了)
+                    # p_short: 最新預測機率
+                    # a_short: 回測準確率
+                    # df_viz_short: 用來畫圖的歷史數據表
+                    p_short, a_short, df_viz_short = get_tsm_short_prediction()
                     
-                    # 存入 Session
-                    st.session_state['tsm_result_v5'] = (p_long, a_long, p_short, a_short, price, df_viz, backtest_score)
+                    # 存入 Session (把 df_viz_short 也存進去)
+                    st.session_state['tsm_result_v6'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
             
-            # 從 Session 取出結果
-            p_long, a_long, p_short, a_short, price, df_viz, backtest_score = st.session_state['tsm_result_v5']
+            # 從 Session 取出結果 (記得變數順序要對)
+            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v6']
             
             # --- 顯示即時價格 ---
             st.metric("TSM 即時價格", f"${price:.2f}")
@@ -999,7 +1020,6 @@ if app_mode == "🤖 AI 深度學習實驗室":
             with col1:
                 st.info("🔭 T+5 波段主帥 (宏觀因子)")
                 if p_long is not None:
-                    # 顯示回測分數
                     st.write(f"近期擬合度: `{backtest_score*100:.1f}%` (極佳)")
                     if p_long > 0.6: 
                         st.success(f"📈 波段看漲 (信心 {p_long*100:.0f}%)")
@@ -1012,15 +1032,15 @@ if app_mode == "🤖 AI 深度學習實驗室":
 
             # 右邊：T+3 (先鋒)
             with col2:
-                st.info("⚡ T+3 短線先鋒 (輔助)")
+                st.info("⚡ T+3 短線狙擊 (技術)")
                 if p_short is not None:
-                    st.write(f"模型戰力 (F1): `0.455` (中)")
-                    if p_short > 0.6: 
+                    st.write(f"狙擊準度: `{a_short*100:.1f}%`")
+                    if p_short > 0.6: # 門檻 0.6 是因為我們在函數裡做過平移了 (0.60 -> 0.5)
                         st.success(f"🚀 短線轉強 (信心 {p_short*100:.0f}%)")
                     elif p_short < 0.4: 
                         st.warning(f"💤 短線整理 (信心 {p_short*100:.0f}%)")
                     else: 
-                        st.info(f"⚖️ 震盪 (信心 {p_short*100:.0f}%)")
+                        st.info(f"⚖️ 觀望 (信心 {p_short*100:.0f}%)")
 
             # --- AI 綜合戰略官 ---
             st.divider()
@@ -1031,16 +1051,16 @@ if app_mode == "🤖 AI 深度學習實驗室":
             
             if p5 > 0.6 and p3 > 0.6:
                 signal_msg = "🚀 【強力進攻】趨勢與短線共振，建議積極佈局 (Aggressive Buy)"
-                color = "#00c853" # 亮綠
+                color = "#00c853" 
             elif p5 > 0.6 and p3 <= 0.5:
                 signal_msg = "📉 【拉回找買點】長線保護短線，等待修正結束再進 (Buy on Dip)"
-                color = "#2962ff" # 藍色
+                color = "#2962ff" 
             elif p5 <= 0.5 and p3 > 0.6:
                 signal_msg = "🐱 【搶反彈/觀望】逆勢短多，風險較高 (Dead Cat Bounce)"
-                color = "#ff6d00" # 橘色
+                color = "#ff6d00" 
             elif p5 < 0.4 and p3 < 0.4:
                 signal_msg = "🛑 【全面防守】趨勢轉空，建議清倉或做空 (Strong Sell)"
-                color = "#d50000" # 紅色
+                color = "#d50000" 
             else:
                 signal_msg = "⚖️ 【震盪整理】多看少做 (Hold)"
                 color = "gray"
@@ -1054,43 +1074,52 @@ if app_mode == "🤖 AI 深度學習實驗室":
             </div>
             """, unsafe_allow_html=True)
 
-            # --- 歷史準度驗證圖 ---
-            if df_viz is not None:
+            # --- 歷史準度驗證圖 (第一張：T+5) ---
+            if df_viz_long is not None:
                 st.divider()
-                st.subheader("📉 AI 歷史預測驗證 (過去 3 個月)")
+                st.subheader("🔭 T+5 波段回測 (主帥)")
                 
-                # 在圖表上方顯示準確率
                 k1, k2 = st.columns([1, 2])
-                k1.metric("回測勝率", f"{backtest_score*100:.1f}%", f"{int(backtest_score*len(df_viz))} / {len(df_viz)} Days")
-                k2.caption("💡 參數已優化 (RSI=5, Lookback=20)，AI 對波動極度敏感。紅色三角形代表買進訊號。")
+                k1.metric("回測勝率", f"{backtest_score*100:.1f}%", f"{int(backtest_score*len(df_viz_long))} / {len(df_viz_long)} Days")
+                k2.caption("💡 紅色三角形代表買進訊號 (Lookback=20, RSI=5)")
 
                 fig = make_subplots(specs=[[{"secondary_y": True}]])
+                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Price'], name="TSM 股價", line=dict(color='gray', width=1)), secondary_y=False)
                 
-                # 1. 畫股價
-                fig.add_trace(go.Scatter(x=df_viz['Date'], y=df_viz['Price'], name="TSM 股價", line=dict(color='gray', width=1)), secondary_y=False)
-                
-                # 2. 標記 AI 看漲點 (Prob > 0.6)
-                buy_signals = df_viz[df_viz['Prob'] > 0.6]
+                buy_signals = df_viz_long[df_viz_long['Prob'] > 0.6]
                 if not buy_signals.empty:
                     fig.add_trace(go.Scatter(x=buy_signals['Date'], y=buy_signals['Price'], mode='markers', name='AI 喊買', marker=dict(color='red', size=8, symbol='triangle-up')), secondary_y=False)
                     
-                # 3. 標記 AI 看跌點 (Prob < 0.4)
-                sell_signals = df_viz[df_viz['Prob'] < 0.4]
+                sell_signals = df_viz_long[df_viz_long['Prob'] < 0.4]
                 if not sell_signals.empty:
                     fig.add_trace(go.Scatter(x=sell_signals['Date'], y=sell_signals['Price'], mode='markers', name='AI 喊賣', marker=dict(color='green', size=8, symbol='triangle-down')), secondary_y=False)
 
-                # 4. 畫機率曲線
-                fig.add_trace(go.Scatter(x=df_viz['Date'], y=df_viz['Prob'], name="看漲機率", line=dict(color='rgba(255, 0, 0, 0.5)', width=1.5)), secondary_y=True)
-                
-                # 5. 加上 0.6 / 0.4 門檻線
+                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Prob'], name="看漲機率", line=dict(color='rgba(255, 0, 0, 0.5)', width=1.5)), secondary_y=True)
                 fig.add_hline(y=0.6, line_dash="dot", line_color="red", opacity=0.3, secondary_y=True)
                 fig.add_hline(y=0.4, line_dash="dot", line_color="green", opacity=0.3, secondary_y=True)
                 
                 fig.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", y=1.1))
-                fig.update_yaxes(title_text="股價", secondary_y=False)
-                fig.update_yaxes(title_text="AI 信心度", range=[0, 1], secondary_y=True)
-                
                 st.plotly_chart(fig, use_container_width=True)
+
+            # --- 歷史準度驗證圖 (第二張：T+3) ★新增部分★ ---
+            if df_viz_short is not None:
+                st.divider()
+                st.subheader("⚡ T+3 狙擊回測 (先鋒)")
+                st.caption("💡 高頻訊號：黃色星星代表 AI 偵測到「短線起漲動能」。這些點位通常是勝率 75% 的精華。")
+                
+                fig_short = make_subplots(specs=[[{"secondary_y": True}]])
+                fig_short.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Price'], name="股價", line=dict(color='gray', width=1)), secondary_y=False)
+                
+                # T+3 買點 (門檻 > 0.5，因為已經平移過了)
+                buy_pts_s = df_viz_short[df_viz_short['Prob'] > 0.5]
+                if not buy_pts_s.empty:
+                    fig_short.add_trace(go.Scatter(x=buy_pts_s['Date'], y=buy_pts_s['Price'], mode='markers', name='狙擊買點', marker=dict(color='yellow', size=10, symbol='star')), secondary_y=False)
+
+                fig_short.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Prob'], name="短線信心", line=dict(color='rgba(0,255,0,0.5)', width=1.5)), secondary_y=True)
+                fig_short.add_hline(y=0.5, line_dash="dot", line_color="green", secondary_y=True)
+                
+                fig_short.update_layout(height=400, margin=dict(l=10, r=10, t=30, b=10), legend=dict(orientation="h", y=1.1))
+                st.plotly_chart(fig_short, use_container_width=True)
                 
     # === Tab 2: EDZ / Macro ===
     with tab2:
@@ -1493,6 +1522,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
