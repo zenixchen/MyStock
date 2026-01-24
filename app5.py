@@ -2358,6 +2358,170 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
 
+# ------------------------------------------
+# Mode 4: XGBoost 實驗室 (AI 決策樹 - 攻防一體版)
+# ------------------------------------------
+elif app_mode == "🌲 XGBoost 實驗室":
+    st.header("🌲 XGBoost 極速回測系統")
+    st.caption("由 AI 決策樹驅動的「進攻」與「防守」模型")
+
+    # 選擇模式
+    model_type = st.radio("選擇策略類型：", ["⚔️ 進攻型 (如 TSM, NVDA)", "🛡️ 避險型 (如 EDZ, SQQQ)"], horizontal=True)
+
+    if "進攻" in model_type:
+        target = st.text_input("輸入代號 (Target)", value="TSM")
+        desc_text = "預測邏輯：追逐動能 + 參考輝達/費半走勢"
+    else:
+        target = st.text_input("輸入代號 (Target)", value="EDZ")
+        desc_text = "預測邏輯：偵測波動率 + 恐慌指數 (VIX) + 匯率壓力"
+
+    st.info(f"ℹ️ {desc_text}")
+    
+    if st.button(f"🚀 啟動 {target} AI 訓練"):
+        with st.spinner(f"正在下載數據並訓練 {target} 模型..."):
+            try:
+                # ==========================================
+                # A. 進攻型策略 (TSM 邏輯)
+                # ==========================================
+                if "進攻" in model_type:
+                    tickers = [target, "NVDA", "^SOX"]
+                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
+                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+                    else: df = data['Close'].copy()
+                    
+                    df.ffill(inplace=True); df.dropna(inplace=True)
+
+                    # 特徵工程
+                    df['Target_Ret_1d'] = df[target].pct_change()
+                    df['Target_Ret_3d'] = df[target].pct_change(3)
+                    df['Target_Ret_5d'] = df[target].pct_change(5)
+                    df['NVDA_Ret'] = df['NVDA'].pct_change()
+                    df['SOX_Ret'] = df['^SOX'].pct_change()
+                    df['Alpha_NVDA'] = df['Target_Ret_5d'] - df['NVDA'].pct_change(5)
+                    df['Vola'] = df[target].rolling(5).std() / df[target]
+                    
+                    df.dropna(inplace=True)
+                    features = ['Target_Ret_1d', 'Target_Ret_3d', 'Target_Ret_5d', 'NVDA_Ret', 'SOX_Ret', 'Alpha_NVDA', 'Vola']
+                    
+                    # 標籤：未來3天漲 > 1%
+                    future_ret = df[target].shift(-3) / df[target] - 1
+                    df['Label'] = np.where(future_ret > 0.01, 1, 0)
+
+                # ==========================================
+                # B. 避險型策略 (EDZ 邏輯)
+                # ==========================================
+                else:
+                    # 避險需要看：標的本身, 對應市場(EEM), 美元(DXY), 恐慌(VIX)
+                    # 這裡以 EDZ 為例，如果是 SQQQ 則對應 QQQ
+                    ref_market = "EEM" if "EDZ" in target else "QQQ"
+                    tickers = [target, ref_market, "DX-Y.NYB", "^VIX"]
+                    
+                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
+                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+                    else: df = data['Close'].copy()
+                    
+                    df.ffill(inplace=True); df.dropna(inplace=True)
+
+                    # 特徵工程 (崩盤偵測)
+                    df['Target_Ret_1d'] = df[target].pct_change()
+                    df['Target_Ret_3d'] = df[target].pct_change(3)
+                    df['Market_Ret'] = df[ref_market].pct_change() # EEM or QQQ
+                    df['DXY_Ret'] = df['DX-Y.NYB'].pct_change()
+                    df['VIX_Level'] = df['^VIX']
+                    df['Market_Mom'] = df[ref_market].pct_change(5)
+                    df['Vola'] = df[target].rolling(5).std() / df[target] # 波動率最重要
+
+                    df.dropna(inplace=True)
+                    features = ['Target_Ret_1d', 'Target_Ret_3d', 'Market_Ret', 'DXY_Ret', 'VIX_Level', 'Market_Mom', 'Vola']
+
+                    # 標籤：避險資產通常波動大，抓未來3天漲 > 2%
+                    future_ret = df[target].shift(-3) / df[target] - 1
+                    df['Label'] = np.where(future_ret > 0.02, 1, 0)
+
+                # ==========================================
+                # 通用訓練流程
+                # ==========================================
+                X = df[features]
+                y = df['Label']
+                
+                # 切分
+                split = int(len(df) * 0.8)
+                X_train, X_test = X.iloc[:split], X.iloc[split:]
+                y_train, y_test = y.iloc[:split], y.iloc[split:]
+
+                # 訓練 (平衡權重)
+                scale_pos_weight = (len(y_train) - y_train.sum()) / y_train.sum()
+                model = xgb.XGBClassifier(
+                    n_estimators=150, learning_rate=0.05, max_depth=3,
+                    subsample=0.7, colsample_bytree=0.7,
+                    scale_pos_weight=scale_pos_weight, random_state=42
+                )
+                model.fit(X_train, y_train)
+
+                # 評估
+                y_pred = model.predict(X_test)
+                acc = accuracy_score(y_test, y_pred)
+                st.success(f"✅ 訓練完成！測試集準確率: {acc*100:.1f}%")
+
+                # 畫圖
+                test_df = df.iloc[split:].copy()
+                test_df['Signal'] = y_pred
+                test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Target_Ret_1d']
+                test_df['Cum_Ret_BuyHold'] = (1 + test_df['Target_Ret_1d']).cumprod()
+                test_df['Cum_Ret_AI'] = (1 + test_df['Strategy_Ret']).cumprod()
+
+                c_chart, c_imp = st.columns([2, 1])
+                
+                with c_chart:
+                    st.subheader("💰 資金曲線")
+                    fig = make_subplots()
+                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_Ret_BuyHold'], name='Buy & Hold', line=dict(color='gray', width=1)))
+                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_Ret_AI'], name='AI Strategy', line=dict(color='red', width=2)))
+                    st.plotly_chart(fig, use_container_width=True)
+
+                with c_imp:
+                    st.subheader("🔍 關鍵因子")
+                    importance = model.feature_importances_
+                    feat_imp = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values('Importance', ascending=True)
+                    fig_imp = go.Figure(go.Bar(
+                        x=feat_imp['Importance'], y=feat_imp['Feature'], orientation='h', marker=dict(color='#00E676')
+                    ))
+                    fig_imp.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0))
+                    st.plotly_chart(fig_imp, use_container_width=True)
+
+                # ==========================================
+                # 即時預測注入
+                # ==========================================
+                st.divider()
+                st.subheader(f"🔮 AI 對 {target} 明日的預測")
+                
+                # 取得最後一筆特徵
+                last_feat = X.iloc[-1:].copy()
+                
+                # 嘗試抓取即時價格更新當日漲跌
+                live_price = get_real_live_price(target)
+                if live_price:
+                    prev_close = df[target].iloc[-2]
+                    real_ret = (live_price - prev_close) / prev_close
+                    last_feat['Target_Ret_1d'] = real_ret
+                    st.caption(f"⚡ 已注入即時價格: ${live_price:.2f} (漲跌: {real_ret:.2%})")
+
+                # 預測
+                next_prob = model.predict_proba(last_feat)[0][1]
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("預測方向", "📈 看漲 (進場)" if next_prob > 0.5 else "📉 看跌 (空手)")
+                c2.metric("信心分數", f"{next_prob*100:.1f}%")
+                
+                if "避險" in model_type and next_prob > 0.5:
+                    c3.error("🚨 崩盤警報！建議減碼多單！")
+                elif "避險" in model_type:
+                    c3.success("✅ 市場暫時安全")
+                elif "進攻" in model_type and next_prob > 0.5:
+                    c3.success("🚀 攻擊訊號出現！")
+
+            except Exception as e:
+                st.error(f"發生錯誤: {e}")
 
 
 
