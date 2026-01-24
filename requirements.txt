@@ -10,3 +10,4 @@ groq
 google-generativeai
 gspread
 oauth2client
+xgboost
