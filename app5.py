@@ -247,93 +247,77 @@ def verify_performance_db():
         return 0
 
 # ==========================================
-# ★★★ TSM T+5 主帥版 (最終版：嚴格防作弊 + 信心放大 + 價格防呆) ★★★
+# ★★★ TSM T+5 主帥版 (修正崩潰問題版) ★★★
 # ==========================================
-
-# 1. 定義信心放大函數 (可以放在函數外，也可以放在函數內)
-def enhance_confidence(prob, temperature=0.25):
-    """
-    溫度縮放 (Temperature Scaling)
-    temperature = 1.0 : 原始信心 (不做改變)
-    temperature < 1.0 : 放大信心 (讓 0.55 變 0.7, 0.45 變 0.3)
-    建議值: 0.2 ~ 0.3
-    """
-    import numpy as np
-    # 避免數值溢出 (Logit變換不能有0或1)
-    prob = np.clip(prob, 0.001, 0.999)
-    # 轉為 Logits (反S型)
-    logit = np.log(prob / (1 - prob))
-    # 應用溫度 (縮小分母 = 放大數值)
-    scaled_logit = logit / temperature
-    # 轉回機率 (Sigmoid)
-    new_prob = 1 / (1 + np.exp(-scaled_logit))
-    return new_prob
-
-# 修改 1：縮短快取時間為 300秒 (5分鐘)，避免開盤後還在看舊資料
-@st.cache_resource(ttl=300)
+@st.cache_resource(ttl=300) # 維持 5 分鐘快取
 def get_tsm_swing_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0, None, 0
     try:
         # 1. 下載數據
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
-        data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
+        # 設定 timeout 避免卡死
+        data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=15)
         
-        # 處理 MultiIndex
+        # 處理資料結構 (兼容 yfinance 新舊版)
         if isinstance(data.columns, pd.MultiIndex):
             df = data['Close'].copy()
         else:
             df = data['Close'].copy()
 
-        # 修改 2：先做 ffill 補全指數的缺漏，但針對 TSM 進行「強制即時校正」
+        # 先補齊 NaN (特別是 VIX 經常有缺漏)
         df.ffill(inplace=True)
         
-        # ★★★ 關鍵修正：強制注入 TSM 即時價格 ★★★
-        # 避免 yfinance 歷史數據延遲，導致 ffill 複製了昨天的舊價格
+        # ★★★ 安全的即時價格注入 (避免 Crash) ★★★
         try:
-            live_price = get_real_live_price("TSM") # 呼叫你的 fast_info 函數
+            live_price = get_real_live_price("TSM")
+            # 只有當 live_price 存在且大於 0 時才執行，避免 NoneType 錯誤
             if live_price and live_price > 0:
-                # 如果最後一筆日期是今天，直接更新價格
-                # 如果最後一筆是昨天，手動加上今天
-                last_dt = df.index[-1]
-                today_dt = pd.Timestamp.now().normalize()
-                
-                # 簡單判定：如果最後一筆資料跟即時價差太多(>2%)，且時間接近，就強制覆蓋
-                if abs(df['TSM'].iloc[-1] - live_price) / live_price > 0.02:
-                    df.at[last_dt, 'TSM'] = live_price
-                    # print(f"校正 TSM 價格: {df['TSM'].iloc[-1]} -> {live_price}")
-        except: pass
-            
+                last_close = df['TSM'].iloc[-1]
+                # 如果即時價與最後收盤價差距 > 1% (代表資料庫還沒更新大漲)
+                if abs(last_close - live_price) / live_price > 0.01:
+                    # 覆蓋最後一筆數據
+                    last_idx = df.index[-1]
+                    df.at[last_idx, 'TSM'] = live_price
+                    # 同步修正漲幅計算的基礎
+                    # (選擇性：如果很嚴謹可以把 TSM_Ret 重算，但為了穩健先只改價格)
+        except Exception as e:
+            print(f"即時價格注入失敗 (使用歷史數據): {e}")
+            pass # 這裡失敗不影響後續，繼續往下跑
+
+        # 確保沒有空值 (因為 dropna 會把今天刪掉，所以要確保今天有值)
+        df.ffill(inplace=True)
         df.dropna(inplace=True)
 
-        # 2. 特徵工程 (以下保持不變)
+        # 2. 特徵工程
         feat = pd.DataFrame()
         try:
             feat['NVDA_Ret'] = df['NVDA'].pct_change()
             feat['SOX_Ret'] = df['^SOX'].pct_change()
             feat['TNX_Chg'] = df['^TNX'].pct_change()
             feat['VIX'] = df['^VIX']
-            feat['TSM_Ret'] = df['TSM'].pct_change() # 這裡現在會算出真正的漲幅了
+            feat['TSM_Ret'] = df['TSM'].pct_change()
             feat['RSI'] = ta.rsi(df['TSM'], length=5) 
             feat['MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
-        except: return None, None, 0.0, None, 0
+        except: 
+            return None, None, 0.0, None, 0
         
-        # 修改 3：使用 ffill 確保技術指標最新一筆不會因為計算延遲變成 NaN 而被 dropna 刪掉
-        feat.ffill(inplace=True)
+        # 再次補值，避免計算指標後最新一筆變成 NaN 被刪除
+        feat.ffill(inplace=True) 
         feat.dropna(inplace=True)
         
         cols = ['NVDA_Ret', 'SOX_Ret', 'TNX_Chg', 'VIX', 'TSM_Ret', 'RSI', 'MACD']
         
-        # 3. 標籤 (Target)
+        # 3. 標籤 (Target) - 訓練模型用
         future_ret = df['TSM'].shift(-5) / df['TSM'] - 1
         feat['Target'] = (future_ret > 0.025).astype(int)
         
-        # 嚴格切分
-        valid_data = feat.iloc[:-5].copy()
+        # 切分資料
+        valid_data = feat.iloc[:-5].copy() # 訓練時扣除最後5天
         split_idx = int(len(valid_data) * 0.8)
         train_df = valid_data.iloc[:split_idx]
         test_df = valid_data.iloc[split_idx:]
         
-        # Scaler 只 Fit 訓練集
+        # Scaler
         scaler = StandardScaler()
         scaler.fit(train_df[cols]) 
         
@@ -344,6 +328,7 @@ def get_tsm_swing_prediction():
         lookback = 20
         def create_sequences(data_scaled, targets):
             X, y = [], []
+            if len(data_scaled) < lookback: return np.array([]), np.array([])
             for i in range(lookback, len(data_scaled)):
                 X.append(data_scaled[i-lookback:i])
                 y.append(targets.iloc[i])
@@ -352,11 +337,19 @@ def get_tsm_swing_prediction():
         X_train, y_train = create_sequences(train_scaled, train_df['Target'])
         X_test, y_test = create_sequences(test_scaled, test_df['Target'])
         
-        # 權重與模型
+        # 如果資料太少導致無法訓練，直接回傳
+        if len(X_train) == 0: return None, None, 0.0, None, 0
+
+        # 權重平衡
         from sklearn.utils.class_weight import compute_class_weight
-        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-        class_weight_dict = dict(enumerate(class_weights))
-        
+        # 防呆：確保 y_train 有兩個類別
+        if len(np.unique(y_train)) > 1:
+            class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+            class_weight_dict = dict(enumerate(class_weights))
+        else:
+            class_weight_dict = None
+
+        # 模型架構
         from tensorflow.keras.layers import Input, LSTM
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
@@ -380,44 +373,35 @@ def get_tsm_swing_prediction():
         viz_len = min(len(X_test), 90)
         test_indices = test_df.index[lookback:] 
         test_prices = df['TSM'].loc[test_indices]
-        
-        # 取得原始預測 (通常在 0.45 ~ 0.55 之間)
         preds_raw = model.predict(X_test, verbose=0).flatten()
         viz_probs_raw = preds_raw[-viz_len:]
-
-        # ★★★ 關鍵修改：應用信心放大器 (Temperature = 0.25) ★★★
-        # 這會讓 0.53 變成 0.7，讓紅線波動變大
         viz_probs_enhanced = [enhance_confidence(p, temperature=0.25) for p in viz_probs_raw]
         
         df_viz = pd.DataFrame({
             'Date': test_indices[-viz_len:],
             'Price': test_prices.iloc[-viz_len:].values,
-            'Prob': viz_probs_enhanced  # 使用放大後的機率
+            'Prob': viz_probs_enhanced
         })
         
-        # 計算勝率 (使用放大後的機率來判斷，其實結果一樣，因為只是拉大差距，0.5還是0.5)
+        # 計算勝率
         viz_targets = y_test[-viz_len:]
         viz_preds_cls = (np.array(viz_probs_enhanced) > 0.5).astype(int)
         viz_acc = np.mean(viz_targets == viz_preds_cls)
 
-        # 6. 預測最新一天
+        # 6. ★★★ 預測最新一天 (包含注入的即時價) ★★★
         latest_seq_raw = feat[cols].iloc[-lookback:].values
         latest_seq_scaled = scaler.transform(latest_seq_raw)
         prob_latest_raw = model.predict(np.expand_dims(latest_seq_scaled, axis=0), verbose=0)[0][0]
-        
-        # ★★★ 關鍵修改：最新預測也要放大信心 ★★★
         prob_latest = enhance_confidence(prob_latest_raw, temperature=0.25)
         
-        # 價格防呆 (防止 ValueError)
-        try:
-            current_price = float(df['TSM'].iloc[-1])
-        except:
-            current_price = 0.0
+        # 回傳最後使用的價格 (如果是即時注入的，這裡就會是即時價)
+        current_price = float(df['TSM'].iloc[-1])
         
         return prob_latest, acc, current_price, df_viz, viz_acc
 
     except Exception as e:
-        print(f"TSM Model Error: {e}")
+        print(f"TSM Model Error (Final): {e}")
+        # 回傳預設值以免 UI 崩潰
         return None, None, 0.0, None, 0
         
 # ==========================================
@@ -1856,6 +1840,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
