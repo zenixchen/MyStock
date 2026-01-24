@@ -242,23 +242,12 @@ def verify_performance_db():
             sheet.update([header] + values)
             
         return updates
+    # ★★★ 你的錯誤就在這裡：可能不小心刪掉了這個 except 區塊 ★★★
     except Exception as e:
         print(f"Verify Error: {e}")
         return 0
 
 # ==========================================
-# ★★★ TSM T+5 主帥版 (防崩潰+數據形狀修正版) ★★★
-# ==========================================
-@st.cache_resource(ttl=300)
-def get_tsm_swing_prediction():
-    if not HAS_TENSORFLOW: return None, None, 0.0, None, 0
-    try:
-        # 1. 下載數據
-        tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
-        # 設定 timeout，避免網路卡住
-        data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=20)
-        
-        # [防呆] 如果下載不到任何數據，直接回傳空值，避免# ==========================================
 # ★★★ TSM T+5 主帥版 (最終強固修復版) ★★★
 # ==========================================
 @st.cache_resource(ttl=300)
@@ -1869,6 +1858,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
