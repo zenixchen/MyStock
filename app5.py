@@ -1679,39 +1679,40 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 else:
                     st.error("數據下載失敗，請稍後再試")
 
+    # === Tab 5: MRVL 狙擊 (注意：這行前面也要有 4 個空白的縮排) ===
     with tab5:
         st.subheader("🌊 MRVL 短線狙擊手 (T+3)")
         st.caption("策略核心：均值回歸 (Mean Reversion) | 嚴格驗證模式")
-    
+        
         if st.button("🚀 啟動 MRVL 預測", key="btn_mrvl"):
             with st.spinner("AI 正在計算乖離率與 VIX 因子..."):
-            # 只接收 3 個回傳值
+                # 只接收 3 個回傳值
                 prob, acc, price = get_mrvl_prediction()
-            
+                
                 if prob is not None:
                     c1, c2, c3 = st.columns(3)
                     c1.metric("MRVL 現價", f"${price:.2f}")
                     c2.metric("嚴格回測準度", f"{acc*100:.1f}%", "可信度高")
-                
-                # 判斷邏輯
-                if prob > 0.7:
-                    c3.success(f"🚀 強力看漲 ({prob*100:.0f}%)")
-                    st.divider()
-                    st.success("**💎 AI 建議：短線超跌，買進訊號浮現 (Buy Signal)**")
-                    st.caption("理由：乖離率過大 + VIX 恐慌觸頂，預期 3 天內有反彈。")
                     
-                elif prob < 0.3:
-                    c3.error(f"📉 強力看跌 ({prob*100:.0f}%)")
-                    st.divider()
-                    st.error("**🛑 AI 建議：動能轉弱，建議空手或做空 (Sell Signal)**")
-                    st.caption("理由：漲多回檔或趨勢破線，預期 3 天內持續修正。")
-                    
+                    # 判斷邏輯
+                    if prob > 0.7:
+                        c3.success(f"🚀 強力看漲 ({prob*100:.0f}%)")
+                        st.divider()
+                        st.success("**💎 AI 建議：短線超跌，買進訊號浮現 (Buy Signal)**")
+                        st.caption("理由：乖離率過大 + VIX 恐慌觸頂，預期 3 天內有反彈。")
+                        
+                    elif prob < 0.3:
+                        c3.error(f"📉 強力看跌 ({prob*100:.0f}%)")
+                        st.divider()
+                        st.error("**🛑 AI 建議：動能轉弱，建議空手或做空 (Sell Signal)**")
+                        st.caption("理由：漲多回檔或趨勢破線，預期 3 天內持續修正。")
+                        
+                    else:
+                        c3.info(f"⚖️ 盤整觀望 ({prob*100:.0f}%)")
+                        st.divider()
+                        st.info("**💤 AI 建議：多空不明，建議觀望**")
                 else:
-                    c3.info(f"⚖️ 盤整觀望 ({prob*100:.0f}%)")
-                    st.divider()
-                    st.info("**💤 AI 建議：多空不明，建議觀望**")
-            else:
-                st.error("數據下載失敗，請稍後再試")
+                    st.error("數據下載失敗，請稍後再試")
 
 
 # ------------------------------------------
@@ -2036,6 +2037,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
