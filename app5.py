@@ -916,33 +916,30 @@ def get_mrvl_prediction():
     except Exception as e:
         print(f"MRVL Final Err: {e}")
         return None, None, 0.0
-        
+
 # ==========================================
-# ★★★ TQQQ 納指戰神 (數據防禦版) ★★★
+# ★★★ TQQQ 納指戰神 (UI 顯像 + NaN 排毒版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tqqq_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
     
-    # 定義需要的數據清單
-    # 格式: (代號, 欄位名稱, 是否為關鍵數據)
+    # 定義清單
     requirements = [
-        ("TQQQ", "TQQQ", True),   # 主角 (必備)
-        ("SOXX", "Semi", False),  # 配角 (用 ETF 替代 ^SOX)
-        ("^TNX", "Rates", False), # 配角
-        ("^VIX", "VIX", False),   # 配角
-        ("AAPL", "Apple", False)  # 配角
+        ("TQQQ", "TQQQ", True),   
+        ("SOXX", "Semi", False),  
+        ("^TNX", "Rates", False), 
+        ("^VIX", "VIX", False),   
+        ("AAPL", "Apple", False)  
     ]
     
     try:
-        # --- 1. 建立空的時間序列 (以 TQQQ 為基準) ---
-        # 先抓主角，確定時間軸
+        # 1. 抓主角
         main_df = yf.download("TQQQ", period="3y", interval="1d", progress=False, auto_adjust=True)
         if main_df is None or main_df.empty:
-            print("❌ 關鍵錯誤: TQQQ 主數據下載失敗")
+            st.error("❌ TQQQ 主數據下載失敗，無法執行！")
             return None, None, 0.0
             
-        # 處理 MultiIndex (如果是雙層索引，取 Close)
         if isinstance(main_df.columns, pd.MultiIndex):
             df = pd.DataFrame(main_df['Close'])
             df.columns = ["TQQQ"]
@@ -950,32 +947,33 @@ def get_tqqq_prediction():
             df = pd.DataFrame(main_df['Close'])
             df.columns = ["TQQQ"]
 
-        # --- 2. 逐一合併配角數據 (防線一 & 二) ---
+        # 2. 抓配角 (加入 UI 提示)
+        error_msg = []
         for ticker, col_name, is_critical in requirements[1:]:
             try:
                 temp = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=True)
-                
-                # 提取收盤價
+                if temp is None or temp.empty: raise ValueError("Empty")
+
                 if isinstance(temp.columns, pd.MultiIndex): series = temp['Close']
                 else: series = temp['Close'] if 'Close' in temp.columns else temp.iloc[:, 0]
                 
-                # 合併到主表 (自動對齊日期)
                 series.name = col_name
                 df = df.join(series, how='left')
+                df[col_name] = df[col_name].ffill() # 補值
                 
-                # 智慧補值：如果某天抓不到，就用昨天的 (ffill)
-                df[col_name] = df[col_name].ffill()
-                
-            except Exception as e:
-                print(f"⚠️ 警告: {ticker} 下載失敗，將使用 0 或前值填補。")
-                if col_name not in df.columns:
-                    df[col_name] = 0 # 萬一真的完全抓不到，只好填 0
+            except:
+                # ★ 改用 st.toast 讓你在畫面上看到
+                st.toast(f"⚠️ {ticker} 數據缺失，已啟用修復機制", icon="🔧")
+                error_msg.append(ticker)
+                if col_name not in df.columns: df[col_name] = 0 
 
-        # 強制補值 (清除所有 NaN)
-        df.ffill(inplace=True)
-        df.dropna(inplace=True) # 刪除最前面補不到的
+        df.ffill(inplace=True); df.dropna(inplace=True)
+        
+        # 顯示警告 (如果有的話)
+        if error_msg:
+            st.warning(f"⚠️ 注意：以下輔助數據使用歷史值或零值替代，可能影響信心準度：{', '.join(error_msg)}")
 
-        # Live Price Check
+        # Live Price
         current_price = float(df['TQQQ'].iloc[-1])
         try:
             live = get_real_live_price("TQQQ")
@@ -984,7 +982,7 @@ def get_tqqq_prediction():
                 df.at[df.index[-1], 'TQQQ'] = live
         except: pass
 
-        # --- 3. 特徵工程 (基於完整數據) ---
+        # 3. 特徵工程
         feat = pd.DataFrame()
         feat['Semi_Ret'] = df['Semi'].pct_change()
         feat['Rates_Chg'] = df['Rates'].diff()
@@ -993,21 +991,27 @@ def get_tqqq_prediction():
         feat['RSI'] = ta.rsi(df['TQQQ'], 14)
         feat['Apple_Ret'] = df['Apple'].pct_change()
 
+        # ★★★ 關鍵修復：這裡就是解決 nan% 的地方 ★★★
+        # 如果 VIX 是 0，pct_change 或是除法可能會產生無限大 (inf) 或 NaN
+        # 我們強制把這些髒東西洗掉，變成 0
+        feat = feat.replace([np.inf, -np.inf], np.nan).fillna(0)
+
         feat.dropna(inplace=True)
         cols = ['Semi_Ret', 'Rates_Chg', 'VIX', 'Bias_20', 'RSI', 'Apple_Ret']
         lookback = 15
 
-        # Target: T+3 > 2%
+        # 訓練資料準備
         t3_ret = df['TQQQ'].shift(-3) / df['TQQQ'] - 1
         feat['Target'] = (t3_ret > 0.02).astype(int)
         
         valid = feat.iloc[:-3].copy()
         if len(valid) < 50: return None, None, current_price
 
-        # 訓練模型 (這部分不變)
         split = int(len(valid) * 0.8)
         train_df = valid.iloc[:split]; test_df = valid.iloc[split:]
-        scaler = StandardScaler(); scaler.fit(train_df[cols])
+
+        scaler = StandardScaler()
+        scaler.fit(train_df[cols])
 
         def create_xy(d, t, lb):
             X, y = [], []
@@ -1033,18 +1037,21 @@ def get_tqqq_prediction():
 
         # 預測
         last_seq = feat[cols].iloc[-lookback:].values
-        if len(last_seq) < lookback: # Padding if needed
+        if len(last_seq) < lookback:
             padding = np.tile(last_seq[0], (lookback - len(last_seq), 1))
             last_seq = np.vstack([padding, last_seq])
             
         prob_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         
+        # 再次防呆：確保機率不是 NaN
+        if np.isnan(prob_raw): prob_raw = 0.5
+
         def enhance(p): return 1 / (1 + np.exp(-np.log(np.clip(p,0.001,0.999)/(1-np.clip(p,0.001,0.999)))/0.3))
         
         return enhance(prob_raw), acc, current_price
 
     except Exception as e:
-        print(f"TQQQ Robust Err: {e}")
+        print(f"TQQQ UI Err: {e}")
         return None, None, 0.0
 # ==========================================
 # ★★★ NVDA 信仰充值版 (終極數據修復版) ★★★
@@ -2374,6 +2381,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
