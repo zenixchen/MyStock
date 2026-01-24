@@ -796,12 +796,13 @@ def get_soxl_short_prediction():
         return None, None, 0
 
 # ==========================================
-# ★★★ MRVL 狙擊手 (變色龍偽裝版) ★★★
+# ★★★ MRVL 狙擊手 (變色龍偽裝版 - Ticker模式) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_mrvl_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
     
+    # 這裡的清單不需要改變
     requirements = [
         ("MRVL", "MRVL"),
         ("NVDA", "NVDA"),
@@ -811,34 +812,52 @@ def get_mrvl_prediction():
     
     try:
         df = pd.DataFrame()
+        
+        # 1. 啟動變色龍模式 (逐一下載)
         for ticker, col_name in requirements:
-            time.sleep(random.uniform(0.6, 1.2)) # ★ 休息一下
+            # 隨機休息，模擬真人操作
+            time.sleep(random.uniform(0.6, 1.2))
+            
             try:
+                # ★ 關鍵改變：完全棄用 yf.download
                 t = yf.Ticker(ticker)
                 hist = t.history(period="3y")
-                if hist.empty: continue
                 
+                if hist is None or hist.empty:
+                    st.toast(f"⚠️ {ticker} 暫無數據", icon="📭")
+                    continue
+                
+                # 抓收盤價
                 series = hist['Close']
                 series.name = col_name
                 
-                if df.empty: df = pd.DataFrame(series)
-                else: df = df.join(series, how='outer')
+                # 合併
+                if df.empty:
+                    df = pd.DataFrame(series)
+                else:
+                    df = df.join(series, how='outer')
             except: pass
 
-        if 'MRVL' not in df.columns: return None, None, 0.0
+        # 2. 檢查主角
+        if 'MRVL' not in df.columns:
+            st.error("❌ MRVL 主數據讀取失敗，請稍後再試。")
+            return None, None, 0.0
 
+        # Live Price
         current_price = float(df['MRVL'].iloc[-1])
         try:
             live = get_real_live_price("MRVL")
             if live: current_price = live
         except: pass
 
+        # 3. 補值與清洗
         df.ffill(inplace=True); df.dropna(inplace=True)
         
+        # 補缺欄位 (防呆)
         for c in ["VIX", "NVDA", "SOXX"]:
             if c not in df.columns: df[c] = 0.0
 
-        # 特徵工程
+        # 4. 特徵工程
         feat = pd.DataFrame()
         feat['VIX'] = df['VIX']
         feat['Bias_5'] = (df['MRVL'] - ta.sma(df['MRVL'], 5)) / ta.sma(df['MRVL'], 5)
@@ -848,12 +867,13 @@ def get_mrvl_prediction():
         feat['NVDA_Ret'] = df['NVDA'].pct_change()
         feat['MACD'] = ta.macd(df['MRVL'])['MACD_12_26_9']
 
+        # 清洗 NaN
         feat = feat.replace([np.inf, -np.inf], np.nan).fillna(0)
         feat.dropna(inplace=True)
         cols = ['VIX', 'Bias_5', 'MRVL_Ret_3d', 'Boll_Pct', 'NVDA_Ret', 'MACD']
         lookback = 20
 
-        # 模型
+        # 5. 模型預測
         t3_ret = df['MRVL'].shift(-3) / df['MRVL'] - 1
         feat['Target'] = (t3_ret > 0.02).astype(int)
         
@@ -1020,7 +1040,7 @@ def get_tqqq_prediction():
         print(f"TQQQ Chameleon Err: {e}")
         return None, None, 0.0
 # ==========================================
-# ★★★ NVDA 信仰充值版 (變色龍偽裝版) ★★★
+# ★★★ NVDA 信仰充值版 (變色龍偽裝版 - Ticker模式) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_nvda_prediction():
@@ -1035,12 +1055,15 @@ def get_nvda_prediction():
         df = pd.DataFrame()
         nvda_vol = None
 
+        # 1. 逐一下載
         for ticker, col_name in requirements:
-            time.sleep(random.uniform(0.6, 1.2)) # ★ 休息一下
+            time.sleep(random.uniform(0.6, 1.2)) # ★ 關鍵休息
             try:
+                # ★ 關鍵改變：完全棄用 yf.download
                 t = yf.Ticker(ticker)
                 hist = t.history(period="3y")
-                if hist.empty: continue
+                
+                if hist is None or hist.empty: continue
                 
                 series = hist['Close']
                 series.name = col_name
@@ -1048,11 +1071,14 @@ def get_nvda_prediction():
                 if df.empty: df = pd.DataFrame(series)
                 else: df = df.join(series, how='outer')
                 
+                # 順便抓 NVDA 成交量
                 if ticker == "NVDA":
                     nvda_vol = hist['Volume']
             except: pass
 
-        if 'NVDA' not in df.columns: return None, None, 0.0
+        if 'NVDA' not in df.columns: 
+            st.error("❌ NVDA 主數據讀取失敗。")
+            return None, None, 0.0
 
         current_price = float(df['NVDA'].iloc[-1])
         try:
@@ -1062,16 +1088,18 @@ def get_nvda_prediction():
 
         df.ffill(inplace=True); df.dropna(inplace=True)
         
+        # Volume 處理
         if nvda_vol is not None:
             df['Vol'] = nvda_vol
             df['Vol'] = df['Vol'].ffill()
         else:
             df['Vol'] = 1.0
 
+        # 補缺欄位
         for c in ["MSFT", "AMD", "SOX", "TNX", "VIX"]:
             if c not in df.columns: df[c] = 0.0
 
-        # 特徵
+        # 2. 特徵工程
         feat = pd.DataFrame()
         feat['Ret_5d'] = df['NVDA'].pct_change(5)
         feat['RSI'] = ta.rsi(df['NVDA'], 14)
@@ -1085,7 +1113,7 @@ def get_nvda_prediction():
         cols = ['Ret_5d', 'VIX', 'Bias_20', 'MACD', 'RSI', 'RVOL']
         lookback = 20
 
-        # 模型
+        # 3. 模型
         t3_ret = df['NVDA'].shift(-3) / df['NVDA'] - 1
         feat['Target'] = (t3_ret > 0.03).astype(int)
         
@@ -2342,6 +2370,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
