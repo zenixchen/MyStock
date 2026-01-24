@@ -2429,9 +2429,13 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 # 訓練 (平衡權重)
                 scale_pos_weight = (len(y_train) - y_train.sum()) / y_train.sum()
                 model = xgb.XGBClassifier(
-                    n_estimators=150, learning_rate=0.05, max_depth=3,
-                    subsample=0.7, colsample_bytree=0.7,
-                    scale_pos_weight=scale_pos_weight, random_state=42
+                    n_estimators=200,      # 樹多一點，學得更細
+                    learning_rate=0.03,    # 學習率調低，避免學歪
+                    max_depth=4,           # 深度增加 1，讓它能學到更複雜的動能
+                    subsample=0.9,         # 採樣比例提高
+                    colsample_bytree=0.9,
+                    scale_pos_weight=scale_pos_weight, 
+                    random_state=42
                 )
                 model.fit(X_train, y_train)
 
@@ -2548,6 +2552,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 m3.metric("待結算", f"{len(df_cloud[df_cloud['status']=='Pending'])} 筆")
     else:
         st.info("☁️ 雲端資料庫目前是空的，請去前面頁面存入預測。")
+
 
 
 
