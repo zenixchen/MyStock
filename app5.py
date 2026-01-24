@@ -796,6 +796,130 @@ def get_soxl_short_prediction():
         return None, None, 0
 
 # ==========================================
+# ★★★ MRVL 戰神版 (T+3 狙擊專用 / Strict Mode) ★★★
+# ==========================================
+@st.cache_resource(ttl=300)
+def get_mrvl_prediction():
+    # 預設回傳：機率, 準度, 現價
+    if not HAS_TENSORFLOW: return None, None, 0.0
+
+    try:
+        # 1. 下載數據
+        tickers = ["MRVL", "NVDA", "^SOX", "^VIX"]
+        data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=25)
+        
+        if isinstance(data.columns, pd.MultiIndex):
+            df = data['Close'].copy()
+        else:
+            df = data['Close'].copy()
+
+        if 'MRVL' not in df.columns: return None, None, 0.0
+
+        # --- 即時價格注入 ---
+        current_price = 0.0
+        try:
+            live_price = get_real_live_price("MRVL")
+            if live_price and live_price > 0:
+                current_price = live_price
+                last_idx = df.index[-1]
+                df.at[last_idx, 'MRVL'] = live_price
+            else:
+                current_price = float(df['MRVL'].iloc[-1])
+        except:
+            current_price = float(df['MRVL'].iloc[-1]) if not df.empty else 0.0
+
+        df.ffill(inplace=True); df.dropna(inplace=True)
+
+        # 2. 特徵工程 (只保留對 T+3 有效的因子)
+        feat = pd.DataFrame()
+        try:
+            feat['VIX'] = df['^VIX']
+            feat['Bias_5'] = (df['MRVL'] - ta.sma(df['MRVL'], 5)) / ta.sma(df['MRVL'], 5)
+            feat['MRVL_Ret_3d'] = df['MRVL'].pct_change(3)
+            bb = ta.bbands(df['MRVL'], length=20, std=2)
+            feat['Boll_Pct'] = (df['MRVL'] - bb.iloc[:, 0]) / (bb.iloc[:, 2] - bb.iloc[:, 0])
+            feat['NVDA_Ret'] = df['NVDA'].pct_change()
+            feat['MACD'] = ta.macd(df['MRVL'])['MACD_12_26_9']
+        except Exception as e:
+            return None, None, current_price
+
+        feat.dropna(inplace=True)
+        cols = ['VIX', 'Bias_5', 'MRVL_Ret_3d', 'Boll_Pct', 'NVDA_Ret', 'MACD']
+        lookback = 20
+
+        # 3. 標籤與切分 (T+3 Only)
+        # Target: 未來 3 天漲 > 2%
+        t3_ret = df['MRVL'].shift(-3) / df['MRVL'] - 1
+        feat['Target'] = (t3_ret > 0.02).astype(int)
+        
+        # 移除最後 3 天 (無答案區)
+        valid_data = feat.iloc[:-3].copy()
+        
+        # ★ 嚴格切分 (80% 訓練 / 20% 驗證)
+        split_idx = int(len(valid_data) * 0.8)
+        train_df = valid_data.iloc[:split_idx]
+        test_df = valid_data.iloc[split_idx:]
+        
+        # ★ Scaler 嚴格隔離 (只看訓練集)
+        scaler = StandardScaler()
+        scaler.fit(train_df[cols])
+        
+        train_scaled = scaler.transform(train_df[cols])
+        test_scaled = scaler.transform(test_df[cols])
+
+        def create_xy(data, targets, lb):
+            X, y = [], []
+            if len(data) < lb: return np.array([]), np.array([])
+            for i in range(lb, len(data)):
+                X.append(data[i-lb:i])
+                y.append(targets.iloc[i])
+            return np.array(X), np.array(y)
+
+        # 4. 模型訓練 (單一模型)
+        X_train, y_train = create_xy(train_scaled, train_df['Target'], lookback)
+        X_test, y_test = create_xy(test_scaled, test_df['Target'], lookback)
+        
+        if len(X_train) == 0: return None, None, current_price
+        
+        # 類別權重平衡
+        from sklearn.utils.class_weight import compute_class_weight
+        cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+        cw_dict = dict(enumerate(cw))
+
+        from tensorflow.keras.layers import Input, LSTM
+        model = Sequential()
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(LSTM(32))
+        model.add(Dropout(0.2))
+        model.add(Dense(1, activation='sigmoid'))
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        
+        # 訓練
+        model.fit(X_train, y_train, epochs=15, batch_size=16, verbose=0, class_weight=cw_dict)
+        # 評估 (只看 Test Set)
+        _, acc = model.evaluate(X_test, y_test, verbose=0)
+
+        # 5. 預測最新一天
+        latest_seq_raw = feat[cols].iloc[-lookback:].values
+        
+        if len(latest_seq_raw) < lookback:
+            padding = np.tile(latest_seq_raw[0], (lookback - len(latest_seq_raw), 1))
+            latest_seq_raw = np.vstack([padding, latest_seq_raw])
+            
+        latest_scaled = scaler.transform(latest_seq_raw)
+        input_seq = np.expand_dims(latest_scaled, axis=0)
+        
+        prob_raw = model.predict(input_seq, verbose=0)[0][0]
+        # 信心放大
+        prob = enhance_confidence(prob_raw, temperature=0.25)
+
+        return prob, acc, current_price
+
+    except Exception as e:
+        print(f"MRVL Model Crash: {e}")
+        return None, None, 0.0
+
+# ==========================================
 # 4. 傳統策略分析 (功能模組)
 # ==========================================
 # ★★★ 優化：加入緩存機制，提升速度並防鎖 IP ★★★
@@ -1261,7 +1385,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
     st.header("🤖 AI 深度學習實驗室")
     st.caption("神經網路模型 (LSTM) | T+5 & T+3 雙模預測")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦","SOXL 三倍槓桿"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦","SOXL 三倍槓桿","🌊 MRVL 狙擊"])
     
 # === Tab 1: TSM ===
     with tab1:
@@ -1554,6 +1678,41 @@ if app_mode == "🤖 AI 深度學習實驗室":
                         col3.warning(f"💤 動能不足 (信心 {prob_soxl*100:.0f}%)")
                 else:
                     st.error("數據下載失敗，請稍後再試")
+
+    with tab5:
+        st.subheader("🌊 MRVL 短線狙擊手 (T+3)")
+        st.caption("策略核心：均值回歸 (Mean Reversion) | 嚴格驗證模式")
+    
+        if st.button("🚀 啟動 MRVL 預測", key="btn_mrvl"):
+            with st.spinner("AI 正在計算乖離率與 VIX 因子..."):
+            # 只接收 3 個回傳值
+                prob, acc, price = get_mrvl_prediction()
+            
+                if prob is not None:
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("MRVL 現價", f"${price:.2f}")
+                    c2.metric("嚴格回測準度", f"{acc*100:.1f}%", "可信度高")
+                
+                # 判斷邏輯
+                if prob > 0.7:
+                    c3.success(f"🚀 強力看漲 ({prob*100:.0f}%)")
+                    st.divider()
+                    st.success("**💎 AI 建議：短線超跌，買進訊號浮現 (Buy Signal)**")
+                    st.caption("理由：乖離率過大 + VIX 恐慌觸頂，預期 3 天內有反彈。")
+                    
+                elif prob < 0.3:
+                    c3.error(f"📉 強力看跌 ({prob*100:.0f}%)")
+                    st.divider()
+                    st.error("**🛑 AI 建議：動能轉弱，建議空手或做空 (Sell Signal)**")
+                    st.caption("理由：漲多回檔或趨勢破線，預期 3 天內持續修正。")
+                    
+                else:
+                    c3.info(f"⚖️ 盤整觀望 ({prob*100:.0f}%)")
+                    st.divider()
+                    st.info("**💤 AI 建議：多空不明，建議觀望**")
+                else:
+                    st.error("數據下載失敗，請稍後再試")
+
 
 # ------------------------------------------
 # Mode 2: 策略分析工具 (單股) - 完整修正版
@@ -1877,6 +2036,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
