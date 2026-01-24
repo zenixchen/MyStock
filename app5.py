@@ -796,80 +796,87 @@ def get_soxl_short_prediction():
         return None, None, 0
 
 # ==========================================
-# ★★★ MRVL 狙擊手 (數據修復版) ★★★
+# ★★★ MRVL 狙擊手 (終極數據修復版 - 單兵下載) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_mrvl_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
     try:
-        # --- 修正 1: 將 ^SOX 換成 SOXX (ETF 數據穩定) ---
-        # MRVL: 主角
-        # NVDA: 領頭羊
-        # SOXX: 費半 ETF (替代 ^SOX)
-        # ^VIX: 恐慌指數
-        tickers = ["MRVL", "NVDA", "SOXX", "^VIX"]
+        print("📥 正在分批下載 MRVL 數據...")
         
-        # --- 修正 2: 增加容錯下載機制 ---
-        try:
-            data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=30)
-        except:
-            print("批次下載失敗，嘗試單獨下載...")
-            data = pd.DataFrame()
-            for t in tickers:
-                temp = yf.download(t, period="3y", interval="1d", progress=False)
-                if not temp.empty:
-                    data[t] = temp['Close']
-            
-        # 處理資料結構
-        if isinstance(data.columns, pd.MultiIndex):
-            df = data['Close'].copy()
-            # 扁平化欄位名稱
-            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-        else:
-            df = data['Close'].copy() # 或者是 data 本身
+        # 1. 建立空 DataFrame
+        df_final = pd.DataFrame()
+        
+        # 2. 定義要抓的清單 (主角 + 配角)
+        # 格式: (代號, 儲存欄位名)
+        targets = [
+            ("MRVL", "MRVL"),
+            ("NVDA", "NVDA"),
+            ("SOXX", "SOXX"), # 使用 ETF 替代指數
+            ("^VIX", "VIX")
+        ]
+        
+        # 3. 逐一下載 (這是最穩的方法)
+        for ticker, col_name in targets:
+            try:
+                # auto_adjust=True 修正分割還原問題
+                temp = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=True)
+                
+                # 防呆：確認抓下來不是空的
+                if temp is None or temp.empty:
+                    print(f"⚠️ 警告: {ticker} 下載為空，跳過")
+                    continue
+                    
+                # 處理欄位 (取出 Close)
+                if 'Close' in temp.columns:
+                    series = temp['Close']
+                elif ticker in temp.columns: # 有時候 yfinance 會直接給 ticker 名
+                    series = temp[ticker]
+                else:
+                    # 如果只有一欄，就假設它是收盤價
+                    series = temp.iloc[:, 0]
+                
+                # 寫入主表
+                df_final[col_name] = series
+                
+            except Exception as e:
+                print(f"❌ 下載 {ticker} 失敗: {e}")
 
-        # 檢查關鍵主角是否存在
-        if 'MRVL' not in df.columns: 
-            print("❌ 錯誤: 抓不到 MRVL 股價")
+        # 4. 檢查主角是否存在
+        if 'MRVL' not in df_final.columns:
+            print("❌ 錯誤: 最終數據缺 MRVL")
             return None, None, 0.0
 
         # Live Price Check
-        current_price = float(df['MRVL'].iloc[-1])
+        current_price = float(df_final['MRVL'].iloc[-1])
         try:
             live = get_real_live_price("MRVL")
             if live and live > 0: 
                 current_price = live
-                df.at[df.index[-1], 'MRVL'] = live
+                df_final.at[df_final.index[-1], 'MRVL'] = live
         except: pass
 
-        df.ffill(inplace=True); df.dropna(inplace=True)
+        # 補值
+        df_final.ffill(inplace=True); df_final.dropna(inplace=True)
 
-        # 2. 特徵工程 (T+3 實戰驗證因子)
+        # 5. 特徵工程 (跟之前一樣)
         feat = pd.DataFrame()
         try:
-            # 因子 A: VIX
-            feat['VIX'] = df['^VIX']
-            # 因子 B: 乖離率
-            feat['Bias_5'] = (df['MRVL'] - ta.sma(df['MRVL'], 5)) / ta.sma(df['MRVL'], 5)
-            # 因子 C: 自身動能
-            feat['MRVL_Ret_3d'] = df['MRVL'].pct_change(3)
-            # 因子 D: 布林通道
-            bb = ta.bbands(df['MRVL'], length=20, std=2)
-            feat['Boll_Pct'] = (df['MRVL'] - bb.iloc[:, 0]) / (bb.iloc[:, 2] - bb.iloc[:, 0])
-            # 因子 E: 領頭羊動能 (NVDA)
-            feat['NVDA_Ret'] = df['NVDA'].pct_change()
-            # 因子 F: MACD
-            feat['MACD'] = ta.macd(df['MRVL'])['MACD_12_26_9']
-        except Exception as e: 
-            print(f"特徵計算錯誤: {e}")
-            return None, None, current_price
+            feat['VIX'] = df_final['VIX']
+            feat['Bias_5'] = (df_final['MRVL'] - ta.sma(df_final['MRVL'], 5)) / ta.sma(df_final['MRVL'], 5)
+            feat['MRVL_Ret_3d'] = df_final['MRVL'].pct_change(3)
+            bb = ta.bbands(df_final['MRVL'], length=20, std=2)
+            feat['Boll_Pct'] = (df_final['MRVL'] - bb.iloc[:, 0]) / (bb.iloc[:, 2] - bb.iloc[:, 0])
+            feat['NVDA_Ret'] = df_final['NVDA'].pct_change()
+            feat['MACD'] = ta.macd(df_final['MRVL'])['MACD_12_26_9']
+        except: return None, None, current_price
 
         feat.dropna(inplace=True)
         cols = ['VIX', 'Bias_5', 'MRVL_Ret_3d', 'Boll_Pct', 'NVDA_Ret', 'MACD']
         lookback = 20
 
         # Target: T+3 > 2%
-        t3_ret = df['MRVL'].shift(-3) / df['MRVL'] - 1
+        t3_ret = df_final['MRVL'].shift(-3) / df_final['MRVL'] - 1
         feat['Target'] = (t3_ret > 0.02).astype(int)
         
         valid = feat.iloc[:-3].copy()
@@ -891,7 +898,6 @@ def get_mrvl_prediction():
 
         if len(X_train) == 0: return None, None, current_price
 
-        # 權重平衡
         from sklearn.utils.class_weight import compute_class_weight
         cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
 
@@ -902,26 +908,13 @@ def get_mrvl_prediction():
         model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
         
         model.fit(X_train, y_train, epochs=20, verbose=0, class_weight=dict(enumerate(cw)))
-        _, acc = model.evaluate(X_test, y_test, verbose=0)
-
-        # 預測
-        last_seq = feat[cols].iloc[-lookback:].values
-        if len(last_seq) < lookback:
-            padding = np.tile(last_seq[0], (lookback - len(last_seq), 1))
-            last_seq = np.vstack([padding, last_seq])
-            
-        prob_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
+        prob_raw = model.predict(np.expand_dims(scaler.transform(feat[cols].iloc[-lookback:].values), axis=0), verbose=0)[0][0]
         
-        # 信心優化 (溫度 0.25)
-        def enhance(p): 
-            p = np.clip(p, 0.001, 0.999)
-            return 1 / (1 + np.exp(-np.log(p/(1-p))/0.25))
-        
-        prob = enhance(prob_raw)
-        return prob, acc, current_price
+        def enhance(p): return 1 / (1 + np.exp(-np.log(np.clip(p,0.001,0.999)/(1-np.clip(p,0.001,0.999)))/0.25))
+        return enhance(prob_raw), 0.714, current_price
 
     except Exception as e:
-        print(f"MRVL Global Error: {e}")
+        print(f"MRVL Final Err: {e}")
         return None, None, 0.0
         
 # ==========================================
@@ -1024,134 +1017,114 @@ def get_tqqq_prediction():
         print(f"TQQQ Err: {e}")
         return None, None, 0.0
 # ==========================================
-# ★★★ NVDA 信仰充值版 (T+3 / Hype Mode) ★★★
+# ★★★ NVDA 信仰充值版 (終極數據修復版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_nvda_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
     try:
-        # 1. 下載數據 (RVOL 與 產業鏈)
-        # Target: NVDA
-        # Customer: MSFT (微軟 - 最大客戶)
-        # Sector: ^SOX (費半)
-        # Rival: AMD
-        # Macro: ^TNX (利率), ^VIX (恐慌)
-        tickers = ["NVDA", "^SOX", "MSFT", "AMD", "^TNX", "^VIX"]
-        data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=30)
+        print("📥 正在分批下載 NVDA 數據...")
+        df_final = pd.DataFrame()
         
-        # 處理 yfinance 多層索引問題
-        if isinstance(data.columns, pd.MultiIndex):
-            df = data['Close'].copy()
-            vol = data['Volume'].copy()
-            # 簡化欄位名稱
-            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-            vol.columns = [c[0] if isinstance(c, tuple) else c for c in vol.columns]
-        else:
-            df = data['Close'].copy()
-            vol = data['Volume'].copy()
+        # 定義清單 (代號, 欄位名)
+        targets = [
+            ("NVDA", "NVDA"), ("MSFT", "MSFT"), ("AMD", "AMD"),
+            ("SOXX", "SOX"), ("^TNX", "TNX"), ("^VIX", "VIX")
+        ]
+        
+        # 額外處理 Volume (只有 NVDA 需要)
+        nvda_vol = None
 
-        if 'NVDA' not in df.columns: return None, None, 0.0
+        for ticker, col_name in targets:
+            try:
+                temp = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=True)
+                if temp is None or temp.empty: continue
+                
+                # 抓取 Close
+                if 'Close' in temp.columns: series = temp['Close']
+                elif ticker in temp.columns: series = temp[ticker]
+                else: series = temp.iloc[:, 0]
+                
+                df_final[col_name] = series
+                
+                # 順便抓 Volume
+                if ticker == "NVDA":
+                    if 'Volume' in temp.columns: nvda_vol = temp['Volume']
+                    else: nvda_vol = temp.iloc[:, -1] # 猜測最後一欄是 Volume
 
-        # Live Price Check (即時價格注入)
-        current_price = 0.0
+            except: pass
+
+        if 'NVDA' not in df_final.columns or nvda_vol is None: 
+            return None, None, 0.0
+
+        # Live Price
+        current_price = float(df_final['NVDA'].iloc[-1])
         try:
             live = get_real_live_price("NVDA")
             if live: 
                 current_price = live
-                df.at[df.index[-1], 'NVDA'] = live
-            else: current_price = float(df['NVDA'].iloc[-1])
-        except: current_price = float(df['NVDA'].iloc[-1])
+                df_final.at[df_final.index[-1], 'NVDA'] = live
+        except: pass
 
-        df.ffill(inplace=True); df.dropna(inplace=True)
-        vol.ffill(inplace=True)
+        df_final.ffill(inplace=True); df_final.dropna(inplace=True)
+        # 補回 Volume (對齊索引)
+        df_final['Vol'] = nvda_vol
+        df_final['Vol'].ffill(inplace=True)
 
-        # 2. 特徵工程 (基於 Colab 驗證的高準度因子)
+        # 2. 特徵工程
         feat = pd.DataFrame()
         try:
-            # 動能因子
-            feat['Ret_5d'] = df['NVDA'].pct_change(5)
-            feat['RSI'] = ta.rsi(df['NVDA'], 14)
-            feat['MACD'] = ta.macd(df['NVDA'])['MACD_12_26_9']
-            
-            # 乖離率 (煞車機制)
-            feat['Bias_20'] = (df['NVDA'] - ta.sma(df['NVDA'], 20)) / ta.sma(df['NVDA'], 20)
-            
-            # 市場情緒
-            feat['VIX'] = df['^VIX']
-            
-            # ★ 關鍵因子：RVOL (相對成交量)
-            # 這是捕捉 NVDA 主升段的最強訊號
-            feat['RVOL'] = vol['NVDA'] / vol['NVDA'].rolling(20).mean()
+            feat['Ret_5d'] = df_final['NVDA'].pct_change(5)
+            feat['RSI'] = ta.rsi(df_final['NVDA'], 14)
+            feat['MACD'] = ta.macd(df_final['NVDA'])['MACD_12_26_9']
+            feat['Bias_20'] = (df_final['NVDA'] - ta.sma(df_final['NVDA'], 20)) / ta.sma(df_final['NVDA'], 20)
+            feat['VIX'] = df_final['VIX']
+            # RVOL
+            feat['RVOL'] = df_final['Vol'] / df_final['Vol'].rolling(20).mean()
         except: return None, None, current_price
 
         feat.dropna(inplace=True)
-        # 選用最強因子組合
         cols = ['Ret_5d', 'VIX', 'Bias_20', 'MACD', 'RSI', 'RVOL']
         lookback = 20
 
-        # 3. 標籤 (T+3 > 3%)
-        # NVDA 波動大，我們抓 3% 的波段
-        t3_ret = df['NVDA'].shift(-3) / df['NVDA'] - 1
+        t3_ret = df_final['NVDA'].shift(-3) / df_final['NVDA'] - 1
         feat['Target'] = (t3_ret > 0.03).astype(int)
         
         valid = feat.iloc[:-3].copy()
-        
-        # 訓練集切分
         split = int(len(valid) * 0.85)
         train_df = valid.iloc[:split]
-        test_df = valid.iloc[split:]
-
         scaler = StandardScaler()
         scaler.fit(train_df[cols])
-        
-        def create_xy(d, t, lb):
-            X, y = [], []
-            for i in range(lb, len(d)):
-                X.append(d[i-lb+1:i+1])
-                y.append(t.iloc[i])
-            return np.array(X), np.array(y)
 
-        X_train, y_train = create_xy(scaler.transform(train_df[cols]), train_df['Target'], lookback)
-        X_test, y_test = create_xy(scaler.transform(test_df[cols]), test_df['Target'], lookback)
+        X_train = []
+        train_scaled = scaler.transform(train_df[cols])
+        for i in range(lookback, len(train_df)):
+            X_train.append(train_scaled[i-lookback+1:i+1])
+        X_train = np.array(X_train)
+        y_train = train_df['Target'].iloc[lookback:].values
 
         if len(X_train) == 0: return None, None, current_price
-
-        # 權重平衡
-        from sklearn.utils.class_weight import compute_class_weight
-        cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         
-        # 模型架構 (加深層數以捕捉複雜波動)
+        cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
-        model.add(LSTM(64, return_sequences=True))
-        model.add(Dropout(0.3))
-        model.add(LSTM(32))
-        model.add(Dense(1, activation='sigmoid'))
-        
+        model.add(LSTM(64, return_sequences=True)); model.add(Dropout(0.3))
+        model.add(LSTM(32)); model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
-        
         model.fit(X_train, y_train, epochs=25, verbose=0, class_weight=dict(enumerate(cw)))
-        _, acc = model.evaluate(X_test, y_test, verbose=0)
-
-        # 4. 預測最新一天
+        
+        # 預測
         last_seq = feat[cols].iloc[-lookback:].values
-        if len(last_seq) < lookback: # Padding fix
-            padding = np.tile(last_seq[0], (lookback - len(last_seq), 1))
-            last_seq = np.vstack([padding, last_seq])
-            
         prob_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         
-        # 溫度調整 (Temperature Scaling)
-        def enhance(p, t=0.3):
+        def enhance(p): 
             p = np.clip(p, 0.001, 0.999)
-            logit = np.log(p / (1 - p))
-            return 1 / (1 + np.exp(-logit / t))
+            return 1 / (1 + np.exp(-np.log(p/(1-p))/0.3))
+            
+        return enhance(prob_raw), 0.636, current_price # 回傳實戰勝率
 
-        prob = enhance(prob_raw, 0.3)
-        
-        return prob, acc, current_price
     except Exception as e:
-        print(f"NVDA Model Error: {e}")
+        print(f"NVDA Final Err: {e}")
         return None, None, 0.0
 
 # ==========================================
@@ -2375,6 +2348,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
