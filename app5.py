@@ -2494,12 +2494,14 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 c1.metric("預測方向", "📈 看漲 (進場)" if next_prob > 0.5 else "📉 看跌 (空手)")
                 c2.metric("信心分數", f"{next_prob*100:.1f}%")
                 
-                if "避險" in model_type and next_prob > 0.5:
-                    c3.error("🚨 崩盤警報！建議減碼多單！")
-                elif "避險" in model_type:
-                    c3.success("✅ 市場暫時安全")
-                elif "進攻" in model_type and next_prob > 0.5:
-                    c3.success("🚀 攻擊訊號出現！")
+                if "避險" in model_type:
+                    # 如果 AI 預測 EDZ 會漲 (要做多)，代表市場危險
+                    if next_prob > 0.5:
+                        c1.metric("避險訊號", "🔴 危險 (Risk ON)")
+                        c3.error("🚨 崩盤警報！美元轉強，建議減碼多單！")
+                    else:
+                        c1.metric("避險訊號", "🟢 安全 (Risk OFF)")
+                        c3.success("✅ 市場暫時安全，適合做多")
 
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
@@ -2552,6 +2554,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 m3.metric("待結算", f"{len(df_cloud[df_cloud['status']=='Pending'])} 筆")
     else:
         st.info("☁️ 雲端資料庫目前是空的，請去前面頁面存入預測。")
+
 
 
 
