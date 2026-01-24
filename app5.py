@@ -796,7 +796,7 @@ def get_soxl_short_prediction():
         return None, None, 0
 
 # ==========================================
-# ★★★ MRVL 狙擊手 (變色龍偽裝版 - Ticker模式) ★★★
+# ★★★ MRVL 狙擊手 (變色龍終極版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_mrvl_prediction():
@@ -806,20 +806,20 @@ def get_mrvl_prediction():
     requirements = [
         ("MRVL", "MRVL"),
         ("NVDA", "NVDA"),
-        ("SOXX", "SOXX"),
+        ("SOXX", "SOXX"), # 避開 ^SOX
         ("^VIX", "VIX")
     ]
     
     try:
         df = pd.DataFrame()
         
-        # 1. 啟動變色龍模式 (逐一下載)
+        # 1. 啟動變色龍模式 (使用 Ticker 而非 download)
         for ticker, col_name in requirements:
-            # 隨機休息，模擬真人操作
-            time.sleep(random.uniform(0.6, 1.2))
+            # ★ 關鍵：隨機休息，模擬真人
+            time.sleep(random.uniform(0.5, 1.0))
             
             try:
-                # ★ 關鍵改變：完全棄用 yf.download
+                # 使用 Ticker().history() 避開下載限制
                 t = yf.Ticker(ticker)
                 hist = t.history(period="3y")
                 
@@ -840,7 +840,7 @@ def get_mrvl_prediction():
 
         # 2. 檢查主角
         if 'MRVL' not in df.columns:
-            st.error("❌ MRVL 主數據讀取失敗，請稍後再試。")
+            st.error("❌ MRVL 主數據讀取失敗 (IP 限制)，請稍後再試。")
             return None, None, 0.0
 
         # Live Price
@@ -1040,7 +1040,7 @@ def get_tqqq_prediction():
         print(f"TQQQ Chameleon Err: {e}")
         return None, None, 0.0
 # ==========================================
-# ★★★ NVDA 信仰充值版 (變色龍偽裝版 - Ticker模式) ★★★
+# ★★★ NVDA 信仰充值版 (變色龍終極版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_nvda_prediction():
@@ -1057,9 +1057,10 @@ def get_nvda_prediction():
 
         # 1. 逐一下載
         for ticker, col_name in requirements:
-            time.sleep(random.uniform(0.6, 1.2)) # ★ 關鍵休息
+            # ★ 關鍵：隨機休息，避開防火牆
+            time.sleep(random.uniform(0.5, 1.0))
             try:
-                # ★ 關鍵改變：完全棄用 yf.download
+                # 改用 Ticker().history
                 t = yf.Ticker(ticker)
                 hist = t.history(period="3y")
                 
@@ -1071,7 +1072,7 @@ def get_nvda_prediction():
                 if df.empty: df = pd.DataFrame(series)
                 else: df = df.join(series, how='outer')
                 
-                # 順便抓 NVDA 成交量
+                # 順便抓 NVDA 成交量 (history 裡就有)
                 if ticker == "NVDA":
                     nvda_vol = hist['Volume']
             except: pass
@@ -1088,7 +1089,7 @@ def get_nvda_prediction():
 
         df.ffill(inplace=True); df.dropna(inplace=True)
         
-        # Volume 處理
+        # Volume 對齊
         if nvda_vol is not None:
             df['Vol'] = nvda_vol
             df['Vol'] = df['Vol'].ffill()
@@ -1127,7 +1128,7 @@ def get_nvda_prediction():
         X_train = []
         train_scaled = scaler.transform(train_df[cols])
         for i in range(lookback, len(train_df)):
-            X_train.append(train_scaled[i-lookback+1:i+1])
+            X_train.append(train_scaled[i-lookback:i]) # LSTM input
         X_train = np.array(X_train)
         y_train = train_df['Target'].iloc[lookback:].values
 
@@ -2370,6 +2371,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
