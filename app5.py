@@ -2400,7 +2400,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     look_ahead_days = 3 # 預測未來 3 天
 
                 # ==========================================
-                # 策略 B: TQQQ 趨勢型 (鎮定劑版 - 複製 Colab 的成功邏輯)
+                # 策略 B: TQQQ 趨勢型 (無視風險版 - 拔掉煞車 Vola)
                 # ==========================================
                 elif "TQQQ" in model_mode:
                     # 1. 下載數據
@@ -2410,39 +2410,36 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     else: df = data['Close'].copy()
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
-                    # 2. 特徵工程 (只保留最核心的趨勢因子)
-                    # 太多雜訊會讓 AI 分心，我們只留 Colab 版驗證過的
-                    df['SMA_50'] = ta.sma(df[target], length=50) # 生命線
-                    df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50'] # ★ 核心因子
+                    # 2. 特徵工程 (★ 關鍵修改：移除 Vola)
+                    # 我們只留均線和 RSI，因為波動率(Vola)會在噴出段嚇跑 AI
+                    df['SMA_50'] = ta.sma(df[target], length=50) 
+                    df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50'] 
                     df['RSI'] = ta.rsi(df[target], length=14)
                     df['Ret_5d'] = df[target].pct_change(5)
                     df['QQQ_Ret_5d'] = df['QQQ'].pct_change(5)
-                    df['Vola'] = df[target].rolling(10).std() / df[target]
                     
                     df.dropna(inplace=True)
-                    # 移除 Bias_20 (太短線容易被洗)，只留 Bias_50 (長線)
-                    features = ['Bias_50', 'RSI', 'Ret_5d', 'QQQ_Ret_5d', 'Vola']
+                    # ★ 特徵列表：只有純粹的趨勢與動能
+                    features = ['Bias_50', 'RSI', 'Ret_5d', 'QQQ_Ret_5d'] 
 
-                    # 3. 標籤 (預測未來 5 天漲跌)
+                    # 3. 標籤
                     future_ret = df[target].shift(-5) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
-                    # 4. 模型參數 (★ 關鍵修正：讓 AI 變"鈍"一點)
+                    # 4. 模型參數 (★ 反應加快)
                     params = {
-                        'n_estimators': 150,    # 樹不用多
-                        'learning_rate': 0.05,  # 稍微調高，讓它學快一點
-                        'max_depth': 3,         # ★ 回歸深度 3 (這是 Colab 成功的關鍵)
-                        'min_child_weight': 3,  # ★ 增加葉子節點所需的樣本數 (過濾雜訊)
-                        'gamma': 0.2,           # ★ 新增：防止過度切分 (減少神經質交易)
+                        'n_estimators': 150,    
+                        'learning_rate': 0.08,  # ★ 調高學習率：讓它更快適應最後那段噴出
+                        'max_depth': 3,         # 維持深度 3 (抓大趨勢)
+                        'min_child_weight': 3,  
+                        'gamma': 0.2,           
                         'subsample': 0.8, 
                         'colsample_bytree': 0.8
                     }
                     look_ahead_days = 5 
                     
-                    # ★ 回歸溫和加權 (不要太極端)
+                    # 權重維持溫和
                     weight_multiplier = 1.2 
-                    
-                    # ★ 回歸正常門檻 (過度降低門檻會買到垃圾)
                     buy_threshold = 0.50
 
                 # ==========================================
@@ -2565,6 +2562,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
