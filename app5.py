@@ -2382,7 +2382,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     
                     # 標籤：未來3天漲 > 1%
                     future_ret = df[target].shift(-3) / df[target] - 1
-                    df['Label'] = np.where(future_ret > 0.01, 1, 0)
+                    df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
                 # ==========================================
                 # B. 避險型策略 (EDZ 邏輯)
@@ -2429,10 +2429,10 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 # 訓練 (平衡權重)
                 scale_pos_weight = (len(y_train) - y_train.sum()) / y_train.sum()
                 model = xgb.XGBClassifier(
-                    n_estimators=200,      # 樹多一點，學得更細
-                    learning_rate=0.03,    # 學習率調低，避免學歪
-                    max_depth=4,           # 深度增加 1，讓它能學到更複雜的動能
-                    subsample=0.9,         # 採樣比例提高
+                    n_estimators=200,      # 樹的數量增加
+                    learning_rate=0.03,    # 學習率調低 (更細緻)
+                    max_depth=5,           # ★ 深度改為 5 (原本可能是 3)，讓它能理解更複雜的 "緩漲" 型態
+                    subsample=0.9,         # ★ 採樣率提高，增加對行情的覆蓋
                     colsample_bytree=0.9,
                     scale_pos_weight=scale_pos_weight, 
                     random_state=42
@@ -2552,6 +2552,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 m3.metric("待結算", f"{len(df_cloud[df_cloud['status']=='Pending'])} 筆")
     else:
         st.info("☁️ 雲端資料庫目前是空的，請去前面頁面存入預測。")
+
 
 
 
