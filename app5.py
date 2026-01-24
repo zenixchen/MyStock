@@ -2399,8 +2399,8 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     }
                     look_ahead_days = 3 # 預測未來 3 天
 
-# ==========================================
-                # 策略 B: TQQQ 趨勢型 (貪婪趨勢版 - 修正 Streamlit 落後問題)
+                # ==========================================
+                # 策略 B: TQQQ 趨勢型 (鎮定劑版 - 複製 Colab 的成功邏輯)
                 # ==========================================
                 elif "TQQQ" in model_mode:
                     # 1. 下載數據
@@ -2410,40 +2410,40 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     else: df = data['Close'].copy()
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
-                    # 2. 特徵工程 (鎖定 Colab 成功的特徵)
-                    # 這些是 Colab 版本驗證過最有效的因子
-                    df['SMA_20'] = ta.sma(df[target], length=20)
+                    # 2. 特徵工程 (只保留最核心的趨勢因子)
+                    # 太多雜訊會讓 AI 分心，我們只留 Colab 版驗證過的
                     df['SMA_50'] = ta.sma(df[target], length=50) # 生命線
-                    df['Bias_20'] = (df[target] - df['SMA_20']) / df['SMA_20']
-                    df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50'] 
+                    df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50'] # ★ 核心因子
                     df['RSI'] = ta.rsi(df[target], length=14)
                     df['Ret_5d'] = df[target].pct_change(5)
                     df['QQQ_Ret_5d'] = df['QQQ'].pct_change(5)
                     df['Vola'] = df[target].rolling(10).std() / df[target]
                     
                     df.dropna(inplace=True)
-                    features = ['Bias_20', 'Bias_50', 'RSI', 'Ret_5d', 'QQQ_Ret_5d', 'Vola']
+                    # 移除 Bias_20 (太短線容易被洗)，只留 Bias_50 (長線)
+                    features = ['Bias_50', 'RSI', 'Ret_5d', 'QQQ_Ret_5d', 'Vola']
 
-                    # 3. 標籤 (只要未來 5 天是漲的就買)
+                    # 3. 標籤 (預測未來 5 天漲跌)
                     future_ret = df[target].shift(-5) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
-                    # 4. 模型參數 (極度貪婪設定)
+                    # 4. 模型參數 (★ 關鍵修正：讓 AI 變"鈍"一點)
                     params = {
-                        'n_estimators': 200,    # 樹稍微多一點
-                        'learning_rate': 0.03,  # 學慢一點
-                        'max_depth': 4,         # 深度適中
-                        'subsample': 0.85, 
-                        'colsample_bytree': 0.85
+                        'n_estimators': 150,    # 樹不用多
+                        'learning_rate': 0.05,  # 稍微調高，讓它學快一點
+                        'max_depth': 3,         # ★ 回歸深度 3 (這是 Colab 成功的關鍵)
+                        'min_child_weight': 3,  # ★ 增加葉子節點所需的樣本數 (過濾雜訊)
+                        'gamma': 0.2,           # ★ 新增：防止過度切分 (減少神經質交易)
+                        'subsample': 0.8, 
+                        'colsample_bytree': 0.8
                     }
                     look_ahead_days = 5 
                     
-                    # ★★★ 猛藥 1: 強制加權 (解決 Streamlit 太保守的問題) ★★★
-                    # 原本是 1.1，現在改成 1.5，逼 AI 寧可錯買不可漏買
-                    weight_multiplier = 1.5 
+                    # ★ 回歸溫和加權 (不要太極端)
+                    weight_multiplier = 1.2 
                     
-                    # ★★★ 猛藥 2: 降低進場門檻 (解決信心不足的問題) ★★★
-                    buy_threshold = 0.45 # 只要有 45% 信心就進場，不用等到 50%
+                    # ★ 回歸正常門檻 (過度降低門檻會買到垃圾)
+                    buy_threshold = 0.50
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -2565,6 +2565,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
