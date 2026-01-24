@@ -796,58 +796,38 @@ def get_soxl_short_prediction():
         return None, None, 0
 
 # ==========================================
-# ★★★ MRVL 狙擊手 (終極數據修復版 - 單兵下載) ★★★
+# ★★★ MRVL 狙擊手 (防鎖 IP 版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_mrvl_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
+    
+    targets = [
+        ("MRVL", "MRVL"),
+        ("NVDA", "NVDA"),
+        ("SOXX", "SOXX"),
+        ("^VIX", "VIX")
+    ]
+    
     try:
-        print("📥 正在分批下載 MRVL 數據...")
-        
-        # 1. 建立空 DataFrame
         df_final = pd.DataFrame()
         
-        # 2. 定義要抓的清單 (主角 + 配角)
-        # 格式: (代號, 儲存欄位名)
-        targets = [
-            ("MRVL", "MRVL"),
-            ("NVDA", "NVDA"),
-            ("SOXX", "SOXX"), # 使用 ETF 替代指數
-            ("^VIX", "VIX")
-        ]
-        
-        # 3. 逐一下載 (這是最穩的方法)
+        # 1. 逐一下載 (加入 Sleep)
         for ticker, col_name in targets:
+            time.sleep(random.uniform(0.6, 1.2)) # ★ 休息一下
             try:
-                # auto_adjust=True 修正分割還原問題
-                temp = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=True)
+                temp = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=False)
+                if temp is None or temp.empty: continue
                 
-                # 防呆：確認抓下來不是空的
-                if temp is None or temp.empty:
-                    print(f"⚠️ 警告: {ticker} 下載為空，跳過")
-                    continue
-                    
-                # 處理欄位 (取出 Close)
-                if 'Close' in temp.columns:
-                    series = temp['Close']
-                elif ticker in temp.columns: # 有時候 yfinance 會直接給 ticker 名
-                    series = temp[ticker]
-                else:
-                    # 如果只有一欄，就假設它是收盤價
-                    series = temp.iloc[:, 0]
+                if isinstance(temp.columns, pd.MultiIndex): series = temp['Close']
+                else: series = temp['Close'] if 'Close' in temp.columns else temp.iloc[:, 0]
                 
-                # 寫入主表
                 df_final[col_name] = series
-                
-            except Exception as e:
-                print(f"❌ 下載 {ticker} 失敗: {e}")
+            except: pass
 
-        # 4. 檢查主角是否存在
-        if 'MRVL' not in df_final.columns:
-            print("❌ 錯誤: 最終數據缺 MRVL")
-            return None, None, 0.0
+        if 'MRVL' not in df_final.columns: return None, None, 0.0
 
-        # Live Price Check
+        # Live Price
         current_price = float(df_final['MRVL'].iloc[-1])
         try:
             live = get_real_live_price("MRVL")
@@ -856,45 +836,38 @@ def get_mrvl_prediction():
                 df_final.at[df_final.index[-1], 'MRVL'] = live
         except: pass
 
-        # 補值
         df_final.ffill(inplace=True); df_final.dropna(inplace=True)
 
-        # 5. 特徵工程 (跟之前一樣)
+        # 2. 特徵工程
         feat = pd.DataFrame()
-        try:
-            feat['VIX'] = df_final['VIX']
-            feat['Bias_5'] = (df_final['MRVL'] - ta.sma(df_final['MRVL'], 5)) / ta.sma(df_final['MRVL'], 5)
-            feat['MRVL_Ret_3d'] = df_final['MRVL'].pct_change(3)
-            bb = ta.bbands(df_final['MRVL'], length=20, std=2)
-            feat['Boll_Pct'] = (df_final['MRVL'] - bb.iloc[:, 0]) / (bb.iloc[:, 2] - bb.iloc[:, 0])
-            feat['NVDA_Ret'] = df_final['NVDA'].pct_change()
-            feat['MACD'] = ta.macd(df_final['MRVL'])['MACD_12_26_9']
-        except: return None, None, current_price
+        feat['VIX'] = df_final['VIX'] if 'VIX' in df_final else 0
+        feat['Bias_5'] = (df_final['MRVL'] - ta.sma(df_final['MRVL'], 5)) / ta.sma(df_final['MRVL'], 5)
+        feat['MRVL_Ret_3d'] = df_final['MRVL'].pct_change(3)
+        bb = ta.bbands(df_final['MRVL'], length=20, std=2)
+        feat['Boll_Pct'] = (df_final['MRVL'] - bb.iloc[:, 0]) / (bb.iloc[:, 2] - bb.iloc[:, 0])
+        feat['NVDA_Ret'] = df_final['NVDA'].pct_change() if 'NVDA' in df_final else 0
+        feat['MACD'] = ta.macd(df_final['MRVL'])['MACD_12_26_9']
 
+        feat = feat.replace([np.inf, -np.inf], np.nan).fillna(0)
         feat.dropna(inplace=True)
         cols = ['VIX', 'Bias_5', 'MRVL_Ret_3d', 'Boll_Pct', 'NVDA_Ret', 'MACD']
         lookback = 20
 
-        # Target: T+3 > 2%
+        # 3. 模型
         t3_ret = df_final['MRVL'].shift(-3) / df_final['MRVL'] - 1
         feat['Target'] = (t3_ret > 0.02).astype(int)
         
         valid = feat.iloc[:-3].copy()
         split = int(len(valid) * 0.85)
-        train_df = valid.iloc[:split]; test_df = valid.iloc[split:]
+        train_df = valid.iloc[:split]
+        scaler = StandardScaler(); scaler.fit(train_df[cols])
 
-        scaler = StandardScaler()
-        scaler.fit(train_df[cols])
-
-        def create_xy(d, t, lb):
-            X, y = [], []
-            for i in range(lb, len(d)):
-                X.append(d[i-lb:i])
-                y.append(t.iloc[i])
-            return np.array(X), np.array(y)
-
-        X_train, y_train = create_xy(scaler.transform(train_df[cols]), train_df['Target'], lookback)
-        X_test, y_test = create_xy(scaler.transform(test_df[cols]), test_df['Target'], lookback)
+        X_train = []
+        train_scaled = scaler.transform(train_df[cols])
+        for i in range(lookback, len(train_df)):
+            X_train.append(train_scaled[i-lookback:i]) # T+3 input
+        X_train = np.array(X_train)
+        y_train = train_df['Target'].iloc[lookback:].values
 
         if len(X_train) == 0: return None, None, current_price
 
@@ -906,25 +879,27 @@ def get_mrvl_prediction():
         model.add(LSTM(32)); model.add(Dropout(0.2))
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
-        
         model.fit(X_train, y_train, epochs=20, verbose=0, class_weight=dict(enumerate(cw)))
-        prob_raw = model.predict(np.expand_dims(scaler.transform(feat[cols].iloc[-lookback:].values), axis=0), verbose=0)[0][0]
+        
+        last_seq = feat[cols].iloc[-lookback:].values
+        prob_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
+        if np.isnan(prob_raw): prob_raw = 0.5
         
         def enhance(p): return 1 / (1 + np.exp(-np.log(np.clip(p,0.001,0.999)/(1-np.clip(p,0.001,0.999)))/0.25))
         return enhance(prob_raw), 0.714, current_price
 
     except Exception as e:
-        print(f"MRVL Final Err: {e}")
+        print(f"MRVL Fix Err: {e}")
         return None, None, 0.0
 
 # ==========================================
-# ★★★ TQQQ 納指戰神 (UI 顯像 + NaN 排毒版) ★★★
+# ★★★ TQQQ 納指戰神 (防鎖 IP 版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tqqq_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
     
-    # 定義清單
+    # 清單 (主角 + 配角)
     requirements = [
         ("TQQQ", "TQQQ", True),   
         ("SOXX", "Semi", False),  
@@ -934,12 +909,13 @@ def get_tqqq_prediction():
     ]
     
     try:
-        # 1. 抓主角
-        main_df = yf.download("TQQQ", period="3y", interval="1d", progress=False, auto_adjust=True)
+        # 1. 抓主角 (TQQQ)
+        main_df = yf.download("TQQQ", period="3y", interval="1d", progress=False, auto_adjust=False)
         if main_df is None or main_df.empty:
-            st.error("❌ TQQQ 主數據下載失敗，無法執行！")
+            st.error("❌ TQQQ 主數據下載失敗")
             return None, None, 0.0
             
+        # 統一處理索引
         if isinstance(main_df.columns, pd.MultiIndex):
             df = pd.DataFrame(main_df['Close'])
             df.columns = ["TQQQ"]
@@ -947,13 +923,18 @@ def get_tqqq_prediction():
             df = pd.DataFrame(main_df['Close'])
             df.columns = ["TQQQ"]
 
-        # 2. 抓配角 (加入 UI 提示)
+        # 2. 抓配角 (關鍵修正：加入 sleep 防止被鎖)
         error_msg = []
         for ticker, col_name, is_critical in requirements[1:]:
+            time.sleep(random.uniform(0.6, 1.2)) # ★ 關鍵：隨機休息 0.6~1.2 秒
             try:
-                temp = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=True)
-                if temp is None or temp.empty: raise ValueError("Empty")
+                # auto_adjust=False 比較穩定
+                temp = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=False)
+                
+                if temp is None or temp.empty: 
+                    raise ValueError("Empty")
 
+                # 取收盤價
                 if isinstance(temp.columns, pd.MultiIndex): series = temp['Close']
                 else: series = temp['Close'] if 'Close' in temp.columns else temp.iloc[:, 0]
                 
@@ -962,16 +943,15 @@ def get_tqqq_prediction():
                 df[col_name] = df[col_name].ffill() # 補值
                 
             except:
-                # ★ 改用 st.toast 讓你在畫面上看到
-                st.toast(f"⚠️ {ticker} 數據缺失，已啟用修復機制", icon="🔧")
+                st.toast(f"⚠️ {ticker} 暫時無法下載，使用替代數據", icon="📡")
                 error_msg.append(ticker)
                 if col_name not in df.columns: df[col_name] = 0 
 
         df.ffill(inplace=True); df.dropna(inplace=True)
         
-        # 顯示警告 (如果有的話)
+        # 顯示警告 (如果真的有缺)
         if error_msg:
-            st.warning(f"⚠️ 注意：以下輔助數據使用歷史值或零值替代，可能影響信心準度：{', '.join(error_msg)}")
+            st.warning(f"⚠️ 部分輔助數據缺失 ({', '.join(error_msg)})，可能影響信心準度。")
 
         # Live Price
         current_price = float(df['TQQQ'].iloc[-1])
@@ -991,16 +971,14 @@ def get_tqqq_prediction():
         feat['RSI'] = ta.rsi(df['TQQQ'], 14)
         feat['Apple_Ret'] = df['Apple'].pct_change()
 
-        # ★★★ 關鍵修復：這裡就是解決 nan% 的地方 ★★★
-        # 如果 VIX 是 0，pct_change 或是除法可能會產生無限大 (inf) 或 NaN
-        # 我們強制把這些髒東西洗掉，變成 0
+        # 清洗無限大與 NaN
         feat = feat.replace([np.inf, -np.inf], np.nan).fillna(0)
-
         feat.dropna(inplace=True)
+        
         cols = ['Semi_Ret', 'Rates_Chg', 'VIX', 'Bias_20', 'RSI', 'Apple_Ret']
         lookback = 15
 
-        # 訓練資料準備
+        # 訓練與預測
         t3_ret = df['TQQQ'].shift(-3) / df['TQQQ'] - 1
         feat['Target'] = (t3_ret > 0.02).astype(int)
         
@@ -1010,8 +988,7 @@ def get_tqqq_prediction():
         split = int(len(valid) * 0.8)
         train_df = valid.iloc[:split]; test_df = valid.iloc[split:]
 
-        scaler = StandardScaler()
-        scaler.fit(train_df[cols])
+        scaler = StandardScaler(); scaler.fit(train_df[cols])
 
         def create_xy(d, t, lb):
             X, y = [], []
@@ -1035,15 +1012,12 @@ def get_tqqq_prediction():
         model.fit(X_train, y_train, epochs=25, verbose=0, class_weight=dict(enumerate(cw)))
         _, acc = model.evaluate(X_test, y_test, verbose=0)
 
-        # 預測
         last_seq = feat[cols].iloc[-lookback:].values
         if len(last_seq) < lookback:
             padding = np.tile(last_seq[0], (lookback - len(last_seq), 1))
             last_seq = np.vstack([padding, last_seq])
             
         prob_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
-        
-        # 再次防呆：確保機率不是 NaN
         if np.isnan(prob_raw): prob_raw = 0.5
 
         def enhance(p): return 1 / (1 + np.exp(-np.log(np.clip(p,0.001,0.999)/(1-np.clip(p,0.001,0.999)))/0.3))
@@ -1051,44 +1025,39 @@ def get_tqqq_prediction():
         return enhance(prob_raw), acc, current_price
 
     except Exception as e:
-        print(f"TQQQ UI Err: {e}")
+        print(f"TQQQ Robust Err: {e}")
         return None, None, 0.0
 # ==========================================
-# ★★★ NVDA 信仰充值版 (終極數據修復版) ★★★
+# ★★★ NVDA 信仰充值版 (防鎖 IP 版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_nvda_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
+    
+    targets = [
+        ("NVDA", "NVDA"), ("MSFT", "MSFT"), ("AMD", "AMD"),
+        ("SOXX", "SOX"), ("^TNX", "TNX"), ("^VIX", "VIX")
+    ]
+    
     try:
-        print("📥 正在分批下載 NVDA 數據...")
         df_final = pd.DataFrame()
-        
-        # 定義清單 (代號, 欄位名)
-        targets = [
-            ("NVDA", "NVDA"), ("MSFT", "MSFT"), ("AMD", "AMD"),
-            ("SOXX", "SOX"), ("^TNX", "TNX"), ("^VIX", "VIX")
-        ]
-        
-        # 額外處理 Volume (只有 NVDA 需要)
         nvda_vol = None
 
+        # 1. 逐一下載
         for ticker, col_name in targets:
+            time.sleep(random.uniform(0.6, 1.2)) # ★ 休息一下
             try:
-                temp = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=True)
+                temp = yf.download(ticker, period="3y", interval="1d", progress=False, auto_adjust=False)
                 if temp is None or temp.empty: continue
                 
-                # 抓取 Close
-                if 'Close' in temp.columns: series = temp['Close']
-                elif ticker in temp.columns: series = temp[ticker]
-                else: series = temp.iloc[:, 0]
+                if isinstance(temp.columns, pd.MultiIndex): series = temp['Close']
+                else: series = temp['Close'] if 'Close' in temp.columns else temp.iloc[:, 0]
                 
                 df_final[col_name] = series
                 
-                # 順便抓 Volume
                 if ticker == "NVDA":
                     if 'Volume' in temp.columns: nvda_vol = temp['Volume']
-                    else: nvda_vol = temp.iloc[:, -1] # 猜測最後一欄是 Volume
-
+                    else: nvda_vol = temp.iloc[:, -1]
             except: pass
 
         if 'NVDA' not in df_final.columns or nvda_vol is None: 
@@ -1104,34 +1073,31 @@ def get_nvda_prediction():
         except: pass
 
         df_final.ffill(inplace=True); df_final.dropna(inplace=True)
-        # 補回 Volume (對齊索引)
         df_final['Vol'] = nvda_vol
         df_final['Vol'].ffill(inplace=True)
 
         # 2. 特徵工程
         feat = pd.DataFrame()
-        try:
-            feat['Ret_5d'] = df_final['NVDA'].pct_change(5)
-            feat['RSI'] = ta.rsi(df_final['NVDA'], 14)
-            feat['MACD'] = ta.macd(df_final['NVDA'])['MACD_12_26_9']
-            feat['Bias_20'] = (df_final['NVDA'] - ta.sma(df_final['NVDA'], 20)) / ta.sma(df_final['NVDA'], 20)
-            feat['VIX'] = df_final['VIX']
-            # RVOL
-            feat['RVOL'] = df_final['Vol'] / df_final['Vol'].rolling(20).mean()
-        except: return None, None, current_price
+        feat['Ret_5d'] = df_final['NVDA'].pct_change(5)
+        feat['RSI'] = ta.rsi(df_final['NVDA'], 14)
+        feat['MACD'] = ta.macd(df_final['NVDA'])['MACD_12_26_9']
+        feat['Bias_20'] = (df_final['NVDA'] - ta.sma(df_final['NVDA'], 20)) / ta.sma(df_final['NVDA'], 20)
+        feat['VIX'] = df_final['VIX'] if 'VIX' in df_final else 0
+        feat['RVOL'] = df_final['Vol'] / df_final['Vol'].rolling(20).mean()
 
+        feat = feat.replace([np.inf, -np.inf], np.nan).fillna(0)
         feat.dropna(inplace=True)
         cols = ['Ret_5d', 'VIX', 'Bias_20', 'MACD', 'RSI', 'RVOL']
         lookback = 20
 
+        # 3. 模型
         t3_ret = df_final['NVDA'].shift(-3) / df_final['NVDA'] - 1
         feat['Target'] = (t3_ret > 0.03).astype(int)
         
         valid = feat.iloc[:-3].copy()
         split = int(len(valid) * 0.85)
         train_df = valid.iloc[:split]
-        scaler = StandardScaler()
-        scaler.fit(train_df[cols])
+        scaler = StandardScaler(); scaler.fit(train_df[cols])
 
         X_train = []
         train_scaled = scaler.transform(train_df[cols])
@@ -1142,6 +1108,7 @@ def get_nvda_prediction():
 
         if len(X_train) == 0: return None, None, current_price
         
+        from sklearn.utils.class_weight import compute_class_weight
         cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
@@ -1150,18 +1117,15 @@ def get_nvda_prediction():
         model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
         model.fit(X_train, y_train, epochs=25, verbose=0, class_weight=dict(enumerate(cw)))
         
-        # 預測
         last_seq = feat[cols].iloc[-lookback:].values
         prob_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
+        if np.isnan(prob_raw): prob_raw = 0.5
         
-        def enhance(p): 
-            p = np.clip(p, 0.001, 0.999)
-            return 1 / (1 + np.exp(-np.log(p/(1-p))/0.3))
-            
-        return enhance(prob_raw), 0.636, current_price # 回傳實戰勝率
+        def enhance(p): return 1 / (1 + np.exp(-np.log(np.clip(p,0.001,0.999)/(1-np.clip(p,0.001,0.999)))/0.3))
+        return enhance(prob_raw), 0.636, current_price
 
     except Exception as e:
-        print(f"NVDA Final Err: {e}")
+        print(f"NVDA Fix Err: {e}")
         return None, None, 0.0
 
 # ==========================================
@@ -2381,6 +2345,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
