@@ -242,26 +242,35 @@ def verify_performance_db():
             sheet.update([header] + values)
             
         return updates
-    # ★★★ 你的錯誤就在這裡：可能不小心刪掉了這個 except 區塊 ★★★
+    # ★★★ 修復 SyntaxError: 補回這裡遺失的 except ★★★
     except Exception as e:
         print(f"Verify Error: {e}")
         return 0
 
 # ==========================================
-# ★★★ TSM T+5 主帥版 (最終強固修復版) ★★★
+# ★★★ TSM T+5 主帥版 (絕對防崩潰救命版) ★★★
 # ==========================================
+# 1. 定義信心放大函數 (確保函數存在)
+def enhance_confidence(prob, temperature=0.25):
+    import numpy as np
+    prob = np.clip(prob, 0.001, 0.999)
+    logit = np.log(prob / (1 - prob))
+    scaled_logit = logit / temperature
+    new_prob = 1 / (1 + np.exp(-scaled_logit))
+    return new_prob
+
 @st.cache_resource(ttl=300)
 def get_tsm_swing_prediction():
-    # 預設變數，確保發生錯誤時也能回傳股價
+    # 預設回傳值，確保發生天災人禍時，至少介面不會掛掉
     current_price = 0.0
     
     if not HAS_TENSORFLOW: return None, None, 0.0, None, 0
     try:
-        # 1. 下載數據
+        # 1. 下載數據 (放寬 Timeout)
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
-        # 放寬 timeout 避免網路慢時數據不全
-        data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=25)
+        data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
         
+        # 資料防呆
         if data is None or data.empty:
             print("❌ Error: 數據下載為空")
             return None, None, 0.0, None, 0
@@ -272,74 +281,75 @@ def get_tsm_swing_prediction():
         else:
             df = data['Close'].copy()
 
-        # [修復] 確保 TSM 欄位存在，否則直接退出
-        if 'TSM' not in df.columns:
-            return None, None, 0.0, None, 0
+        # 確保 TSM 欄位存在
+        if 'TSM' not in df.columns: return None, None, 0.0, None, 0
 
-        # 取得目前最新價格 (不管後面預測成不成功，這個都要能顯示)
+        # ---------------------------------------------------
+        # ★ 步驟 A: 強制注入即時價格 (Live Price Injection)
+        # ---------------------------------------------------
         try:
             live_price = get_real_live_price("TSM")
             if live_price and live_price > 0:
                 current_price = live_price
-                # 強制注入 DataFrame 最後一筆
                 last_idx = df.index[-1]
+                # 強制覆蓋最後一筆收盤價
                 df.at[last_idx, 'TSM'] = live_price
             else:
                 current_price = float(df['TSM'].iloc[-1])
         except:
             current_price = float(df['TSM'].iloc[-1]) if not df.empty else 0.0
 
-        # 補值：這是最關鍵的一步，避免 dropna 把最近幾天刪掉
+        # 補值：這是最關鍵的一步
         df.ffill(inplace=True)
         
-        # 2. 特徵工程 (加入容錯)
+        # ---------------------------------------------------
+        # ★ 步驟 B: 寬鬆特徵工程 (Loose Feature Engineering)
+        # ---------------------------------------------------
         feat = pd.DataFrame()
         try:
-            # 安全獲取各欄位，若無則填 0 或前值
+            # 就算某些欄位抓不到，也用 0 填補，不要讓程式崩潰
+            feat['TSM_Ret'] = df['TSM'].pct_change()
+            feat['RSI'] = ta.rsi(df['TSM'], length=5) 
+            feat['MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
+            
+            # 選用特徵 (如果抓不到就填 0)
             feat['NVDA_Ret'] = df['NVDA'].pct_change() if 'NVDA' in df else 0
             feat['SOX_Ret'] = df['^SOX'].pct_change() if '^SOX' in df else 0
             feat['TNX_Chg'] = df['^TNX'].pct_change() if '^TNX' in df else 0
             feat['VIX'] = df['^VIX'] if '^VIX' in df else 0
-            feat['TSM_Ret'] = df['TSM'].pct_change()
-            feat['RSI'] = ta.rsi(df['TSM'], length=5) 
-            feat['MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
+            
         except Exception as e:
             print(f"❌ 特徵計算失敗: {e}")
             return None, None, current_price, None, 0
         
-        # 強制補值，確保最新的一天（剛剛注入價格的那天）有數值
+        # 再次補值
         feat.ffill(inplace=True)
         feat.dropna(inplace=True)
         
         cols = ['NVDA_Ret', 'SOX_Ret', 'TNX_Chg', 'VIX', 'TSM_Ret', 'RSI', 'MACD']
-        
-        # [關鍵修復] 檢查資料長度是否足夠預測
         lookback = 20
-        # 我們需要至少 lookback + 1 筆資料才能運作
-        if len(feat) < lookback + 5:
-            print(f"❌ 數據長度不足 ({len(feat)} < {lookback+5})，無法進行訓練/預測")
-            # 回傳價格，但不回傳預測值 (讓 UI 顯示價格就好)
-            return None, None, current_price, None, 0
 
-        # 3. 標籤 (Target)
+        # ---------------------------------------------------
+        # ★ 步驟 C: 模型訓練與建立
+        # ---------------------------------------------------
+        # 標籤 (Target)
         future_ret = df['TSM'].shift(-5) / df['TSM'] - 1
         feat['Target'] = (future_ret > 0.025).astype(int)
         
         valid_data = feat.iloc[:-5].copy()
+        # 確保數據夠長
+        if len(valid_data) < 50: return None, None, current_price, None, 0
+
         split_idx = int(len(valid_data) * 0.8)
         train_df = valid_data.iloc[:split_idx]
         test_df = valid_data.iloc[split_idx:]
         
-        if train_df.empty: return None, None, current_price, None, 0
-
-        # Scaler
         scaler = StandardScaler()
         scaler.fit(train_df[cols]) 
         
         train_scaled = scaler.transform(train_df[cols])
         test_scaled = scaler.transform(test_df[cols])
         
-        # 序列製作函數
         def create_sequences(data_scaled, targets):
             X, y = [], []
             if len(data_scaled) < lookback: return np.array([]), np.array([])
@@ -351,10 +361,9 @@ def get_tsm_swing_prediction():
         X_train, y_train = create_sequences(train_scaled, train_df['Target'])
         X_test, y_test = create_sequences(test_scaled, test_df['Target'])
         
-        # 若無足夠訓練資料，中止
         if len(X_train) == 0: return None, None, current_price, None, 0
 
-        # 權重與模型
+        # 計算權重
         from sklearn.utils.class_weight import compute_class_weight
         class_weight_dict = None
         if len(np.unique(y_train)) > 1:
@@ -379,7 +388,9 @@ def get_tsm_swing_prediction():
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # 繪圖數據
+        # ---------------------------------------------------
+        # ★ 步驟 D: 繪圖數據 (Viz)
+        # ---------------------------------------------------
         df_viz = None
         viz_acc = 0
         if len(X_test) > 0:
@@ -400,14 +411,22 @@ def get_tsm_swing_prediction():
             viz_preds_cls = (np.array(viz_probs_enhanced) > 0.5).astype(int)
             viz_acc = np.mean(viz_targets == viz_preds_cls)
 
-        # 6. ★★★ 預測最新一天 (防崩潰保護) ★★★
+        # ---------------------------------------------------
+        # ★ 步驟 E: 預測最新一天 (Shape Mismatch 終極修正)
+        # ---------------------------------------------------
         latest_seq_raw = feat[cols].iloc[-lookback:].values
         
-        # [重要] 如果最新資料不足 20 筆，直接回傳空預測，但保留價格
-        if len(latest_seq_raw) < lookback:
-            print(f"⚠️ 最新預測序列長度不足 ({len(latest_seq_raw)} < {lookback})")
-            return None, acc, current_price, df_viz, viz_acc
+        # [救命機制] 如果資料少於 20 筆 (例如只有 19 筆)，用第一筆複製來補齊
+        # 這能保證維度永遠是 (20, 7)，不會 Crash
+        current_len = len(latest_seq_raw)
+        if current_len < lookback:
+            # print(f"⚠️ 數據不足 ({current_len})，啟動自動補齊機制...")
+            missing_count = lookback - current_len
+            # 複製第一列來填補前面的空缺
+            padding = np.tile(latest_seq_raw[0], (missing_count, 1))
+            latest_seq_raw = np.vstack([padding, latest_seq_raw])
 
+        # 現在長度保證是 20 了
         latest_seq_scaled = scaler.transform(latest_seq_raw)
         
         # 進行預測
@@ -419,7 +438,7 @@ def get_tsm_swing_prediction():
 
     except Exception as e:
         print(f"❌ TSM Model Final Crash: {e}")
-        # 發生任何錯誤，至少回傳 current_price (如果有的話)
+        # 發生任何錯誤，至少回傳 current_price
         return None, None, current_price, None, 0
         
 # ==========================================
@@ -1858,6 +1877,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
