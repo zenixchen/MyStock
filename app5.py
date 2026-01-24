@@ -2399,22 +2399,23 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     }
                     look_ahead_days = 3 # 預測未來 3 天
 
-                # ==========================================
-                # 策略 B: TQQQ 趨勢型 (均線 + 波段)
+# ==========================================
+                # 策略 B: TQQQ 趨勢型 (貪婪趨勢版 - 修正 Streamlit 落後問題)
                 # ==========================================
                 elif "TQQQ" in model_mode:
-                    # 1. 下載數據 (槓桿ETF需要看母指數 QQQ)
+                    # 1. 下載數據
                     tickers = [target, "QQQ"]
                     data = yf.download(tickers, period="5y", interval="1d", progress=False)
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
                     else: df = data['Close'].copy()
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
-                    # 2. 特徵工程 (均線趨勢版)
+                    # 2. 特徵工程 (鎖定 Colab 成功的特徵)
+                    # 這些是 Colab 版本驗證過最有效的因子
                     df['SMA_20'] = ta.sma(df[target], length=20)
                     df['SMA_50'] = ta.sma(df[target], length=50) # 生命線
                     df['Bias_20'] = (df[target] - df['SMA_20']) / df['SMA_20']
-                    df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50'] # 冠軍因子
+                    df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50'] 
                     df['RSI'] = ta.rsi(df[target], length=14)
                     df['Ret_5d'] = df[target].pct_change(5)
                     df['QQQ_Ret_5d'] = df['QQQ'].pct_change(5)
@@ -2423,16 +2424,26 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     df.dropna(inplace=True)
                     features = ['Bias_20', 'Bias_50', 'RSI', 'Ret_5d', 'QQQ_Ret_5d', 'Vola']
 
-                    # 3. 標籤 (穩健：未來5天漲 > 0 才買)
+                    # 3. 標籤 (只要未來 5 天是漲的就買)
                     future_ret = df[target].shift(-5) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
-                    # 4. 模型參數 (穩健型：淺樹、防止過度交易)
+                    # 4. 模型參數 (極度貪婪設定)
                     params = {
-                        'n_estimators': 150, 'learning_rate': 0.05, 'max_depth': 3, 
-                        'subsample': 0.8, 'colsample_bytree': 0.8
+                        'n_estimators': 200,    # 樹稍微多一點
+                        'learning_rate': 0.03,  # 學慢一點
+                        'max_depth': 4,         # 深度適中
+                        'subsample': 0.85, 
+                        'colsample_bytree': 0.85
                     }
-                    look_ahead_days = 5 # 預測未來 5 天
+                    look_ahead_days = 5 
+                    
+                    # ★★★ 猛藥 1: 強制加權 (解決 Streamlit 太保守的問題) ★★★
+                    # 原本是 1.1，現在改成 1.5，逼 AI 寧可錯買不可漏買
+                    weight_multiplier = 1.5 
+                    
+                    # ★★★ 猛藥 2: 降低進場門檻 (解決信心不足的問題) ★★★
+                    buy_threshold = 0.45 # 只要有 45% 信心就進場，不用等到 50%
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -2466,7 +2477,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     look_ahead_days = 3
 
                 # ==========================================
-                # 通用訓練流程
+                # 通用訓練流程 (修正版)
                 # ==========================================
                 X = df[features]
                 y = df['Label']
@@ -2474,27 +2485,37 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 X_train, X_test = X.iloc[:split], X.iloc[split:]
                 y_train, y_test = y.iloc[:split], y.iloc[split:]
 
-                scale_pos_weight = (len(y_train) - y_train.sum()) / y_train.sum()
-                if "TQQQ" in model_mode: scale_pos_weight *= 1.1 # 趨勢盤稍微鼓勵做多
+                # 計算基礎權重
+                base_weight = (len(y_train) - y_train.sum()) / y_train.sum()
+                
+                # ★★★ 應用 TQQQ 的加權倍率 (如果沒設定就是 1.0) ★★★
+                multiplier = locals().get('weight_multiplier', 1.0) 
+                final_weight = base_weight * multiplier
 
                 model = xgb.XGBClassifier(
-                    **params, scale_pos_weight=scale_pos_weight, random_state=42
+                    **params, scale_pos_weight=final_weight, random_state=42
                 )
                 model.fit(X_train, y_train)
 
                 # 繪圖與結果
-                y_pred = model.predict(X_test)
-                acc = accuracy_score(y_test, y_pred)
-                st.success(f"✅ {target} 模型訓練完成！準確率: {acc*100:.1f}%")
+                # ★★★ 應用 TQQQ 的降低門檻 (如果沒設定就是 0.5) ★★★
+                threshold = locals().get('buy_threshold', 0.5)
+                
+                # 使用機率來決定 Signal，而不是直接用 predict()
+                y_probs = model.predict_proba(X_test)[:, 1]
+                y_pred_custom = np.where(y_probs > threshold, 1, 0) # 用自訂門檻切分
+                
+                acc = accuracy_score(y_test, y_pred_custom)
+                st.success(f"✅ {target} 模型訓練完成！準確率: {acc*100:.1f}% (進場門檻: {threshold*100:.0f}%)")
 
                 # 資金曲線
                 test_df = df.iloc[split:].copy()
-                test_df['Signal'] = y_pred
+                test_df['Signal'] = y_pred_custom # 用調整過的訊號
                 test_df['Target_Ret'] = test_df[target].pct_change()
                 test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Target_Ret']
                 test_df['Cum_BuyHold'] = (1 + test_df['Target_Ret']).cumprod()
                 test_df['Cum_AI'] = (1 + test_df['Strategy_Ret']).cumprod()
-
+                model.fit(X_train, y_train)
                 c1, c2 = st.columns([2, 1])
                 with c1:
                     st.subheader("💰 資金曲線")
@@ -2544,6 +2565,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
