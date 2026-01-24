@@ -15,6 +15,8 @@ import os
 import random
 import requests
 import xml.etree.ElementTree as ET
+import xgboost as xgb  # <--- 新增這行
+from sklearn.metrics import accuracy_score # <--- 新增這行
 
 # ==========================================
 # ★★★ 請補上這個遺失的關鍵函數！ ★★★
@@ -1575,7 +1577,7 @@ def get_strategy_desc(cfg, df=None):
 # 5. 側邊欄與頁面配置
 # ==========================================
 st.sidebar.title("🚀 戰情室導航")
-app_mode = st.sidebar.radio("選擇功能模組：", ["🤖 AI 深度學習實驗室", "📊 策略分析工具 (單股)", "📒 預測日記 (自動驗證)"])
+app_mode = st.sidebar.radio("選擇功能模組：", ["🤖 AI 深度學習實驗室", "📊 策略分析工具 (單股)", "🌲 XGBoost 實驗室", "📒 預測日記 (自動驗證)"])
 
 st.sidebar.divider()
 st.sidebar.header("⚙️ 全域設定")
@@ -2334,55 +2336,6 @@ elif app_mode == "📊 策略分析工具 (單股)":
                 if success: st.markdown(analysis)
                 else: st.error(f"Gemini 連線失敗: {analysis}")
 # ------------------------------------------
-# Mode 3: 預測日記 (Google Sheet 雲端版)
-# ------------------------------------------
-elif app_mode == "📒 預測日記 (自動驗證)":
-    st.header("📒 AI 實戰驗證日記 (雲端版)")
-    st.caption(f"資料來源: Google Sheets | 連線狀態: {'✅ 線上' if get_gsheet_connection() else '❌ 離線'}")
-    
-    col_btn, col_stat = st.columns([1, 3])
-    
-    with col_btn:
-        if st.button("🔄 立即刷新並驗證 (Auto-Verify)"):
-            with st.spinner("☁️ 正在連線雲端並檢查最新股價..."):
-                # ★★★ 修正點：呼叫前面定義好的 Google Sheet 驗證函式 ★★★
-                updates = verify_performance_db()
-                if updates > 0:
-                    st.success(f"已結算更新 {updates} 筆紀錄！")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.info("目前無需更新 (尚無 Pending 紀錄或條件未觸發)")
-    
-    # ★★★ 修正點：呼叫前面定義好的 Google Sheet 讀取函式 ★★★
-    df_cloud = get_history_df()
-    
-    if not df_cloud.empty:
-        # 整理顯示格式
-        display_cols = ['date', 'symbol', 'direction', 'confidence', 'entry_price', 'status', 'exit_price', 'return_pct']
-        # 確保欄位存在 (防呆)
-        final_cols = [c for c in display_cols if c in df_cloud.columns]
-        
-        st.dataframe(df_cloud[final_cols], use_container_width=True)
-        
-        # 計算勝率統計
-        completed = df_cloud[df_cloud['status'].isin(['Win', 'Loss'])]
-        if not completed.empty:
-            wins = len(completed[completed['status'] == 'Win'])
-            total = len(completed)
-            win_rate = wins / total
-            
-            # 簡單計算總報酬 (單利加總)
-            total_ret = completed['return_pct'].sum()
-            
-            with col_stat:
-                m1, m2, m3 = st.columns(3)
-                m1.metric("實戰勝率", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
-                m2.metric("累計報酬", f"{total_ret:.1f}%")
-                m3.metric("待結算", f"{len(df_cloud[df_cloud['status']=='Pending'])} 筆")
-    else:
-        st.info("☁️ 雲端資料庫目前是空的，請去前面頁面存入預測。")
-# ------------------------------------------
 # Mode 4: XGBoost 實驗室 (AI 決策樹 - 攻防一體版)
 # ------------------------------------------
 elif app_mode == "🌲 XGBoost 實驗室":
@@ -2546,6 +2499,56 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+# ------------------------------------------
+# Mode 3: 預測日記 (Google Sheet 雲端版)
+# ------------------------------------------
+elif app_mode == "📒 預測日記 (自動驗證)":
+    st.header("📒 AI 實戰驗證日記 (雲端版)")
+    st.caption(f"資料來源: Google Sheets | 連線狀態: {'✅ 線上' if get_gsheet_connection() else '❌ 離線'}")
+    
+    col_btn, col_stat = st.columns([1, 3])
+    
+    with col_btn:
+        if st.button("🔄 立即刷新並驗證 (Auto-Verify)"):
+            with st.spinner("☁️ 正在連線雲端並檢查最新股價..."):
+                # ★★★ 修正點：呼叫前面定義好的 Google Sheet 驗證函式 ★★★
+                updates = verify_performance_db()
+                if updates > 0:
+                    st.success(f"已結算更新 {updates} 筆紀錄！")
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.info("目前無需更新 (尚無 Pending 紀錄或條件未觸發)")
+    
+    # ★★★ 修正點：呼叫前面定義好的 Google Sheet 讀取函式 ★★★
+    df_cloud = get_history_df()
+    
+    if not df_cloud.empty:
+        # 整理顯示格式
+        display_cols = ['date', 'symbol', 'direction', 'confidence', 'entry_price', 'status', 'exit_price', 'return_pct']
+        # 確保欄位存在 (防呆)
+        final_cols = [c for c in display_cols if c in df_cloud.columns]
+        
+        st.dataframe(df_cloud[final_cols], use_container_width=True)
+        
+        # 計算勝率統計
+        completed = df_cloud[df_cloud['status'].isin(['Win', 'Loss'])]
+        if not completed.empty:
+            wins = len(completed[completed['status'] == 'Win'])
+            total = len(completed)
+            win_rate = wins / total
+            
+            # 簡單計算總報酬 (單利加總)
+            total_ret = completed['return_pct'].sum()
+            
+            with col_stat:
+                m1, m2, m3 = st.columns(3)
+                m1.metric("實戰勝率", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
+                m2.metric("累計報酬", f"{total_ret:.1f}%")
+                m3.metric("待結算", f"{len(df_cloud[df_cloud['status']=='Pending'])} 筆")
+    else:
+        st.info("☁️ 雲端資料庫目前是空的，請去前面頁面存入預測。")
+
 
 
 
