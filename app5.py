@@ -796,58 +796,43 @@ def get_soxl_short_prediction():
         return None, None, 0
 
 # ==========================================
-# ★★★ MRVL 狙擊手 (純 Ticker 歷史模式 - 100% 修復) ★★★
+# ★★★ MRVL 狙擊手 (修正版：改用 Batch Download) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_mrvl_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
     
-    # 定義清單
-    requirements = [
-        ("MRVL", "MRVL"),
-        ("NVDA", "NVDA"),
-        ("SOXX", "SOXX"), 
-        ("^VIX", "VIX")
-    ]
+    # 定義清單 (注意：Yahoo 的代號要準確)
+    tickers = ["MRVL", "NVDA", "SOXX", "^VIX"]
     
     try:
-        df = pd.DataFrame()
+        # 1. 改用批次下載 (一次抓完，穩定性高)
+        data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=30)
         
-        # 1. 啟動 Ticker 模式 (避開 download 函數)
-        for ticker, col_name in requirements:
-            # 隨機休息
-            time.sleep(random.uniform(0.5, 1.0))
-            
-            try:
-                # ★ 關鍵改變：使用 yf.Ticker().history()
-                t = yf.Ticker(ticker)
-                hist = t.history(period="3y")
-                
-                if hist is None or hist.empty:
-                    st.toast(f"⚠️ {ticker} 暫無數據", icon="📭")
-                    continue
-                
-                # 抓收盤價
-                series = hist['Close']
-                series.name = col_name
-                
-                # 合併
-                if df.empty:
-                    df = pd.DataFrame(series)
-                else:
-                    df = df.join(series, how='outer')
-            except: pass
+        # 處理 MultiIndex (新版 yfinance 會回傳多層索引)
+        if isinstance(data.columns, pd.MultiIndex):
+            df = data['Close'].copy()
+        else:
+            df = data['Close'].copy()
 
-        # 2. 檢查主角
+        # 檢查主角是否在資料中
         if 'MRVL' not in df.columns:
-            st.error("❌ MRVL 主數據讀取失敗，請稍後再試。")
+            st.error("❌ MRVL 數據下載失敗 (Batch Failed)")
             return None, None, 0.0
+            
+        # 欄位重新命名以符合下方特徵工程邏輯
+        # 這裡不需要特別 rename，因為 yf.download 下載下來的欄位名稱就是 Ticker (e.g. "MRVL", "NVDA")
+        # 只需要處理 VIX 因為有特殊符號
+        if '^VIX' in df.columns:
+            df.rename(columns={'^VIX': 'VIX'}, inplace=True)
 
-        # Live Price
+        # Live Price (補救措施)
         current_price = float(df['MRVL'].iloc[-1])
         try:
             live = get_real_live_price("MRVL")
-            if live: current_price = live
+            if live: 
+                current_price = live
+                df.at[df.index[-1], 'MRVL'] = live # 強制注入最新價
         except: pass
 
         # 3. 補值與清洗
@@ -857,7 +842,7 @@ def get_mrvl_prediction():
         for c in ["VIX", "NVDA", "SOXX"]:
             if c not in df.columns: df[c] = 0.0
 
-        # 4. 特徵工程
+        # 4. 特徵工程 (保持不變)
         feat = pd.DataFrame()
         feat['VIX'] = df['VIX']
         feat['Bias_5'] = (df['MRVL'] - ta.sma(df['MRVL'], 5)) / ta.sma(df['MRVL'], 5)
@@ -911,7 +896,7 @@ def get_mrvl_prediction():
         return enhance(prob_raw), 0.714, current_price
 
     except Exception as e:
-        print(f"MRVL Fix Err: {e}")
+        print(f"MRVL Model Err: {e}")
         return None, None, 0.0
 # ==========================================
 # ★★★ TQQQ 納指戰神 (變色龍偽裝版) ★★★
@@ -1039,73 +1024,65 @@ def get_tqqq_prediction():
         print(f"TQQQ Chameleon Err: {e}")
         return None, None, 0.0
 # ==========================================
-# ★★★ NVDA 信仰充值版 (純 Ticker 歷史模式 - 100% 修復) ★★★
+# ★★★ NVDA 信仰充值版 (修正版：改用 Batch Download) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_nvda_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
     
-    requirements = [
-        ("NVDA", "NVDA"), ("MSFT", "MSFT"), ("AMD", "AMD"),
-        ("SOXX", "SOX"), ("^TNX", "TNX"), ("^VIX", "VIX")
-    ]
+    # 修正：SOX 指數代號建議用 ^SOX 或 SOXX，這裡用 SOXX 比較容易抓到 Volume
+    tickers = ["NVDA", "MSFT", "AMD", "SOXX", "^TNX", "^VIX"]
     
     try:
-        df = pd.DataFrame()
-        nvda_vol = None
-
-        # 1. 逐一下載
-        for ticker, col_name in requirements:
-            # 休息一下，避開防火牆
-            time.sleep(random.uniform(0.5, 1.0))
-            try:
-                # ★ 關鍵改變：使用 yf.Ticker().history()
-                t = yf.Ticker(ticker)
-                hist = t.history(period="3y")
-                
-                if hist is None or hist.empty: continue
-                
-                series = hist['Close']
-                series.name = col_name
-                
-                if df.empty: df = pd.DataFrame(series)
-                else: df = df.join(series, how='outer')
-                
-                # 順便抓 NVDA 成交量 (history 裡面就有)
-                if ticker == "NVDA":
-                    nvda_vol = hist['Volume']
-            except: pass
+        # 1. 批次下載
+        data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=30)
+        
+        # 拆解 Close 與 Volume
+        if isinstance(data.columns, pd.MultiIndex):
+            df = data['Close'].copy()
+            df_vol = data['Volume'].copy() # 也要抓 Volume
+        else:
+            # 如果只有一個 ticker 或舊版格式 (雖然這裡有 list 應該不會發生)
+            df = data['Close'].copy()
+            df_vol = data['Volume'].copy() if 'Volume' in data else None
 
         if 'NVDA' not in df.columns: 
-            st.error("❌ NVDA 主數據讀取失敗。")
+            st.error("❌ NVDA 數據下載失敗 (Batch Failed)")
             return None, None, 0.0
+        
+        # 欄位名稱對應 (處理特殊符號)
+        rename_map = {'^TNX': 'TNX', '^VIX': 'VIX', 'SOXX': 'SOX'}
+        df.rename(columns=rename_map, inplace=True)
 
         current_price = float(df['NVDA'].iloc[-1])
         try:
             live = get_real_live_price("NVDA")
-            if live: current_price = live
+            if live: 
+                current_price = live
+                df.at[df.index[-1], 'NVDA'] = live
         except: pass
 
         df.ffill(inplace=True); df.dropna(inplace=True)
         
-        # Volume 對齊
-        if nvda_vol is not None:
-            df['Vol'] = nvda_vol
+        # Volume 對齊 (將 NVDA 的 Volume 塞進去)
+        if df_vol is not None and 'NVDA' in df_vol.columns:
+            df['Vol'] = df_vol['NVDA']
             df['Vol'] = df['Vol'].ffill()
         else:
-            df['Vol'] = 1.0
+            df['Vol'] = 1.0 # 萬一抓不到就填 1 避免除以零
 
-        # 補缺欄位
+        # 補缺欄位 (確保所有需要的欄位都存在)
         for c in ["MSFT", "AMD", "SOX", "TNX", "VIX"]:
             if c not in df.columns: df[c] = 0.0
 
-        # 2. 特徵工程
+        # 2. 特徵工程 (保持不變)
         feat = pd.DataFrame()
         feat['Ret_5d'] = df['NVDA'].pct_change(5)
         feat['RSI'] = ta.rsi(df['NVDA'], 14)
         feat['MACD'] = ta.macd(df['NVDA'])['MACD_12_26_9']
         feat['Bias_20'] = (df['NVDA'] - ta.sma(df['NVDA'], 20)) / ta.sma(df['NVDA'], 20)
         feat['VIX'] = df['VIX']
+        # 避免 rolling(20) 前面出現 NaN
         feat['RVOL'] = df['Vol'] / df['Vol'].rolling(20).mean()
 
         feat = feat.replace([np.inf, -np.inf], np.nan).fillna(0)
@@ -1127,7 +1104,7 @@ def get_nvda_prediction():
         X_train = []
         train_scaled = scaler.transform(train_df[cols])
         for i in range(lookback, len(train_df)):
-            X_train.append(train_scaled[i-lookback+1:i+1])
+            X_train.append(train_scaled[i-lookback:i]) # LSTM input
         X_train = np.array(X_train)
         y_train = train_df['Target'].iloc[lookback:].values
 
@@ -1150,7 +1127,7 @@ def get_nvda_prediction():
         return enhance(prob_raw), 0.636, current_price
 
     except Exception as e:
-        print(f"NVDA Fix Err: {e}")
+        print(f"NVDA Model Err: {e}")
         return None, None, 0.0
 
 # ==========================================
@@ -2370,6 +2347,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
