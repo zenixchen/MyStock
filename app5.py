@@ -796,43 +796,73 @@ def get_soxl_short_prediction():
         return None, None, 0
 
 # ==========================================
-# ★★★ MRVL 狙擊手 (T+3 實戰驗證版) ★★★
+# ★★★ MRVL 狙擊手 (數據修復版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_mrvl_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
     try:
-        # 1. 下載數據
-        tickers = ["MRVL", "NVDA", "^SOX", "^VIX"]
-        data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=30)
+        # --- 修正 1: 將 ^SOX 換成 SOXX (ETF 數據穩定) ---
+        # MRVL: 主角
+        # NVDA: 領頭羊
+        # SOXX: 費半 ETF (替代 ^SOX)
+        # ^VIX: 恐慌指數
+        tickers = ["MRVL", "NVDA", "SOXX", "^VIX"]
         
+        # --- 修正 2: 增加容錯下載機制 ---
+        try:
+            data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=30)
+        except:
+            print("批次下載失敗，嘗試單獨下載...")
+            data = pd.DataFrame()
+            for t in tickers:
+                temp = yf.download(t, period="3y", interval="1d", progress=False)
+                if not temp.empty:
+                    data[t] = temp['Close']
+            
+        # 處理資料結構
         if isinstance(data.columns, pd.MultiIndex):
             df = data['Close'].copy()
+            # 扁平化欄位名稱
             df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
-        else: df = data['Close'].copy()
+        else:
+            df = data['Close'].copy() # 或者是 data 本身
 
-        if 'MRVL' not in df.columns: return None, None, 0.0
+        # 檢查關鍵主角是否存在
+        if 'MRVL' not in df.columns: 
+            print("❌ 錯誤: 抓不到 MRVL 股價")
+            return None, None, 0.0
 
         # Live Price Check
         current_price = float(df['MRVL'].iloc[-1])
         try:
             live = get_real_live_price("MRVL")
-            if live: df.at[df.index[-1], 'MRVL'] = live
+            if live and live > 0: 
+                current_price = live
+                df.at[df.index[-1], 'MRVL'] = live
         except: pass
 
         df.ffill(inplace=True); df.dropna(inplace=True)
 
-        # 2. 特徵工程 (鎖定回測成功的因子)
+        # 2. 特徵工程 (T+3 實戰驗證因子)
         feat = pd.DataFrame()
         try:
+            # 因子 A: VIX
             feat['VIX'] = df['^VIX']
+            # 因子 B: 乖離率
             feat['Bias_5'] = (df['MRVL'] - ta.sma(df['MRVL'], 5)) / ta.sma(df['MRVL'], 5)
+            # 因子 C: 自身動能
             feat['MRVL_Ret_3d'] = df['MRVL'].pct_change(3)
+            # 因子 D: 布林通道
             bb = ta.bbands(df['MRVL'], length=20, std=2)
             feat['Boll_Pct'] = (df['MRVL'] - bb.iloc[:, 0]) / (bb.iloc[:, 2] - bb.iloc[:, 0])
+            # 因子 E: 領頭羊動能 (NVDA)
             feat['NVDA_Ret'] = df['NVDA'].pct_change()
+            # 因子 F: MACD
             feat['MACD'] = ta.macd(df['MRVL'])['MACD_12_26_9']
-        except: return None, None, current_price
+        except Exception as e: 
+            print(f"特徵計算錯誤: {e}")
+            return None, None, current_price
 
         feat.dropna(inplace=True)
         cols = ['VIX', 'Bias_5', 'MRVL_Ret_3d', 'Boll_Pct', 'NVDA_Ret', 'MACD']
@@ -852,7 +882,7 @@ def get_mrvl_prediction():
         def create_xy(d, t, lb):
             X, y = [], []
             for i in range(lb, len(d)):
-                X.append(d[i-lb:i]) # LSTM input
+                X.append(d[i-lb:i])
                 y.append(t.iloc[i])
             return np.array(X), np.array(y)
 
@@ -891,7 +921,7 @@ def get_mrvl_prediction():
         return prob, acc, current_price
 
     except Exception as e:
-        print(f"MRVL Err: {e}")
+        print(f"MRVL Global Error: {e}")
         return None, None, 0.0
         
 # ==========================================
@@ -2332,6 +2362,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
