@@ -2336,224 +2336,214 @@ elif app_mode == "📊 策略分析工具 (單股)":
                 if success: st.markdown(analysis)
                 else: st.error(f"Gemini 連線失敗: {analysis}")
 # ------------------------------------------
-# Mode 4: XGBoost 實驗室 (AI 決策樹 - 攻防一體版)
+# Mode 4: XGBoost 實驗室 (三刀流終極版)
 # ------------------------------------------
 elif app_mode == "🌲 XGBoost 實驗室":
-    st.header("🌲 XGBoost 極速回測系統")
-    st.caption("由 AI 決策樹驅動的「進攻」與「防守」模型")
+    st.header("🌲 XGBoost 戰略指揮所")
+    st.caption("針對不同商品特性，切換專屬 AI 大腦")
 
-    # 選擇模式
-    model_type = st.radio("選擇策略類型：", ["⚔️ 進攻型 (如 TSM, NVDA)", "🛡️ 避險型 (如 EDZ, SQQQ)"], horizontal=True)
+    # 1. 選擇策略模組
+    model_mode = st.radio("選擇戰略模組：", 
+        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
+        horizontal=True
+    )
 
-    if "進攻" in model_type:
-        target = st.text_input("輸入代號 (Target)", value="TSM")
-        desc_text = "預測邏輯：追逐動能 + 參考輝達/費半走勢"
+    # 2. 根據模式設定預設值與說明
+    if "TSM" in model_mode:
+        default_target = "TSM"
+        desc = "✅ 專攻：TSM, NVDA, AMD\n\n🧠 邏輯：看重「輝達連動」與「短線爆發力」。只要輝達漲、動能強就追，不錯過任何魚身。"
+    elif "TQQQ" in model_mode:
+        default_target = "TQQQ"
+        desc = "✅ 專攻：TQQQ, SOXL, SPXL\n\n🧠 邏輯：看重「50日生命線」與「RSI」。站上均線就死抱，跌破就跑，專吃大波段。"
     else:
-        target = st.text_input("輸入代號 (Target)", value="EDZ")
-        desc_text = "預測邏輯：偵測波動率 + 恐慌指數 (VIX) + 匯率壓力"
+        default_target = "EDZ"
+        desc = "✅ 專攻：EDZ, SQQQ, UVXY\n\n🧠 邏輯：看重「VIX恐慌」與「美元匯率」。平時空手，只有市場快崩盤時才亮燈。"
 
-    st.info(f"ℹ️ {desc_text}")
-    
+    st.info(desc)
+    target = st.text_input("輸入代號 (Target)", value=default_target)
+
     if st.button(f"🚀 啟動 {target} AI 訓練"):
-        with st.spinner(f"正在下載數據並訓練 {target} 模型..."):
+        with st.spinner(f"正在召喚 {model_mode.split()[1]} AI 模型..."):
             try:
                 # ==========================================
-                # A. 進攻型策略 (TSM 邏輯)
+                # 策略 A: TSM 攻擊型 (動能 + NVDA 連動)
                 # ==========================================
-                if "進攻" in model_type:
+                if "TSM" in model_mode:
+                    # 1. 下載數據 (個股需要看大哥 NVDA 和 費半 SOX)
                     tickers = [target, "NVDA", "^SOX"]
                     data = yf.download(tickers, period="5y", interval="1d", progress=False)
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
                     else: df = data['Close'].copy()
-                    
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
-                    # 特徵工程
+                    # 2. 特徵工程 (貪婪動能版)
                     df['Target_Ret_1d'] = df[target].pct_change()
                     df['Target_Ret_3d'] = df[target].pct_change(3)
                     df['Target_Ret_5d'] = df[target].pct_change(5)
-                    df['NVDA_Ret'] = df['NVDA'].pct_change()
+                    df['NVDA_Ret'] = df['NVDA'].pct_change() # 關鍵因子
                     df['SOX_Ret'] = df['^SOX'].pct_change()
                     df['Alpha_NVDA'] = df['Target_Ret_5d'] - df['NVDA'].pct_change(5)
                     df['Vola'] = df[target].rolling(5).std() / df[target]
                     
                     df.dropna(inplace=True)
                     features = ['Target_Ret_1d', 'Target_Ret_3d', 'Target_Ret_5d', 'NVDA_Ret', 'SOX_Ret', 'Alpha_NVDA', 'Vola']
-                    
-                    # 標籤：未來3天漲 > 1%
+
+                    # 3. 標籤 (貪婪：未來3天只要漲 > 0 就買)
                     future_ret = df[target].shift(-3) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
+                    # 4. 模型參數 (積極型：深樹、高採樣)
+                    params = {
+                        'n_estimators': 200, 'learning_rate': 0.03, 'max_depth': 5, 
+                        'subsample': 0.9, 'colsample_bytree': 0.9
+                    }
+                    look_ahead_days = 3 # 預測未來 3 天
+
                 # ==========================================
-                # B. 避險型策略 (EDZ 邏輯)
+                # 策略 B: TQQQ 趨勢型 (均線 + 波段)
                 # ==========================================
-                else:
-                    # 避險需要看：標的本身, 對應市場(EEM), 美元(DXY), 恐慌(VIX)
-                    # 這裡以 EDZ 為例，如果是 SQQQ 則對應 QQQ
-                    ref_market = "EEM" if "EDZ" in target else "QQQ"
-                    tickers = [target, ref_market, "DX-Y.NYB", "^VIX"]
-                    
+                elif "TQQQ" in model_mode:
+                    # 1. 下載數據 (槓桿ETF需要看母指數 QQQ)
+                    tickers = [target, "QQQ"]
                     data = yf.download(tickers, period="5y", interval="1d", progress=False)
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
                     else: df = data['Close'].copy()
-                    
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
-                    # 特徵工程 (崩盤偵測)
+                    # 2. 特徵工程 (均線趨勢版)
+                    df['SMA_20'] = ta.sma(df[target], length=20)
+                    df['SMA_50'] = ta.sma(df[target], length=50) # 生命線
+                    df['Bias_20'] = (df[target] - df['SMA_20']) / df['SMA_20']
+                    df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50'] # 冠軍因子
+                    df['RSI'] = ta.rsi(df[target], length=14)
+                    df['Ret_5d'] = df[target].pct_change(5)
+                    df['QQQ_Ret_5d'] = df['QQQ'].pct_change(5)
+                    df['Vola'] = df[target].rolling(10).std() / df[target]
+                    
+                    df.dropna(inplace=True)
+                    features = ['Bias_20', 'Bias_50', 'RSI', 'Ret_5d', 'QQQ_Ret_5d', 'Vola']
+
+                    # 3. 標籤 (穩健：未來5天漲 > 0 才買)
+                    future_ret = df[target].shift(-5) / df[target] - 1
+                    df['Label'] = np.where(future_ret > 0.0, 1, 0)
+
+                    # 4. 模型參數 (穩健型：淺樹、防止過度交易)
+                    params = {
+                        'n_estimators': 150, 'learning_rate': 0.05, 'max_depth': 3, 
+                        'subsample': 0.8, 'colsample_bytree': 0.8
+                    }
+                    look_ahead_days = 5 # 預測未來 5 天
+
+                # ==========================================
+                # 策略 C: EDZ 避險型 (崩盤偵測)
+                # ==========================================
+                else:
+                    ref_market = "EEM" if "EDZ" in target else "QQQ"
+                    tickers = [target, ref_market, "DX-Y.NYB", "^VIX"]
+                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
+                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+                    else: df = data['Close'].copy()
+                    df.ffill(inplace=True); df.dropna(inplace=True)
+
+                    # 特徵
                     df['Target_Ret_1d'] = df[target].pct_change()
-                    df['Target_Ret_3d'] = df[target].pct_change(3)
-                    df['Market_Ret'] = df[ref_market].pct_change() # EEM or QQQ
+                    df['Market_Ret'] = df[ref_market].pct_change()
                     df['DXY_Ret'] = df['DX-Y.NYB'].pct_change()
                     df['VIX_Level'] = df['^VIX']
-                    df['Market_Mom'] = df[ref_market].pct_change(5)
-                    df['Vola'] = df[target].rolling(5).std() / df[target] # 波動率最重要
-
+                    df['Vola'] = df[target].rolling(5).std() / df[target]
+                    
                     df.dropna(inplace=True)
-                    features = ['Target_Ret_1d', 'Target_Ret_3d', 'Market_Ret', 'DXY_Ret', 'VIX_Level', 'Market_Mom', 'Vola']
+                    features = ['Target_Ret_1d', 'Market_Ret', 'DXY_Ret', 'VIX_Level', 'Vola']
 
-                    # 標籤：避險資產通常波動大，抓未來3天漲 > 2%
+                    # 標籤 (抓大波動 > 2%)
                     future_ret = df[target].shift(-3) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.02, 1, 0)
+
+                    params = {
+                        'n_estimators': 150, 'learning_rate': 0.05, 'max_depth': 3,
+                        'subsample': 0.7, 'colsample_bytree': 0.7
+                    }
+                    look_ahead_days = 3
 
                 # ==========================================
                 # 通用訓練流程
                 # ==========================================
                 X = df[features]
                 y = df['Label']
-                
-                # 切分
                 split = int(len(df) * 0.8)
                 X_train, X_test = X.iloc[:split], X.iloc[split:]
                 y_train, y_test = y.iloc[:split], y.iloc[split:]
 
-                # 訓練 (平衡權重)
                 scale_pos_weight = (len(y_train) - y_train.sum()) / y_train.sum()
+                if "TQQQ" in model_mode: scale_pos_weight *= 1.1 # 趨勢盤稍微鼓勵做多
+
                 model = xgb.XGBClassifier(
-                    n_estimators=200,      # 樹的數量增加
-                    learning_rate=0.03,    # 學習率調低 (更細緻)
-                    max_depth=5,           # ★ 深度改為 5 (原本可能是 3)，讓它能理解更複雜的 "緩漲" 型態
-                    subsample=0.9,         # ★ 採樣率提高，增加對行情的覆蓋
-                    colsample_bytree=0.9,
-                    scale_pos_weight=scale_pos_weight, 
-                    random_state=42
+                    **params, scale_pos_weight=scale_pos_weight, random_state=42
                 )
                 model.fit(X_train, y_train)
 
-                # 評估
+                # 繪圖與結果
                 y_pred = model.predict(X_test)
                 acc = accuracy_score(y_test, y_pred)
-                st.success(f"✅ 訓練完成！測試集準確率: {acc*100:.1f}%")
+                st.success(f"✅ {target} 模型訓練完成！準確率: {acc*100:.1f}%")
 
-                # 畫圖
+                # 資金曲線
                 test_df = df.iloc[split:].copy()
                 test_df['Signal'] = y_pred
-                test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Target_Ret_1d']
-                test_df['Cum_Ret_BuyHold'] = (1 + test_df['Target_Ret_1d']).cumprod()
-                test_df['Cum_Ret_AI'] = (1 + test_df['Strategy_Ret']).cumprod()
+                test_df['Target_Ret'] = test_df[target].pct_change()
+                test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Target_Ret']
+                test_df['Cum_BuyHold'] = (1 + test_df['Target_Ret']).cumprod()
+                test_df['Cum_AI'] = (1 + test_df['Strategy_Ret']).cumprod()
 
-                c_chart, c_imp = st.columns([2, 1])
-                
-                with c_chart:
+                c1, c2 = st.columns([2, 1])
+                with c1:
                     st.subheader("💰 資金曲線")
                     fig = make_subplots()
-                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_Ret_BuyHold'], name='Buy & Hold', line=dict(color='gray', width=1)))
-                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_Ret_AI'], name='AI Strategy', line=dict(color='red', width=2)))
+                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_BuyHold'], name='Buy & Hold', line=dict(color='gray', width=1)))
+                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_AI'], name='AI 策略', line=dict(color='red', width=2)))
                     st.plotly_chart(fig, use_container_width=True)
-
-                with c_imp:
+                
+                with c2:
                     st.subheader("🔍 關鍵因子")
                     importance = model.feature_importances_
                     feat_imp = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values('Importance', ascending=True)
-                    fig_imp = go.Figure(go.Bar(
-                        x=feat_imp['Importance'], y=feat_imp['Feature'], orientation='h', marker=dict(color='#00E676')
-                    ))
-                    fig_imp.update_layout(height=400, margin=dict(l=0, r=0, t=0, b=0))
+                    fig_imp = go.Figure(go.Bar(x=feat_imp['Importance'], y=feat_imp['Feature'], orientation='h', marker=dict(color='#00E676')))
+                    fig_imp.update_layout(height=400, margin=dict(t=0, b=0))
                     st.plotly_chart(fig_imp, use_container_width=True)
 
-                # ==========================================
-                # 即時預測注入
-                # ==========================================
+                # 即時預測
                 st.divider()
-                st.subheader(f"🔮 AI 對 {target} 明日的預測")
+                st.subheader(f"🔮 AI 對明日的預測")
                 
-                # 取得最後一筆特徵
+                # 注入即時價格
                 last_feat = X.iloc[-1:].copy()
-                
-                # 嘗試抓取即時價格更新當日漲跌
                 live_price = get_real_live_price(target)
                 if live_price:
-                    prev_close = df[target].iloc[-2]
-                    real_ret = (live_price - prev_close) / prev_close
-                    last_feat['Target_Ret_1d'] = real_ret
-                    st.caption(f"⚡ 已注入即時價格: ${live_price:.2f} (漲跌: {real_ret:.2%})")
-
-                # 預測
-                next_prob = model.predict_proba(last_feat)[0][1]
+                    # 根據不同模式更新特徵
+                    if "TQQQ" in model_mode:
+                         sma50 = df['SMA_50'].iloc[-1]
+                         last_feat['Bias_50'] = (live_price - sma50) / sma50
+                         st.caption(f"⚡ 即時價格 ${live_price} | 均線乖離已更新")
+                    elif "TSM" in model_mode:
+                         prev_close = df[target].iloc[-2]
+                         last_feat['Target_Ret_1d'] = (live_price - prev_close) / prev_close
+                         st.caption(f"⚡ 即時價格 ${live_price} | 動能數據已更新")
                 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("預測方向", "📈 看漲 (進場)" if next_prob > 0.5 else "📉 看跌 (空手)")
-                c2.metric("信心分數", f"{next_prob*100:.1f}%")
+                prob = model.predict_proba(last_feat)[0][1]
                 
-                if "避險" in model_type:
-                    # 如果 AI 預測 EDZ 會漲 (要做多)，代表市場危險
-                    if next_prob > 0.5:
-                        c1.metric("避險訊號", "🔴 危險 (Risk ON)")
-                        c3.error("🚨 崩盤警報！美元轉強，建議減碼多單！")
-                    else:
-                        c1.metric("避險訊號", "🟢 安全 (Risk OFF)")
-                        c3.success("✅ 市場暫時安全，適合做多")
+                c_a, c_b, c_c = st.columns(3)
+                c_a.metric("預測方向", "📈 看漲" if prob > 0.5 else "📉 看跌/空手")
+                c_b.metric("AI 信心", f"{prob*100:.1f}%")
+                
+                if prob > 0.6:
+                    c_c.success("🔥 強力訊號")
+                elif prob < 0.4:
+                    c_c.error("🛑 風險偏高")
+                else:
+                    c_c.info("☕ 觀望")
 
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
-# ------------------------------------------
-# Mode 3: 預測日記 (Google Sheet 雲端版)
-# ------------------------------------------
-elif app_mode == "📒 預測日記 (自動驗證)":
-    st.header("📒 AI 實戰驗證日記 (雲端版)")
-    st.caption(f"資料來源: Google Sheets | 連線狀態: {'✅ 線上' if get_gsheet_connection() else '❌ 離線'}")
-    
-    col_btn, col_stat = st.columns([1, 3])
-    
-    with col_btn:
-        if st.button("🔄 立即刷新並驗證 (Auto-Verify)"):
-            with st.spinner("☁️ 正在連線雲端並檢查最新股價..."):
-                # ★★★ 修正點：呼叫前面定義好的 Google Sheet 驗證函式 ★★★
-                updates = verify_performance_db()
-                if updates > 0:
-                    st.success(f"已結算更新 {updates} 筆紀錄！")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.info("目前無需更新 (尚無 Pending 紀錄或條件未觸發)")
-    
-    # ★★★ 修正點：呼叫前面定義好的 Google Sheet 讀取函式 ★★★
-    df_cloud = get_history_df()
-    
-    if not df_cloud.empty:
-        # 整理顯示格式
-        display_cols = ['date', 'symbol', 'direction', 'confidence', 'entry_price', 'status', 'exit_price', 'return_pct']
-        # 確保欄位存在 (防呆)
-        final_cols = [c for c in display_cols if c in df_cloud.columns]
-        
-        st.dataframe(df_cloud[final_cols], use_container_width=True)
-        
-        # 計算勝率統計
-        completed = df_cloud[df_cloud['status'].isin(['Win', 'Loss'])]
-        if not completed.empty:
-            wins = len(completed[completed['status'] == 'Win'])
-            total = len(completed)
-            win_rate = wins / total
-            
-            # 簡單計算總報酬 (單利加總)
-            total_ret = completed['return_pct'].sum()
-            
-            with col_stat:
-                m1, m2, m3 = st.columns(3)
-                m1.metric("實戰勝率", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
-                m2.metric("累計報酬", f"{total_ret:.1f}%")
-                m3.metric("待結算", f"{len(df_cloud[df_cloud['status']=='Pending'])} 筆")
-    else:
-        st.info("☁️ 雲端資料庫目前是空的，請去前面頁面存入預測。")
 
 
 
