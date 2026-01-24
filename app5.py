@@ -918,6 +918,152 @@ def get_mrvl_prediction():
     except Exception as e:
         print(f"MRVL Model Crash: {e}")
         return None, None, 0.0
+        
+# ==========================================
+# ★★★ TQQQ 納指戰神版 (T+3 波段 / Acc ~63%) ★★★
+# ==========================================
+@st.cache_resource(ttl=3600)
+def get_tqqq_prediction():
+    # 預設回傳：機率, 準度, 現價
+    if not HAS_TENSORFLOW: return None, None, 0.0
+
+    try:
+        # 1. 下載數據 (納指關鍵因子)
+        # TQQQ: 主角
+        # ^SOX: 費半 (科技股先行指標)
+        # ^TNX: 美債殖利率 (科技股天敵)
+        # ^VIX: 恐慌指數
+        # AAPL: 權值股老大哥
+        tickers = ["TQQQ", "^SOX", "^TNX", "^VIX", "AAPL"]
+        data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=30)
+        
+        if isinstance(data.columns, pd.MultiIndex):
+            df = data['Close'].copy()
+        else:
+            df = data['Close'].copy()
+
+        if 'TQQQ' not in df.columns: return None, None, 0.0
+
+        # --- 強制注入即時價格 (Live Price Injection) ---
+        current_price = 0.0
+        try:
+            live_price = get_real_live_price("TQQQ")
+            if live_price and live_price > 0:
+                current_price = live_price
+                last_idx = df.index[-1]
+                df.at[last_idx, 'TQQQ'] = live_price
+            else:
+                current_price = float(df['TQQQ'].iloc[-1])
+        except:
+            current_price = float(df['TQQQ'].iloc[-1]) if not df.empty else 0.0
+
+        df.ffill(inplace=True); df.dropna(inplace=True)
+
+        # 2. 特徵工程 (基於 63% 勝率回測版本的因子)
+        feat = pd.DataFrame()
+        try:
+            # 因子 A: 半導體連動 (費半漲，納指通常跟漲)
+            feat['Semi_Ret'] = df['^SOX'].pct_change()
+            
+            # 因子 B: 利率變化 (利率跌，科技漲)
+            feat['Rates_Chg'] = df['^TNX'].diff()
+            
+            # 因子 C: 恐慌指數 (VIX 低，有利多頭)
+            feat['VIX'] = df['^VIX']
+            
+            # 因子 D: 技術面修正 (乖離率 + RSI)
+            feat['Bias_20'] = (df['TQQQ'] - ta.sma(df['TQQQ'], 20)) / ta.sma(df['TQQQ'], 20)
+            feat['RSI'] = ta.rsi(df['TQQQ'], length=14)
+            
+            # 因子 E: 權值股動能
+            feat['Apple_Ret'] = df['AAPL'].pct_change()
+
+        except Exception as e:
+            return None, None, current_price
+
+        feat.dropna(inplace=True)
+        # 選用最強因子組合
+        cols = ['Semi_Ret', 'Rates_Chg', 'VIX', 'Bias_20', 'RSI', 'Apple_Ret']
+        lookback = 15 # TQQQ 反應較快，看 15 天即可
+
+        # 3. 標籤定義 (T+3 漲幅 > 2%)
+        # TQQQ 波動大，3天漲2%算基本及格
+        t3_ret = df['TQQQ'].shift(-3) / df['TQQQ'] - 1
+        feat['Target'] = (t3_ret > 0.02).astype(int)
+        
+        # 移除最後 3 天無答案區
+        valid_data = feat.iloc[:-3].copy()
+        
+        # 切分訓練/測試集
+        split_idx = int(len(valid_data) * 0.8)
+        train_df = valid_data.iloc[:split_idx]
+        test_df = valid_data.iloc[split_idx:]
+        
+        # 標準化
+        scaler = StandardScaler()
+        scaler.fit(train_df[cols])
+        
+        train_scaled = scaler.transform(train_df[cols])
+        test_scaled = scaler.transform(test_df[cols])
+
+        def create_xy(data, targets, lb):
+            X, y = [], []
+            if len(data) < lb: return np.array([]), np.array([])
+            for i in range(lb, len(data)):
+                # 注意：這裡使用包含當天的窗口 [i-lb+1 : i+1]
+                X.append(data[i-lb+1 : i+1])
+                y.append(targets.iloc[i])
+            return np.array(X), np.array(y)
+
+        X_train, y_train = create_xy(train_scaled, train_df['Target'], lookback)
+        X_test, y_test = create_xy(test_scaled, test_df['Target'], lookback)
+        
+        if len(X_train) == 0: return None, None, current_price
+        
+        # 權重平衡 (讓模型敢於預測漲)
+        from sklearn.utils.class_weight import compute_class_weight
+        cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+        cw_dict = dict(enumerate(cw))
+
+        # 4. 模型架構
+        from tensorflow.keras.layers import Input, LSTM
+        model = Sequential()
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(LSTM(50)) # 單層 LSTM 對 TQQQ 效果通常不錯
+        model.add(Dropout(0.2))
+        model.add(Dense(1, activation='sigmoid'))
+        
+        model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        
+        # 訓練
+        model.fit(X_train, y_train, epochs=20, batch_size=32, verbose=0, class_weight=cw_dict)
+        
+        # 評估
+        _, acc = model.evaluate(X_test, y_test, verbose=0)
+
+        # 5. 預測最新一天
+        # 取得最後一段數據
+        latest_seq_raw = feat[cols].iloc[-lookback:].values
+        
+        # 防呆補齊
+        if len(latest_seq_raw) < lookback:
+            padding = np.tile(latest_seq_raw[0], (lookback - len(latest_seq_raw), 1))
+            latest_seq_raw = np.vstack([padding, latest_seq_raw])
+            
+        latest_scaled = scaler.transform(latest_seq_raw)
+        input_seq = np.expand_dims(latest_scaled, axis=0)
+        
+        prob_raw = model.predict(input_seq, verbose=0)[0][0]
+        
+        # 信心優化 (Temperature Scaling)
+        # TQQQ 波動大，我們稍微保守一點
+        prob = enhance_confidence(prob_raw, temperature=0.3)
+
+        return prob, acc, current_price
+
+    except Exception as e:
+        print(f"TQQQ Model Crash: {e}")
+        return None, None, 0.0
 
 # ==========================================
 # 4. 傳統策略分析 (功能模組)
@@ -1385,7 +1531,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
     st.header("🤖 AI 深度學習實驗室")
     st.caption("神經網路模型 (LSTM) | T+5 & T+3 雙模預測")
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦","SOXL 三倍槓桿","🌊 MRVL 狙擊"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦", "SOXL 三倍槓桿", "🌊 MRVL 狙擊", "🦅 TQQQ 納指王"])
     
 # === Tab 1: TSM ===
     with tab1:
@@ -1713,6 +1859,57 @@ if app_mode == "🤖 AI 深度學習實驗室":
                         st.info("**💤 AI 建議：多空不明，建議觀望**")
                 else:
                     st.error("數據下載失敗，請稍後再試")
+    # === Tab 6: TQQQ 納指戰神 ===
+    with tab6:
+        st.subheader("🦅 TQQQ 納指戰神 (T+3)")
+        st.caption("策略核心：費半連動 + 利率因子 | 目標：捕捉波段起漲點")
+        
+        col_btn, col_info = st.columns([1, 3])
+        
+        if col_btn.button("🚀 啟動 TQQQ 預測", key="btn_tqqq"):
+            with st.spinner("AI 正在分析美債殖利率與科技股動能..."):
+                prob, acc, price = get_tqqq_prediction()
+                
+                if prob is not None:
+                    # 顯示結果
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("TQQQ 現價", f"${price:.2f}")
+                    m2.metric("回測準確率", f"{acc*100:.1f}%", "高於平均")
+                    
+                    # 訊號判斷
+                    if prob > 0.6:
+                        m3.success(f"🚀 強力看漲 ({prob*100:.0f}%)")
+                        st.divider()
+                        st.markdown(f"""
+                        <div style="padding:15px; background-color:rgba(0,200,83,0.1); border-left:5px solid #00c853; border-radius:5px;">
+                            <h4 style="color:#00c853; margin:0;">💎 Strong Buy Signal</h4>
+                            <p style="margin:5px 0 0 0; color:#ddd;">AI 偵測到科技股動能轉強，且利率/恐慌指數配合，適合進場佈局。</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    elif prob < 0.4:
+                        m3.error(f"📉 建議避開 ({prob*100:.0f}%)")
+                        st.divider()
+                        st.markdown(f"""
+                        <div style="padding:15px; background-color:rgba(213,0,0,0.1); border-left:5px solid #d50000; border-radius:5px;">
+                            <h4 style="color:#d50000; margin:0;">🛑 Risk Warning</h4>
+                            <p style="margin:5px 0 0 0; color:#ddd;">利率或恐慌指數異常，科技股承壓，建議空手或減碼。</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        m3.info(f"⚖️ 震盪觀望 ({prob*100:.0f}%)")
+                        st.info("目前多空力道抵銷，建議等待更明確的訊號。")
+                    
+                    # 存檔按鈕
+                    st.divider()
+                    if st.button("💾 記錄此預測", key="save_tqqq"):
+                        direction = "Bull" if prob > 0.5 else "Bear"
+                        conf = prob if prob > 0.5 else 1 - prob
+                        ok, msg = save_prediction_db("TQQQ", direction, conf, price)
+                        if ok: st.success(msg)
+                        else: st.warning(msg)
+                        
+                else:
+                    st.error("數據下載失敗，請稍後再試")
 
 
 # ------------------------------------------
@@ -2037,6 +2234,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
