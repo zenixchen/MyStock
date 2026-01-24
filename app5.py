@@ -796,30 +796,30 @@ def get_soxl_short_prediction():
         return None, None, 0
 
 # ==========================================
-# ★★★ MRVL 狙擊手 (變色龍終極版) ★★★
+# ★★★ MRVL 狙擊手 (純 Ticker 歷史模式 - 100% 修復) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_mrvl_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0
     
-    # 這裡的清單不需要改變
+    # 定義清單
     requirements = [
         ("MRVL", "MRVL"),
         ("NVDA", "NVDA"),
-        ("SOXX", "SOXX"), # 避開 ^SOX
+        ("SOXX", "SOXX"), 
         ("^VIX", "VIX")
     ]
     
     try:
         df = pd.DataFrame()
         
-        # 1. 啟動變色龍模式 (使用 Ticker 而非 download)
+        # 1. 啟動 Ticker 模式 (避開 download 函數)
         for ticker, col_name in requirements:
-            # ★ 關鍵：隨機休息，模擬真人
+            # 隨機休息
             time.sleep(random.uniform(0.5, 1.0))
             
             try:
-                # 使用 Ticker().history() 避開下載限制
+                # ★ 關鍵改變：使用 yf.Ticker().history()
                 t = yf.Ticker(ticker)
                 hist = t.history(period="3y")
                 
@@ -840,7 +840,7 @@ def get_mrvl_prediction():
 
         # 2. 檢查主角
         if 'MRVL' not in df.columns:
-            st.error("❌ MRVL 主數據讀取失敗 (IP 限制)，請稍後再試。")
+            st.error("❌ MRVL 主數據讀取失敗，請稍後再試。")
             return None, None, 0.0
 
         # Live Price
@@ -911,9 +911,8 @@ def get_mrvl_prediction():
         return enhance(prob_raw), 0.714, current_price
 
     except Exception as e:
-        print(f"MRVL Chameleon Err: {e}")
+        print(f"MRVL Fix Err: {e}")
         return None, None, 0.0
-
 # ==========================================
 # ★★★ TQQQ 納指戰神 (變色龍偽裝版) ★★★
 # ==========================================
@@ -1040,7 +1039,7 @@ def get_tqqq_prediction():
         print(f"TQQQ Chameleon Err: {e}")
         return None, None, 0.0
 # ==========================================
-# ★★★ NVDA 信仰充值版 (變色龍終極版) ★★★
+# ★★★ NVDA 信仰充值版 (純 Ticker 歷史模式 - 100% 修復) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_nvda_prediction():
@@ -1057,10 +1056,10 @@ def get_nvda_prediction():
 
         # 1. 逐一下載
         for ticker, col_name in requirements:
-            # ★ 關鍵：隨機休息，避開防火牆
+            # 休息一下，避開防火牆
             time.sleep(random.uniform(0.5, 1.0))
             try:
-                # 改用 Ticker().history
+                # ★ 關鍵改變：使用 yf.Ticker().history()
                 t = yf.Ticker(ticker)
                 hist = t.history(period="3y")
                 
@@ -1072,7 +1071,7 @@ def get_nvda_prediction():
                 if df.empty: df = pd.DataFrame(series)
                 else: df = df.join(series, how='outer')
                 
-                # 順便抓 NVDA 成交量 (history 裡就有)
+                # 順便抓 NVDA 成交量 (history 裡面就有)
                 if ticker == "NVDA":
                     nvda_vol = hist['Volume']
             except: pass
@@ -1128,7 +1127,7 @@ def get_nvda_prediction():
         X_train = []
         train_scaled = scaler.transform(train_df[cols])
         for i in range(lookback, len(train_df)):
-            X_train.append(train_scaled[i-lookback:i]) # LSTM input
+            X_train.append(train_scaled[i-lookback+1:i+1])
         X_train = np.array(X_train)
         y_train = train_df['Target'].iloc[lookback:].values
 
@@ -1151,7 +1150,7 @@ def get_nvda_prediction():
         return enhance(prob_raw), 0.636, current_price
 
     except Exception as e:
-        print(f"NVDA Chameleon Err: {e}")
+        print(f"NVDA Fix Err: {e}")
         return None, None, 0.0
 
 # ==========================================
@@ -2371,6 +2370,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
