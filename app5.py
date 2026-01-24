@@ -796,7 +796,7 @@ def get_soxl_short_prediction():
         return None, None, 0
 
 # ==========================================
-# ★★★ MRVL 狙擊手 (強力容錯版) ★★★
+# ★★★ MRVL 狙擊手 (最終修復版：補上 Input 引用) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_mrvl_prediction():
@@ -813,8 +813,7 @@ def get_mrvl_prediction():
     try:
         data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=60, auto_adjust=False)
         
-        if data is None or data.empty:
-            return None, None, default_price
+        if data is None or data.empty: return None, None, default_price
             
         try:
             if isinstance(data.columns, pd.MultiIndex):
@@ -827,7 +826,7 @@ def get_mrvl_prediction():
         df.rename(columns=col_map, inplace=True)
 
         if 'MRVL' not in df.columns:
-            st.error(f"❌ 找不到 MRVL 數據")
+            st.error("❌ 找不到 MRVL 數據")
             return None, None, default_price
 
         current_price = float(df['MRVL'].iloc[-1])
@@ -835,10 +834,7 @@ def get_mrvl_prediction():
             current_price = default_price
             df.at[df.index[-1], 'MRVL'] = default_price
 
-        # ★★★ 強力補值，防止因 VIX 缺失而刪除整行
-        df.ffill(inplace=True)
-        df.bfill(inplace=True)
-        df.fillna(0, inplace=True)
+        df.ffill(inplace=True); df.bfill(inplace=True); df.fillna(0, inplace=True)
 
         for c in ["VIX", "NVDA", "SOXX"]:
             if c not in df.columns: df[c] = 0.0
@@ -853,7 +849,6 @@ def get_mrvl_prediction():
         feat['MACD'] = ta.macd(df['MRVL'])['MACD_12_26_9']
 
         feat = feat.replace([np.inf, -np.inf], np.nan).fillna(0)
-        
         cols = ['VIX', 'Bias_5', 'MRVL_Ret_3d', 'Boll_Pct', 'NVDA_Ret', 'MACD']
         lookback = 20
 
@@ -879,6 +874,9 @@ def get_mrvl_prediction():
         from sklearn.utils.class_weight import compute_class_weight
         cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
 
+        # ★★★ 關鍵修復：這裡補上了 Input 的引用 ★★★
+        from tensorflow.keras.layers import Input
+
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
         model.add(LSTM(32)); model.add(Dropout(0.2))
@@ -886,7 +884,6 @@ def get_mrvl_prediction():
         model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
         model.fit(X_train, y_train, epochs=20, verbose=0, class_weight=dict(enumerate(cw)))
         
-        # 修正：防止維度錯誤
         last_seq = feat[cols].iloc[-lookback:].values
         if len(last_seq) < lookback:
              padding = np.tile(last_seq[0], (lookback - len(last_seq), 1))
@@ -899,7 +896,7 @@ def get_mrvl_prediction():
         return enhance(prob_raw), 0.714, current_price
 
     except Exception as e:
-        st.error(f"MRVL 模組錯誤 (Debug): {str(e)}")
+        st.error(f"MRVL 模組錯誤: {str(e)}")
         return None, None, default_price
 # ==========================================
 # ★★★ TQQQ 納指戰神 (變色龍偽裝版) ★★★
@@ -1027,11 +1024,10 @@ def get_tqqq_prediction():
         print(f"TQQQ Chameleon Err: {e}")
         return None, None, 0.0
 # ==========================================
-# ★★★ NVDA 信仰充值版 (強力容錯版) ★★★
+# ★★★ NVDA 信仰充值版 (最終修復版：補上 Input 引用) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_nvda_prediction():
-    # 預設值 (確保即便失敗也能回傳現價)
     default_price = 0.0
     try:
         live = get_real_live_price("NVDA")
@@ -1040,77 +1036,52 @@ def get_nvda_prediction():
 
     if not HAS_TENSORFLOW: return None, None, default_price
     
-    # 定義下載清單
     tickers = ["NVDA", "MSFT", "AMD", "SOXX", "^TNX", "^VIX"]
     
     try:
-        # 1. 批量下載 (放寬 timeout)
-        # auto_adjust=False 避免資料結構混亂
+        # 1. 批量下載
         data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=60, auto_adjust=False)
         
-        # 除錯：如果完全沒資料，才報錯
         if data is None or data.empty:
-            # 最後嘗試單獨抓 NVDA (至少讓現價能顯示)
             return None, None, default_price
 
-        # 2. 處理 Close 與 Volume
-        # yfinance 新版回傳多層索引，需小心處理
+        # 2. 處理資料結構
         try:
             if isinstance(data.columns, pd.MultiIndex):
-                # 嘗試取出 Close 層級
                 df = data.xs('Close', axis=1, level=0, drop_level=True).copy()
-                # 嘗試取出 Volume 層級
                 if 'Volume' in data.columns.get_level_values(0):
                     vol_df = data.xs('Volume', axis=1, level=0, drop_level=True).copy()
                 else:
                     vol_df = pd.DataFrame()
             else:
-                # 舊版結構
                 df = data['Close'].copy()
                 vol_df = data['Volume'].copy() if 'Volume' in data else pd.DataFrame()
-        except Exception as parse_err:
-            # 如果結構解析失敗，嘗試暴力法 (只抓 NVDA)
-            print(f"Structure Error: {parse_err}")
-            return None, None, default_price
+        except: return None, None, default_price
 
-        # 3. 欄位名稱對映 (Mapping)
-        # 有些 yfinance 版本可能不會自動 map ^ 符號，這裡做雙重保險
-        col_map = {
-            "SOXX": "SOX", "^SOXX": "SOX",
-            "^TNX": "TNX", "TNX": "TNX",
-            "^VIX": "VIX", "VIX": "VIX"
-        }
+        col_map = { "SOXX": "SOX", "^SOXX": "SOX", "^TNX": "TNX", "TNX": "TNX", "^VIX": "VIX", "VIX": "VIX" }
         df.rename(columns=col_map, inplace=True)
 
-        # 4. 確保 NVDA 存在
         if 'NVDA' not in df.columns:
-            st.error(f"❌ 找不到 NVDA 欄位。可用欄位: {list(df.columns)}")
+            st.error("❌ 找不到 NVDA 欄位")
             return None, None, default_price
 
-        # 更新現價
         current_price = float(df['NVDA'].iloc[-1])
         if default_price > 0:
             current_price = default_price
-            # 強制將最後一筆設為即時價格
             df.at[df.index[-1], 'NVDA'] = default_price
 
-        # 5. ★★★ 關鍵修正：強力補值，取代 dropna ★★★
-        # 先補前面，再補後面，最後缺的補 0 (避免因為 VIX 缺資料導致整行被刪)
-        df.ffill(inplace=True)
-        df.bfill(inplace=True)
-        df.fillna(0, inplace=True) 
+        # 3. 強力補值
+        df.ffill(inplace=True); df.bfill(inplace=True); df.fillna(0, inplace=True)
 
-        # 處理成交量
         if 'NVDA' in vol_df.columns:
             df['Vol'] = vol_df['NVDA'].ffill().fillna(0)
         else:
             df['Vol'] = 1.0
 
-        # 補缺欄位 (防呆)
         for c in ["MSFT", "AMD", "SOX", "TNX", "VIX"]:
             if c not in df.columns: df[c] = 0.0
 
-        # 6. 特徵工程 (保持不變)
+        # 4. 特徵工程
         feat = pd.DataFrame()
         feat['Ret_5d'] = df['NVDA'].pct_change(5)
         feat['RSI'] = ta.rsi(df['NVDA'], 14)
@@ -1119,13 +1090,10 @@ def get_nvda_prediction():
         feat['VIX'] = df['VIX']
         feat['RVOL'] = df['Vol'] / df['Vol'].rolling(20).mean()
 
-        # 再次清洗特徵
         feat = feat.replace([np.inf, -np.inf], np.nan).fillna(0)
-        
         cols = ['Ret_5d', 'VIX', 'Bias_20', 'MACD', 'RSI', 'RVOL']
         lookback = 20
 
-        # 7. 模型訓練
         t3_ret = df['NVDA'].shift(-3) / df['NVDA'] - 1
         feat['Target'] = (t3_ret > 0.03).astype(int)
         
@@ -1148,6 +1116,9 @@ def get_nvda_prediction():
         from sklearn.utils.class_weight import compute_class_weight
         cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         
+        # ★★★ 關鍵修復：這裡補上了 Input 的引用 ★★★
+        from tensorflow.keras.layers import Input
+
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
         model.add(LSTM(64, return_sequences=True)); model.add(Dropout(0.3))
@@ -1155,11 +1126,8 @@ def get_nvda_prediction():
         model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
         model.fit(X_train, y_train, epochs=25, verbose=0, class_weight=dict(enumerate(cw)))
         
-        # 預測最新一天
-        # 確保最後一段數據存在
         last_seq = feat[cols].iloc[-lookback:].values
         if len(last_seq) < lookback:
-             # 如果數據不夠，複製補齊
              padding = np.tile(last_seq[0], (lookback - len(last_seq), 1))
              last_seq = np.vstack([padding, last_seq])
 
@@ -1170,8 +1138,7 @@ def get_nvda_prediction():
         return enhance(prob_raw), 0.636, current_price
 
     except Exception as e:
-        # ★★★ 這裡會把具體錯誤印出來，讓你看到原因 ★★★
-        st.error(f"NVDA 模組錯誤 (Debug): {str(e)}")
+        st.error(f"NVDA 模組錯誤: {str(e)}")
         return None, None, default_price
 # ==========================================
 # 4. 傳統策略分析 (功能模組)
@@ -2390,6 +2357,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
