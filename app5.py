@@ -269,13 +269,13 @@ def enhance_confidence(prob, temperature=0.25):
     new_prob = 1 / (1 + np.exp(-scaled_logit))
     return new_prob
 
-@st.cache_resource(ttl=3600)
+# 修改 1：縮短快取時間為 300秒 (5分鐘)，避免開盤後還在看舊資料
+@st.cache_resource(ttl=300)
 def get_tsm_swing_prediction():
     if not HAS_TENSORFLOW: return None, None, 0.0, None, 0
     try:
         # 1. 下載數據
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
-        # 強制單層索引並關閉 auto_adjust
         data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
         
         # 處理 MultiIndex
@@ -283,22 +283,44 @@ def get_tsm_swing_prediction():
             df = data['Close'].copy()
         else:
             df = data['Close'].copy()
-            
-        df.ffill(inplace=True); df.dropna(inplace=True)
 
-        # 2. 特徵工程
+        # 修改 2：先做 ffill 補全指數的缺漏，但針對 TSM 進行「強制即時校正」
+        df.ffill(inplace=True)
+        
+        # ★★★ 關鍵修正：強制注入 TSM 即時價格 ★★★
+        # 避免 yfinance 歷史數據延遲，導致 ffill 複製了昨天的舊價格
+        try:
+            live_price = get_real_live_price("TSM") # 呼叫你的 fast_info 函數
+            if live_price and live_price > 0:
+                # 如果最後一筆日期是今天，直接更新價格
+                # 如果最後一筆是昨天，手動加上今天
+                last_dt = df.index[-1]
+                today_dt = pd.Timestamp.now().normalize()
+                
+                # 簡單判定：如果最後一筆資料跟即時價差太多(>2%)，且時間接近，就強制覆蓋
+                if abs(df['TSM'].iloc[-1] - live_price) / live_price > 0.02:
+                    df.at[last_dt, 'TSM'] = live_price
+                    # print(f"校正 TSM 價格: {df['TSM'].iloc[-1]} -> {live_price}")
+        except: pass
+            
+        df.dropna(inplace=True)
+
+        # 2. 特徵工程 (以下保持不變)
         feat = pd.DataFrame()
         try:
             feat['NVDA_Ret'] = df['NVDA'].pct_change()
             feat['SOX_Ret'] = df['^SOX'].pct_change()
             feat['TNX_Chg'] = df['^TNX'].pct_change()
             feat['VIX'] = df['^VIX']
-            feat['TSM_Ret'] = df['TSM'].pct_change()
+            feat['TSM_Ret'] = df['TSM'].pct_change() # 這裡現在會算出真正的漲幅了
             feat['RSI'] = ta.rsi(df['TSM'], length=5) 
             feat['MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
         except: return None, None, 0.0, None, 0
         
+        # 修改 3：使用 ffill 確保技術指標最新一筆不會因為計算延遲變成 NaN 而被 dropna 刪掉
+        feat.ffill(inplace=True)
         feat.dropna(inplace=True)
+        
         cols = ['NVDA_Ret', 'SOX_Ret', 'TNX_Chg', 'VIX', 'TSM_Ret', 'RSI', 'MACD']
         
         # 3. 標籤 (Target)
@@ -1834,6 +1856,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
