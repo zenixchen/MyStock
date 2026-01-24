@@ -698,7 +698,7 @@ def scan_tech_stock(symbol, model, scaler, features):
         return prob, acc, df['Close'].iloc[-1]
     except: return None, None, 0
         
-        # ==========================================
+# ==========================================
 # ★★★ SOXL 最終實戰版：5年數據 + 權重平衡 (F1=0.301) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
@@ -1063,6 +1063,136 @@ def get_tqqq_prediction():
 
     except Exception as e:
         print(f"TQQQ Model Crash: {e}")
+        return None, None, 0.0
+# ==========================================
+# ★★★ NVDA 信仰充值版 (T+3 / Hype Mode) ★★★
+# ==========================================
+@st.cache_resource(ttl=3600)
+def get_nvda_prediction():
+    if not HAS_TENSORFLOW: return None, None, 0.0
+    try:
+        # 1. 下載數據 (RVOL 與 產業鏈)
+        # Target: NVDA
+        # Customer: MSFT (微軟 - 最大客戶)
+        # Sector: ^SOX (費半)
+        # Rival: AMD
+        # Macro: ^TNX (利率), ^VIX (恐慌)
+        tickers = ["NVDA", "^SOX", "MSFT", "AMD", "^TNX", "^VIX"]
+        data = yf.download(tickers, period="3y", interval="1d", progress=False, timeout=30)
+        
+        # 處理 yfinance 多層索引問題
+        if isinstance(data.columns, pd.MultiIndex):
+            df = data['Close'].copy()
+            vol = data['Volume'].copy()
+            # 簡化欄位名稱
+            df.columns = [c[0] if isinstance(c, tuple) else c for c in df.columns]
+            vol.columns = [c[0] if isinstance(c, tuple) else c for c in vol.columns]
+        else:
+            df = data['Close'].copy()
+            vol = data['Volume'].copy()
+
+        if 'NVDA' not in df.columns: return None, None, 0.0
+
+        # Live Price Check (即時價格注入)
+        current_price = 0.0
+        try:
+            live = get_real_live_price("NVDA")
+            if live: 
+                current_price = live
+                df.at[df.index[-1], 'NVDA'] = live
+            else: current_price = float(df['NVDA'].iloc[-1])
+        except: current_price = float(df['NVDA'].iloc[-1])
+
+        df.ffill(inplace=True); df.dropna(inplace=True)
+        vol.ffill(inplace=True)
+
+        # 2. 特徵工程 (基於 Colab 驗證的高準度因子)
+        feat = pd.DataFrame()
+        try:
+            # 動能因子
+            feat['Ret_5d'] = df['NVDA'].pct_change(5)
+            feat['RSI'] = ta.rsi(df['NVDA'], 14)
+            feat['MACD'] = ta.macd(df['NVDA'])['MACD_12_26_9']
+            
+            # 乖離率 (煞車機制)
+            feat['Bias_20'] = (df['NVDA'] - ta.sma(df['NVDA'], 20)) / ta.sma(df['NVDA'], 20)
+            
+            # 市場情緒
+            feat['VIX'] = df['^VIX']
+            
+            # ★ 關鍵因子：RVOL (相對成交量)
+            # 這是捕捉 NVDA 主升段的最強訊號
+            feat['RVOL'] = vol['NVDA'] / vol['NVDA'].rolling(20).mean()
+        except: return None, None, current_price
+
+        feat.dropna(inplace=True)
+        # 選用最強因子組合
+        cols = ['Ret_5d', 'VIX', 'Bias_20', 'MACD', 'RSI', 'RVOL']
+        lookback = 20
+
+        # 3. 標籤 (T+3 > 3%)
+        # NVDA 波動大，我們抓 3% 的波段
+        t3_ret = df['NVDA'].shift(-3) / df['NVDA'] - 1
+        feat['Target'] = (t3_ret > 0.03).astype(int)
+        
+        valid = feat.iloc[:-3].copy()
+        
+        # 訓練集切分
+        split = int(len(valid) * 0.85)
+        train_df = valid.iloc[:split]
+        test_df = valid.iloc[split:]
+
+        scaler = StandardScaler()
+        scaler.fit(train_df[cols])
+        
+        def create_xy(d, t, lb):
+            X, y = [], []
+            for i in range(lb, len(d)):
+                X.append(d[i-lb+1:i+1])
+                y.append(t.iloc[i])
+            return np.array(X), np.array(y)
+
+        X_train, y_train = create_xy(scaler.transform(train_df[cols]), train_df['Target'], lookback)
+        X_test, y_test = create_xy(scaler.transform(test_df[cols]), test_df['Target'], lookback)
+
+        if len(X_train) == 0: return None, None, current_price
+
+        # 權重平衡
+        from sklearn.utils.class_weight import compute_class_weight
+        cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
+        
+        # 模型架構 (加深層數以捕捉複雜波動)
+        model = Sequential()
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(LSTM(64, return_sequences=True))
+        model.add(Dropout(0.3))
+        model.add(LSTM(32))
+        model.add(Dense(1, activation='sigmoid'))
+        
+        model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        
+        model.fit(X_train, y_train, epochs=25, verbose=0, class_weight=dict(enumerate(cw)))
+        _, acc = model.evaluate(X_test, y_test, verbose=0)
+
+        # 4. 預測最新一天
+        last_seq = feat[cols].iloc[-lookback:].values
+        if len(last_seq) < lookback: # Padding fix
+            padding = np.tile(last_seq[0], (lookback - len(last_seq), 1))
+            last_seq = np.vstack([padding, last_seq])
+            
+        prob_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
+        
+        # 溫度調整 (Temperature Scaling)
+        def enhance(p, t=0.3):
+            p = np.clip(p, 0.001, 0.999)
+            logit = np.log(p / (1 - p))
+            return 1 / (1 + np.exp(-logit / t))
+
+        prob = enhance(prob_raw, 0.3)
+        
+        return prob, acc, current_price
+    except Exception as e:
+        print(f"NVDA Model Error: {e}")
         return None, None, 0.0
 
 # ==========================================
@@ -1531,7 +1661,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
     st.header("🤖 AI 深度學習實驗室")
     st.caption("神經網路模型 (LSTM) | T+5 & T+3 雙模預測")
     
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦", "SOXL 三倍槓桿", "🌊 MRVL 狙擊", "🦅 TQQQ 納指王"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📈 TSM 雙核心波段", "🐻 EDZ / 宏觀雷達", "⚡ QQQ 科技股通用腦", "SOXL 三倍槓桿", "🌊 MRVL 狙擊", "🦅 TQQQ 納指王", "🦖 NVDA 信仰充值"])
     
 # === Tab 1: TSM ===
     with tab1:
@@ -1910,6 +2040,59 @@ if app_mode == "🤖 AI 深度學習實驗室":
                         
                 else:
                     st.error("數據下載失敗，請稍後再試")
+    # === Tab 7: NVDA 信仰充值 ===
+    with tab7:
+        st.subheader("🦖 NVDA 信仰充值 (T+3)")
+        st.caption("策略核心：RVOL 爆量 + 產業鏈連動 | 捕捉主升段")
+        
+        # 版面配置
+        col_btn, col_info = st.columns([1, 3])
+        
+        if col_btn.button("🚀 啟動 NVDA 預測", key="btn_nvda"):
+            with st.spinner("AI 正在計算相對成交量 (RVOL) 與 微軟動能..."):
+                prob, acc, price = get_nvda_prediction()
+                
+                if prob is not None:
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("NVDA 現價", f"${price:.2f}")
+                    c2.metric("回測準度", f"{acc*100:.1f}%")
+                    
+                    # 訊號判斷邏輯
+                    if prob > 0.7:
+                        c3.success(f"🚀 信仰充值! ({prob*100:.0f}%)")
+                        st.divider()
+                        st.markdown("""
+                        <div style="padding:15px; background-color:rgba(0,200,83,0.1); border-left:5px solid #00c853; border-radius:5px;">
+                            <h4 style="color:#00c853; margin:0;">🔥 Strong Buy (主力攻擊訊號)</h4>
+                            <p style="margin:5px 0 0 0; color:#ddd;">偵測到 RVOL 爆量且動能 (Ret_5d) 轉強，AI 判定為主升段攻擊，建議順勢操作。</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                    elif prob < 0.3:
+                        c3.error(f"📉 獲利了結 ({prob*100:.0f}%)")
+                        st.divider()
+                        st.markdown("""
+                        <div style="padding:15px; background-color:rgba(213,0,0,0.1); border-left:5px solid #d50000; border-radius:5px;">
+                            <h4 style="color:#d50000; margin:0;">❄️ Weak Momentum (動能熄火)</h4>
+                            <p style="margin:5px 0 0 0; color:#ddd;">量能萎縮或乖離率 (Bias) 過大，追高風險極高，建議減碼觀望。</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                    else:
+                        c3.info(f"⚖️ 盤整觀望 ({prob*100:.0f}%)")
+                        st.info("目前多空力道抵銷，等待出量表態。")
+                    
+                    # 存檔按鈕
+                    st.divider()
+                    if st.button("💾 記錄 NVDA 預測", key="save_nvda"):
+                        direction = "Bull" if prob > 0.5 else "Bear"
+                        conf = prob if prob > 0.5 else 1 - prob
+                        # 呼叫存檔函數
+                        ok, msg = save_prediction_db("NVDA", direction, conf, price)
+                        if ok: st.success(msg)
+                        else: st.warning(msg)
+                else:
+                    st.error("數據下載失敗，請稍後再試")
 
 
 # ------------------------------------------
@@ -2234,6 +2417,7 @@ elif app_mode == "📒 預測日記 (自動驗證)":
                 win_rate = wins / total
                 st.metric("實戰勝率 (Real Win Rate)", f"{win_rate*100:.1f}%", f"{wins}/{total} 筆")
     else: st.info("目前還沒有日記，請去預測頁面存檔。")
+
 
 
 
