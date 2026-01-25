@@ -2686,6 +2686,9 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     # 勝率不足 -> 賣出或觀望
                     c3.error(f"🛑 指令：賣出 / 空手")
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
+            except Exception as e:
+                st.error(f"發生錯誤: {e}")
+
 
 
 
