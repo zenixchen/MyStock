@@ -2381,7 +2381,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
     # 1. 選擇策略模組
     model_mode = st.radio("選擇戰略模組：", 
-        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
+        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
         horizontal=True
     )
 
@@ -2392,6 +2392,10 @@ elif app_mode == "🌲 XGBoost 實驗室":
     elif "TQQQ" in model_mode:
         default_target = "TQQQ"
         desc = "✅ 專攻：TQQQ, SOXL, SPXL\n\n🧠 邏輯：看重「50日生命線」與「RSI」。站上均線就死抱，跌破就跑，專吃大波段。"
+        # ★★★ 新增這一段 (台股設定) ★★★
+    elif "台股" in model_mode:
+        default_target = "2330"  # 預設顯示台積電
+        desc = "✅ 專攻：0050成分股 (如 2330, 2454, 2603)\n\n🧠 邏輯：跟著「美股昨晚收盤」做台股。結合季線趨勢與費半連動。"
     else:
         default_target = "EDZ"
         desc = "✅ 專攻：EDZ, SQQQ, UVXY\n\n🧠 邏輯：看重「VIX恐慌」與「美元匯率」。平時空手，只有市場快崩盤時才亮燈。"
@@ -2675,6 +2679,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
