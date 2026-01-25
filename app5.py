@@ -2399,6 +2399,9 @@ elif app_mode == "🌲 XGBoost 實驗室":
     elif "能源" in model_mode:
         default_target = "XLE"
         desc = "✅ 專攻：能源(XLE)、潔淨能源(ICLN)\n\n🧠 邏輯：看重「原油(CL=F)」、「天然氣(NG=F)」與「美債利率」。"
+    elif "週期" in model_mode:
+        default_target = "MU"
+        desc = "✅ 專攻：MU \n\n🧠 邏輯：週期循環。"
     else:
         default_target = "EDZ"
         desc = "✅ 專攻：EDZ, SQQQ, UVXY\n\n🧠 邏輯：看重「VIX恐慌」與「美元匯率」。平時空手，只有市場快崩盤時才亮燈。"
@@ -2653,12 +2656,11 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     df['Mom_10'] = df[target] / df[target].shift(10)
                     
                     # D. 波動率 (MU 很活潑，需要這個來判斷是否過熱)
-                    df['Vola'] = df[target].rolling(20).std() / df[target].rolling(20).mean()
-
+                   
                     df.dropna(inplace=True)
                     
                     # 特徵列表
-                    features = ['NVDA_Ret', 'Bias_60', 'Mom_10', 'SOX_Ret', 'Vola']
+                    features = ['NVDA_Ret', 'Bias_60', 'Mom_10', 'SOX_Ret']
 
                     # 3. 標籤 (★★★ 關鍵修改：預測未來 10 天 ★★★)
                     # 讓 AI 學習「持有兩週」會不會賺錢，而不是三天
@@ -2817,6 +2819,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
