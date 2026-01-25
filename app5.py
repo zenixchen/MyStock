@@ -2381,7 +2381,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
     # 1. 選擇策略模組
     model_mode = st.radio("選擇戰略模組：", 
-        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)" "🛡️ EDZ 避險型 (崩盤偵測)"], 
+        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
         horizontal=True
     )
 
@@ -2554,59 +2554,59 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     
                     st.info("💡 台股策略邏輯：結合「季線乖離(Bias_60)」與「費半指數(SOX)」連動性。")
                 # ==========================================
-                # 策略 E: 能源電力型 (Energy & Utilities)
+                # 策略 E: 能源電力型 (改良版 - 解決踏空問題)
                 # ==========================================
                 elif "能源" in model_mode:
-                    # 1. 下載數據 (關鍵：抓原油、天然氣、利率)
-                    # CL=F: 原油期貨, NG=F: 天然氣, ^TNX: 10年期公債殖利率
+                    # 1. 下載數據
                     tickers = [target, "CL=F", "NG=F", "^TNX", "DX-Y.NYB"]
                     data = yf.download(tickers, period="5y", interval="1d", progress=False)
                     
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
                     else: df = data['Close'].copy()
                     
-                    # 能源期貨常有缺漏值，用前值填補很重要
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
-                    # 2. 特徵工程 (原物料因子)
-                    # A. 價格驅動因子
-                    df['Oil_Ret'] = df['CL=F'].pct_change()       # 油價變動
-                    df['Gas_Ret'] = df['NG=F'].pct_change()       # 氣價變動
-                    df['Rate_Chg'] = df['^TNX'].pct_change()      # 利率變動 (對電力股影響大)
-                    df['DXY_Ret'] = df['DX-Y.NYB'].pct_change()   # 美元 (美元漲，原物料通常跌)
+                    # 2. 特徵工程
+                    df['Oil_Ret'] = df['CL=F'].pct_change()       
+                    df['Gas_Ret'] = df['NG=F'].pct_change()       
+                    df['Rate_Chg'] = df['^TNX'].pct_change()      
+                    df['DXY_Ret'] = df['DX-Y.NYB'].pct_change()   
 
-                    # B. 目標自身趨勢
+                    # ★★★ 修改 1: 加入 Bias_20 (短線點火器) ★★★
+                    # 讓 AI 不只看長線(50MA)，也看短線(20MA)有沒有站上
+                    df['SMA_20'] = ta.sma(df[target], length=20)
                     df['SMA_50'] = ta.sma(df[target], length=50)
+                    df['Bias_20'] = (df[target] - df['SMA_20']) / df['SMA_20'] # 新增
                     df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50']
+                    
                     df['RSI'] = ta.rsi(df[target], length=14)
                     
-                    # C. 相關性特徵 (看目標跟油價的連動性)
-                    # 這能讓 AI 自動判斷現在是「跟著油漲」還是「跟著油跌」
+                    # 相關性特徵 (保留，但因為有 Bias_20 輔助，AI 不會只死守這個)
                     df['Corr_Oil'] = df[target].rolling(20).corr(df['CL=F'])
 
                     df.dropna(inplace=True)
                     
-                    # 特徵列表
-                    features = ['Oil_Ret', 'Gas_Ret', 'Rate_Chg', 'DXY_Ret', 'Bias_50', 'RSI', 'Corr_Oil']
+                    # 更新特徵列表
+                    features = ['Oil_Ret', 'Gas_Ret', 'Rate_Chg', 'DXY_Ret', 'Bias_20', 'Bias_50', 'RSI', 'Corr_Oil']
 
-                    # 3. 標籤 (波段操作：預測未來 5 天)
+                    # 3. 標籤
                     future_ret = df[target].shift(-5) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
-                    # 4. 模型參數 (原物料週期性強，深度不用太深)
+                    # 4. 模型參數 (★ 修改 2 & 3: 變得更積極)
                     params = {
                         'n_estimators': 150,    
-                        'learning_rate': 0.05,
+                        'learning_rate': 0.08,  # ★ 加快學習速度 (原本 0.05)
                         'max_depth': 4,
-                        'gamma': 0.1,
-                        'subsample': 0.8, 
-                        'colsample_bytree': 0.8
+                        'gamma': 0,             # ★ 移除懲罰項 (原本 0.1)，鼓勵交易
+                        'subsample': 0.85, 
+                        'colsample_bytree': 0.85
                     }
                     
-                    weight_multiplier = 1.1 # 溫和加權
+                    weight_multiplier = 1.1 
                     buy_threshold = 0.50
                     
-                    st.info("💡 能源策略邏輯：如果是 XLE，AI 會看油價；如果是 XLU，AI 會看利率風險。")
+                    st.info("💡 能源策略邏輯：已加入 20日均線 (Bias_20) 以捕捉快速反轉行情。")
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -2745,6 +2745,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
