@@ -2388,10 +2388,10 @@ elif app_mode == "🌲 XGBoost 實驗室":
     # 2. 根據模式設定預設值與說明
     if "TSM" in model_mode:
         default_target = "TSM"
-        desc = "✅ 專攻：TSM, \n\n🧠 邏輯：看重「輝達連動」與「短線爆發力」。只要輝達漲、動能強就追，不錯過任何魚身。"
+        desc = "✅ 專攻：TSM \n\n🧠 邏輯：看重「輝達連動」與「短線爆發力」。只要輝達漲、動能強就追，不錯過任何魚身。"
     elif "TQQQ" in model_mode:
         default_target = "TQQQ"
-        desc = "✅ 專攻：TQQQ, SOXL, SPXL\n\n🧠 邏輯：看重「50日生命線」與「RSI」。站上均線就死抱，跌破就跑，專吃大波段。"
+        desc = "✅ 專攻：TQQQ, SOXL, SPXL, MRVL\n\n🧠 邏輯：看重「50日生命線」與「RSI」。站上均線就死抱，跌破就跑，專吃大波段。"
         # ★★★ 新增這一段 (台股設定) ★★★
     elif "台股" in model_mode:
         default_target = "2330"  # 預設顯示台積電
@@ -2763,6 +2763,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
