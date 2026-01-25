@@ -2381,7 +2381,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
     # 1. 選擇策略模組
     model_mode = st.radio("選擇戰略模組：", 
-        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)", "🔥 AI 超級週期 (AVGO/MU)", "🔥 AVGO專用 (AVGO/MU)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
+        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)", "🔥 AI 超級週期 (AVGO/MU)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
         horizontal=True
     )
 
@@ -2402,12 +2402,9 @@ elif app_mode == "🌲 XGBoost 實驗室":
     elif "週期" in model_mode:
         default_target = "MU"
         desc = "✅ 專攻：MU \n\n🧠 邏輯：週期循環。"
-    elif "長波段" in model_mode:
-        default_target = "AVGO"
-        desc = "✅ 專攻：MU \n\n🧠 邏輯：週期循環。"
     else:
         default_target = "EDZ"
-        desc = "✅ 專攻：EDZ, SQQQ, UVXY\n\n🧠 邏輯：看重「VIX恐慌」與「美元匯率」。平時空手，只有市場快崩盤時才亮燈。"
+        desc = "✅ 專攻：EDZ, SQQQ, UVXY, AVGO\n\n🧠 邏輯：看重「VIX恐慌」與「美元匯率」。平時空手，只有市場快崩盤時才亮燈。"
 
     st.info(desc)
     target = st.text_input("輸入代號 (Target)", value=default_target)
@@ -2873,6 +2870,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
