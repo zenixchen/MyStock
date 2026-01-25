@@ -18,6 +18,43 @@ import xml.etree.ElementTree as ET
 import xgboost as xgb  # <--- 新增這行
 from sklearn.metrics import accuracy_score # <--- 新增這行
 
+def download_tw_stock_data(ticker):
+    """
+    聰明的台股下載器：自動處理 .TW/.TWO 後綴，並修正空值數據
+    """
+    # 1. 自動修正代號格式
+    target_ticker = ticker.upper()
+    if not (target_ticker.endswith(".TW") or target_ticker.endswith(".TWO")):
+        # 先嘗試加上 .TW (上市)
+        test_data = yf.download(f"{target_ticker}.TW", period="5d", progress=False)
+        if not test_data.empty:
+            target_ticker = f"{target_ticker}.TW"
+        else:
+            # 如果抓不到，嘗試 .TWO (上櫃)
+            target_ticker = f"{target_ticker}.TWO"
+    
+    st.write(f"🔄 正在鎖定台股目標：{target_ticker}")
+
+    # 2. 下載數據 (連同美股對照組一起抓)
+    # 這裡我們一定要抓：費半(^SOX) 和 輝達(NVDA) 作為領先指標
+    tickers_to_download = [target_ticker, "^SOX", "NVDA"]
+    data = yf.download(tickers_to_download, period="5y", interval="1d", progress=False)
+    
+    # 處理 MultiIndex (Yahoo 下載多檔股票時的格式問題)
+    if isinstance(data.columns, pd.MultiIndex):
+        # 只取 Close 收盤價
+        df = data['Close'].copy()
+    else:
+        df = data['Close'].copy()
+        
+    # 3. 防雷處理：修正台股特有的「零成交量」或「颱風假」問題
+    # 如果某天台股是 NaN (例如颱風假)，但美股有資料，我們用前一天的台股收盤價填補 (ffill)
+    df.ffill(inplace=True)
+    df.dropna(inplace=True)
+    
+    # 回傳處理好的 DataFrame 和 修正後的代號
+    return df, target_ticker
+
 # ==========================================
 # ★★★ 請補上這個遺失的關鍵函數！ ★★★
 # ==========================================
@@ -2472,6 +2509,73 @@ elif app_mode == "🌲 XGBoost 實驗室":
                         'subsample': 0.7, 'colsample_bytree': 0.7
                     }
                     look_ahead_days = 3
+                # ==========================================
+                # 策略 D: 台股連動型 (TW Stocks - 跟著美股喝湯)
+                # ==========================================
+                elif "台股" in model_mode:
+                    # 1. 處理代號 (自動加上 .TW)
+                    if not target.endswith(".TW") and not target.endswith(".TWO"):
+                        # 預設嘗試上市代號
+                        target = f"{target}.TW"
+                    
+                    st.caption(f"🎯鎖定目標: {target} (已自動修正格式)")
+
+                    # 2. 下載數據 (關鍵：同時下載台股 + 美股對應指標)
+                    # 台股跟費半(^SOX)和那指(QQQ)連動最深
+                    tickers = [target, "^SOX", "QQQ", "NVDA"]
+                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
+                    
+                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+                    else: df = data['Close'].copy()
+                    
+                    df.ffill(inplace=True); df.dropna(inplace=True)
+
+                    # 3. 特徵工程 (台股必勝因子)
+                    # A. 昨晚美股的表現 (領先指標)
+                    # 注意：因為時區關係，我們直接用當日數據比對即可(Yahoo會對齊日期)
+                    df['SOX_Ret'] = df['^SOX'].pct_change()
+                    df['QQQ_Ret'] = df['QQQ'].pct_change()
+                    df['NVDA_Ret'] = df['NVDA'].pct_change()
+                    
+                    # B. 台股自身動能
+                    df['Target_Ret_1d'] = df[target].pct_change()
+                    df['Target_Ret_5d'] = df[target].pct_change(5)
+                    
+                    # C. 生命線 (台股非常尊重月線和季線)
+                    df['SMA_20'] = ta.sma(df[target], length=20) # 月線
+                    df['SMA_60'] = ta.sma(df[target], length=60) # 季線 (台股生命線)
+                    
+                    # 乖離率
+                    df['Bias_20'] = (df[target] - df['SMA_20']) / df['SMA_20']
+                    df['Bias_60'] = (df[target] - df['SMA_60']) / df['SMA_60'] # ★ 關鍵
+                    
+                    # D. 籌碼/動能
+                    df['RSI'] = ta.rsi(df[target], length=14)
+
+                    df.dropna(inplace=True)
+                    
+                    # 特徵列表
+                    features = ['Bias_20', 'Bias_60', 'RSI', 'SOX_Ret', 'NVDA_Ret', 'Target_Ret_5d']
+
+                    # 4. 標籤 (台股做波段：預測未來 5 天)
+                    future_ret = df[target].shift(-5) / df[target] - 1
+                    df['Label'] = np.where(future_ret > 0.0, 1, 0)
+
+                    # 5. 模型參數 (台股比較妖，參數要保守一點)
+                    params = {
+                        'n_estimators': 150,    
+                        'learning_rate': 0.05,
+                        'max_depth': 4,         # 深度適中
+                        'gamma': 0.1,           # 防止過度擬合
+                        'subsample': 0.8, 
+                        'colsample_bytree': 0.8
+                    }
+                    
+                    # 權重設定
+                    weight_multiplier = 1.2
+                    buy_threshold = 0.50
+                    
+                    st.info("💡 台股策略邏輯：結合「季線乖離(Bias_60)」與「費半指數(SOX)」連動性。")
 
                 # ==========================================
                 # 通用訓練流程 (修正版)
@@ -2570,6 +2674,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
