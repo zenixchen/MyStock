@@ -2554,11 +2554,11 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     
                     st.info("💡 台股策略邏輯：結合「季線乖離(Bias_60)」與「費半指數(SOX)」連動性。")
                 # ==========================================
-                # 策略 E: 能源電力型 (改良版 - 解決踏空問題)
+                # 策略 E: 能源電力型 (v3 - 大盤救援版)
                 # ==========================================
                 elif "能源" in model_mode:
-                    # 1. 下載數據
-                    tickers = [target, "CL=F", "NG=F", "^TNX", "DX-Y.NYB"]
+                    # 1. 下載數據 (新增 SPY 作為大盤對照)
+                    tickers = [target, "CL=F", "NG=F", "^TNX", "DX-Y.NYB", "SPY"]
                     data = yf.download(tickers, period="5y", interval="1d", progress=False)
                     
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
@@ -2570,43 +2570,49 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     df['Oil_Ret'] = df['CL=F'].pct_change()       
                     df['Gas_Ret'] = df['NG=F'].pct_change()       
                     df['Rate_Chg'] = df['^TNX'].pct_change()      
-                    df['DXY_Ret'] = df['DX-Y.NYB'].pct_change()   
+                    df['DXY_Ret'] = df['DX-Y.NYB'].pct_change()
+                    
+                    # ★★★ 新增: 大盤因子 (SPY) ★★★
+                    # 當油價失效時，能源股通常會跟著大盤走
+                    df['SPY_Ret'] = df['SPY'].pct_change()
+                    
+                    # 計算 XLE 與 SPY 的相關性 (Beta)
+                    # 這能讓 AI 判斷：現在是跟著油走？還是跟著大盤走？
+                    df['Corr_SPY'] = df[target].rolling(20).corr(df['SPY'])
 
-                    # ★★★ 修改 1: 加入 Bias_20 (短線點火器) ★★★
-                    # 讓 AI 不只看長線(50MA)，也看短線(20MA)有沒有站上
+                    # 技術指標
                     df['SMA_20'] = ta.sma(df[target], length=20)
                     df['SMA_50'] = ta.sma(df[target], length=50)
-                    df['Bias_20'] = (df[target] - df['SMA_20']) / df['SMA_20'] # 新增
+                    df['Bias_20'] = (df[target] - df['SMA_20']) / df['SMA_20']
                     df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50']
-                    
                     df['RSI'] = ta.rsi(df[target], length=14)
                     
-                    # 相關性特徵 (保留，但因為有 Bias_20 輔助，AI 不會只死守這個)
+                    # 相關性 (油)
                     df['Corr_Oil'] = df[target].rolling(20).corr(df['CL=F'])
 
                     df.dropna(inplace=True)
                     
-                    # 更新特徵列表
-                    features = ['Oil_Ret', 'Gas_Ret', 'Rate_Chg', 'DXY_Ret', 'Bias_20', 'Bias_50', 'RSI', 'Corr_Oil']
+                    # ★★★ 更新特徵列表 (把 SPY 加進去) ★★★
+                    features = ['Oil_Ret', 'Rate_Chg', 'SPY_Ret', 'Corr_SPY', 'Bias_20', 'Bias_50', 'RSI', 'Corr_Oil']
 
                     # 3. 標籤
                     future_ret = df[target].shift(-5) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
-                    # 4. 模型參數 (★ 修改 2 & 3: 變得更積極)
+                    # 4. 模型參數 (改回穩健參數，防止過度交易)
                     params = {
-                        'n_estimators': 150,    
-                        'learning_rate': 0.08,  # ★ 加快學習速度 (原本 0.05)
-                        'max_depth': 4,
-                        'gamma': 0,             # ★ 移除懲罰項 (原本 0.1)，鼓勵交易
-                        'subsample': 0.85, 
-                        'colsample_bytree': 0.85
+                        'n_estimators': 200,    # 提高樹的數量，讓它學得更細
+                        'learning_rate': 0.05,  # 降回 0.05，讓學習更紮實
+                        'max_depth': 5,         # 稍微加深一點
+                        'gamma': 0.1,           # ★ 加回懲罰項，避免雜訊干擾
+                        'subsample': 0.8, 
+                        'colsample_bytree': 0.8
                     }
                     
-                    weight_multiplier = 1.1 
+                    weight_multiplier = 1.15 
                     buy_threshold = 0.50
                     
-                    st.info("💡 能源策略邏輯：已加入 20日均線 (Bias_20) 以捕捉快速反轉行情。")
+                    st.info("💡 能源策略邏輯 v3：引入「大盤(SPY)」作為第二參考指標，解決油價脫鉤問題。")
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -2745,6 +2751,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
