@@ -2478,37 +2478,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     # 權重維持溫和
                     weight_multiplier = 1.2 
                     buy_threshold = 0.50
-
-                # ==========================================
-                # 策略 C: EDZ 避險型 (崩盤偵測)
-                # ==========================================
-                else:
-                    ref_market = "EEM" if "EDZ" in target else "QQQ"
-                    tickers = [target, ref_market, "DX-Y.NYB", "^VIX"]
-                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
-                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
-                    else: df = data['Close'].copy()
-                    df.ffill(inplace=True); df.dropna(inplace=True)
-
-                    # 特徵
-                    df['Target_Ret_1d'] = df[target].pct_change()
-                    df['Market_Ret'] = df[ref_market].pct_change()
-                    df['DXY_Ret'] = df['DX-Y.NYB'].pct_change()
-                    df['VIX_Level'] = df['^VIX']
-                    df['Vola'] = df[target].rolling(5).std() / df[target]
                     
-                    df.dropna(inplace=True)
-                    features = ['Target_Ret_1d', 'Market_Ret', 'DXY_Ret', 'VIX_Level', 'Vola']
-
-                    # 標籤 (抓大波動 > 2%)
-                    future_ret = df[target].shift(-3) / df[target] - 1
-                    df['Label'] = np.where(future_ret > 0.02, 1, 0)
-
-                    params = {
-                        'n_estimators': 150, 'learning_rate': 0.05, 'max_depth': 3,
-                        'subsample': 0.7, 'colsample_bytree': 0.7
-                    }
-                    look_ahead_days = 3
                 # ==========================================
                 # 策略 D: 台股連動型 (TW Stocks - 跟著美股喝湯)
                 # ==========================================
@@ -2576,6 +2546,37 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     buy_threshold = 0.50
                     
                     st.info("💡 台股策略邏輯：結合「季線乖離(Bias_60)」與「費半指數(SOX)」連動性。")
+
+                # ==========================================
+                # 策略 C: EDZ 避險型 (崩盤偵測)
+                # ==========================================
+                else:
+                    ref_market = "EEM" if "EDZ" in target else "QQQ"
+                    tickers = [target, ref_market, "DX-Y.NYB", "^VIX"]
+                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
+                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+                    else: df = data['Close'].copy()
+                    df.ffill(inplace=True); df.dropna(inplace=True)
+
+                    # 特徵
+                    df['Target_Ret_1d'] = df[target].pct_change()
+                    df['Market_Ret'] = df[ref_market].pct_change()
+                    df['DXY_Ret'] = df['DX-Y.NYB'].pct_change()
+                    df['VIX_Level'] = df['^VIX']
+                    df['Vola'] = df[target].rolling(5).std() / df[target]
+                    
+                    df.dropna(inplace=True)
+                    features = ['Target_Ret_1d', 'Market_Ret', 'DXY_Ret', 'VIX_Level', 'Vola']
+
+                    # 標籤 (抓大波動 > 2%)
+                    future_ret = df[target].shift(-3) / df[target] - 1
+                    df['Label'] = np.where(future_ret > 0.02, 1, 0)
+
+                    params = {
+                        'n_estimators': 150, 'learning_rate': 0.05, 'max_depth': 3,
+                        'subsample': 0.7, 'colsample_bytree': 0.7
+                    }
+                    look_ahead_days = 3
 
                 # ==========================================
                 # 通用訓練流程 (修正版)
@@ -2674,6 +2675,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
