@@ -2381,7 +2381,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
     # 1. 選擇策略模組
     model_mode = st.radio("選擇戰略模組：", 
-        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
+        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)","🔥 AI 超級週期 (AVGO/MU)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
         horizontal=True
     )
 
@@ -2625,6 +2625,60 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     buy_threshold = 0.50
                     
                     st.info("💡 能源策略邏輯 (Final)：採用「布林通道 (Bollinger Bands)」策略。專門捕捉能源股在區間下緣的「超賣反彈」機會。")
+                # ==========================================
+                # 策略 F: AI 超級週期型 (專門跑 MU, AVGO)
+                # ==========================================
+                elif "週期" in model_mode:
+                    # 1. 下載數據 (三劍客：目標、輝達、費半)
+                    tickers = [target, "NVDA", "^SOX"]
+                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
+                    
+                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+                    else: df = data['Close'].copy()
+                    
+                    df.ffill(inplace=True); df.dropna(inplace=True)
+
+                    # 2. 特徵工程 (融合了 TSM 的連動性 + TQQQ 的趨勢性)
+                    
+                    # A. 老大帶路 (輝達連動)
+                    df['NVDA_Ret'] = df['NVDA'].pct_change()
+                    df['SOX_Ret'] = df['^SOX'].pct_change()
+                    
+                    # B. 長線保護 (季線乖離) - 這是抱住 4 倍漲幅的關鍵
+                    df['SMA_60'] = ta.sma(df[target], length=60)
+                    df['Bias_60'] = (df[target] - df['SMA_60']) / df['SMA_60']
+                    
+                    # C. 中線動能 (動量)
+                    # 過去 10 天漲不漲？確認趨勢慣性
+                    df['Mom_10'] = df[target] / df[target].shift(10)
+                    
+                    # D. 波動率 (MU 很活潑，需要這個來判斷是否過熱)
+                    df['Vola'] = df[target].rolling(20).std() / df[target].rolling(20).mean()
+
+                    df.dropna(inplace=True)
+                    
+                    # 特徵列表
+                    features = ['NVDA_Ret', 'Bias_60', 'Mom_10', 'SOX_Ret', 'Vola']
+
+                    # 3. 標籤 (★★★ 關鍵修改：預測未來 10 天 ★★★)
+                    # 讓 AI 學習「持有兩週」會不會賺錢，而不是三天
+                    future_ret = df[target].shift(-10) / df[target] - 1
+                    df['Label'] = np.where(future_ret > 0.0, 1, 0)
+
+                    # 4. 模型參數 (稍微加深樹的深度，因為週期股比較複雜)
+                    params = {
+                        'n_estimators': 200,    
+                        'learning_rate': 0.05, 
+                        'max_depth': 6,         
+                        'gamma': 0.1,           
+                        'subsample': 0.8, 
+                        'colsample_bytree': 0.8
+                    }
+                    
+                    weight_multiplier = 1.15  # 積極進攻
+                    buy_threshold = 0.50
+                    
+                    st.info("💡 超級週期邏輯：結合「NVDA 連動」與「10日趨勢預測」。專為捕捉 AVGO 與 MU 的波段大行情設計，避免太早下車。")
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -2763,6 +2817,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
