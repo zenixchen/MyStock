@@ -2638,47 +2638,55 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     fig_imp.update_layout(height=400, margin=dict(t=0, b=0))
                     st.plotly_chart(fig_imp, use_container_width=True)
 
-                # 即時預測
+                # ==========================================
+                # 實戰版：明日操作指引
+                # ==========================================
                 st.divider()
-                st.subheader(f"🔮 AI 對明日的預測")
+                st.subheader(f"🔮 AI 對明日開盤的戰術指令")
                 
-                # 注入即時價格
+                # 1. 準備最新數據
                 last_feat = X.iloc[-1:].copy()
                 live_price = get_real_live_price(target)
+                
+                # 注入即時數據 (讓預測更準)
                 if live_price:
-                    # 根據不同模式更新特徵
                     if "TQQQ" in model_mode:
                          sma50 = df['SMA_50'].iloc[-1]
                          last_feat['Bias_50'] = (live_price - sma50) / sma50
-                         st.caption(f"⚡ 即時價格 ${live_price} | 均線乖離已更新")
+                         st.caption(f"⚡ 即時價格 ${live_price} | 均線數據已即時修正")
                     elif "TSM" in model_mode:
                          prev_close = df[target].iloc[-2]
                          last_feat['Target_Ret_1d'] = (live_price - prev_close) / prev_close
-                         st.caption(f"⚡ 即時價格 ${live_price} | 動能數據已更新")
+                         st.caption(f"⚡ 即時價格 ${live_price} | 動能數據已即時修正")
                 
+                # 2. AI 計算勝率
                 prob = model.predict_proba(last_feat)[0][1]
                 
-                # ★★★ 修改開始：取得策略設定的門檻 (TQQQ 為 0.5，其他預設 0.5) ★★★
-                # 這樣做的好處是：如果以後您把 TQQQ 門檻改成 0.45，這裡會自動變成 0.45
+                # 3. 取得您的門檻 (TQQQ=0.5, 其他預設0.5)
                 thresh = locals().get('buy_threshold', 0.5)
 
-                c_a, c_b, c_c = st.columns(3)
+                # 4. 顯示儀表板
+                c1, c2, c3 = st.columns(3)
                 
-                # 1. 預測方向：跟隨門檻
-                c_a.metric("預測方向", "📈 看漲" if prob > thresh else "📉 看跌/空手")
+                # 欄位 A: 勝率數值
+                c1.metric("AI 上漲信心", f"{prob*100:.1f}%", help=f"超過 {thresh*100:.0f}% 才會動作")
                 
-                # 2. AI 信心
-                c_b.metric("AI 信心", f"{prob*100:.1f}%")
-                
-                # 3. 操作建議：現在只要大於門檻 (50%) 就會顯示強力訊號
+                # 欄位 B: 趨勢方向
                 if prob > thresh:
-                    c_c.success(f"🔥 強力訊號 (信心 > {thresh*100:.0f}%)")
+                    c2.metric("趨勢判斷", "📈 多頭 (Bullish)", delta="偏多")
                 else:
-                    c_c.info("☕ 觀望 / 空手")
-                # ★★★ 修改結束 ★★★
+                    c2.metric("趨勢判斷", "📉 空頭/盤整", delta="-偏空", delta_color="inverse")
+                
+                # 欄位 C: ★★★ 最重要的實戰指令 ★★★
+                if prob > thresh:
+                    # 勝率夠高 -> 買進或續抱
+                    c3.success(f"🔥 指令：持有 / 買進")
+                    st.markdown(f"**操作建議：**\n- **空手者**：明早開盤買進。\n- **持有者**：續抱，不停利。")
+                else:
+                    # 勝率不足 -> 賣出或觀望
+                    c3.error(f"🛑 指令：賣出 / 空手")
+                    st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
 
-            except Exception as e:
-                st.error(f"發生錯誤: {e}")
 
 
 
