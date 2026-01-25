@@ -2554,11 +2554,11 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     
                     st.info("💡 台股策略邏輯：結合「季線乖離(Bias_60)」與「費半指數(SOX)」連動性。")
                 # ==========================================
-                # 策略 E: 能源電力型 (v4 - 傻瓜趨勢版)
+                # 策略 E: 能源電力型 (Final - 布林逆勢版)
                 # ==========================================
                 elif "能源" in model_mode:
-                    # 1. 下載數據 (只抓 SPY 當大盤對照，其他都不看了)
-                    tickers = [target, "SPY"] 
+                    # 1. 下載數據 (加入 SPY 當濾網)
+                    tickers = [target, "SPY"]
                     data = yf.download(tickers, period="5y", interval="1d", progress=False)
                     
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
@@ -2566,46 +2566,54 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
-                    # 2. 特徵工程 (極簡化：只看「現在」跟「過去」比)
+                    # 2. 特徵工程 (引入布林通道 - 專抓震盪)
                     
-                    # A. 均線乖離 (判斷位置)
+                    # A. 布林通道 (Bollinger Bands)
+                    # 參數：20日移動平均，2倍標準差
+                    bb = ta.bbands(df[target], length=20, std=2)
+                    
+                    # 提取數據 (pandas_ta 的欄位名稱比較長)
+                    # BB_Pct (Band Position): 
+                    # 數值 < 0 代表跌破下軌 (超賣 -> 買進訊號)
+                    # 數值 > 1 代表突破上軌 (超買 -> 賣出訊號)
+                    df['BB_Pct'] = (df[target] - bb[f'BBL_20_2.0']) / (bb[f'BBU_20_2.0'] - bb[f'BBL_20_2.0'])
+                    
+                    # Band Width (通道寬度): 寬度壓縮後通常會有大行情
+                    df['BB_Width'] = bb[f'BBB_20_2.0']
+
+                    # B. 短線乖離 (Bias_20) - 輔助判斷
                     df['SMA_20'] = ta.sma(df[target], length=20)
-                    df['SMA_60'] = ta.sma(df[target], length=60)
                     df['Bias_20'] = (df[target] - df['SMA_20']) / df['SMA_20']
-                    df['Bias_60'] = (df[target] - df['SMA_60']) / df['SMA_60']
                     
-                    # B. 動能 (Momentum) - 取代 RSI
-                    # 計算今天的價格 / 10天前的價格 -> 強勢股會 > 1
-                    df['Mom_10'] = df[target] / df[target].shift(10)
-                    df['Mom_20'] = df[target] / df[target].shift(20)
+                    # C. RSI (震盪指標之王，配合布林通道很好用)
+                    df['RSI'] = ta.rsi(df[target], length=14)
                     
-                    # C. 相對強弱 (Alpha)
-                    # 能源股有沒有跑贏大盤？(比大盤強才買)
+                    # D. 大盤相對強弱
                     df['Alpha_SPY'] = df[target].pct_change(5) - df['SPY'].pct_change(5)
 
                     df.dropna(inplace=True)
                     
-                    # ★★★ 關鍵：拔掉 RSI，拔掉油價 ★★★
-                    features = ['Bias_20', 'Bias_60', 'Mom_10', 'Mom_20', 'Alpha_SPY']
+                    # 特徵列表 (以逆勢指標為主)
+                    features = ['BB_Pct', 'BB_Width', 'Bias_20', 'RSI', 'Alpha_SPY']
 
                     # 3. 標籤 (預測未來 5 天)
                     future_ret = df[target].shift(-5) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
-                    # 4. 模型參數 (稍微調高深度，讓它去適應動能)
+                    # 4. 模型參數 (稍微調高學習率，讓它反應靈敏一點)
                     params = {
-                        'n_estimators': 150,    
-                        'learning_rate': 0.05,
+                        'n_estimators': 200,    
+                        'learning_rate': 0.08, # 反應快一點
                         'max_depth': 5,         
-                        'gamma': 0.05,           
+                        'gamma': 0.1,           
                         'subsample': 0.8, 
                         'colsample_bytree': 0.8
                     }
                     
-                    weight_multiplier = 1.0 
+                    weight_multiplier = 1.1 
                     buy_threshold = 0.50
                     
-                    st.info("💡 能源策略邏輯 v4：極簡化策略。放棄油價預測，專注於「動能(Momentum)」與「跑贏大盤(Alpha)」。")
+                    st.info("💡 能源策略邏輯 (Final)：採用「布林通道 (Bollinger Bands)」策略。專門捕捉能源股在區間下緣的「超賣反彈」機會。")
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -2744,6 +2752,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
