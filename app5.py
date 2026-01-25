@@ -2381,7 +2381,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
     # 1. 選擇策略模組
     model_mode = st.radio("選擇戰略模組：", 
-        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)","🔥 AI 超級週期 (AVGO/MU)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
+        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)","🔥 AI 超級週期 (AVGO/MU)",🔥 AVGO專用 (AVGO/MU)" "🛡️ EDZ 避險型 (崩盤偵測)"], 
         horizontal=True
     )
 
@@ -2401,6 +2401,9 @@ elif app_mode == "🌲 XGBoost 實驗室":
         desc = "✅ 專攻：能源(XLE)、潔淨能源(ICLN)\n\n🧠 邏輯：看重「原油(CL=F)」、「天然氣(NG=F)」與「美債利率」。"
     elif "週期" in model_mode:
         default_target = "MU"
+        desc = "✅ 專攻：MU \n\n🧠 邏輯：週期循環。"
+    elif "長波段" in model_mode:
+        default_target = "AVGO"
         desc = "✅ 專攻：MU \n\n🧠 邏輯：週期循環。"
     else:
         default_target = "EDZ"
@@ -2681,6 +2684,57 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     buy_threshold = 0.50
                     
                     st.info("💡 超級週期邏輯：結合「NVDA 連動」與「10日趨勢預測」。專為捕捉 AVGO 與 MU 的波段大行情設計，避免太早下車。")
+                # ==========================================
+                # 策略 G: 績優股長波段 (孤狼策略 - 專治 AVGO)
+                # ==========================================
+                elif "長波段" in model_mode:
+                    # 1. 下載數據 (★關鍵：只下載它自己，斷絕外部雜訊★)
+                    tickers = [target] 
+                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
+                    
+                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+                    else: df = data['Close'].copy()
+                    
+                    df.ffill(inplace=True); df.dropna(inplace=True)
+
+                    # 2. 特徵工程 (極簡化：只看中長線趨勢)
+                    
+                    # A. 季線趨勢 (60日)
+                    df['SMA_60'] = ta.sma(df[target], length=60)
+                    df['Bias_60'] = (df[target] - df['SMA_60']) / df['SMA_60']
+                    
+                    # B. 半年線趨勢 (120日) - ★新增：用來確認大格局
+                    df['SMA_120'] = ta.sma(df[target], length=120)
+                    df['Bias_120'] = (df[target] - df['SMA_120']) / df['SMA_120']
+                    
+                    # C. 月動能 (過去20天漲幅)
+                    # 取代 RSI，因為動能沒有上限，不會因為漲多就被賣掉
+                    df['Mom_20'] = df[target] / df[target].shift(20)
+
+                    df.dropna(inplace=True)
+                    
+                    # 特徵列表：乾淨到只剩這三個
+                    features = ['Bias_60', 'Bias_120', 'Mom_20']
+
+                    # 3. 標籤 (★關鍵：預測未來 20 天/一個月★)
+                    # 強迫 AI 學習「持有這張股票一個月會不會賺錢？」
+                    future_ret = df[target].shift(-20) / df[target] - 1
+                    df['Label'] = np.where(future_ret > 0.0, 1, 0)
+
+                    # 4. 模型參數 (降低複雜度，避免想太多)
+                    params = {
+                        'n_estimators': 100,    
+                        'learning_rate': 0.05,
+                        'max_depth': 4, # 淺一點，讓它只抓大方向
+                        'gamma': 0.1,           
+                        'subsample': 0.8, 
+                        'colsample_bytree': 0.8
+                    }
+                    
+                    weight_multiplier = 1.0 
+                    buy_threshold = 0.50
+                    
+                    st.info("💡 孤狼策略邏輯：專為 AVGO 這種「獨立走勢」的慢牛設計。切斷 NVDA 連動，只看 60日/120日 長線趨勢，並預測未來 20 天走勢。")
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -2819,6 +2873,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
