@@ -2523,8 +2523,8 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     # 5y 會讓 AI 變得太膽小；3y 才能重現您看到的飆漲曲線
                     tickers = [target, "^SOX", "QQQ", "NVDA"]
                     
-                    st.write(f"🚀 啟動台股策略 (3年積極版)，鎖定：{target}...")
-                    data = yf.download(tickers, period="3y", interval="1d", progress=False)
+                    st.write(f"🚀 啟動台股策略 (5年積極版)，鎖定：{target}...")
+                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
                     
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
                     else: df = data['Close'].copy()
@@ -2560,9 +2560,9 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     # 5. 模型參數 (★ 關鍵修正 2：調高學習率到 0.08)
                     # 這會讓紅線緊緊咬住行情，不會像圖 B 那樣平平的
                     params = {
-                        'n_estimators': 200,    
-                        'learning_rate': 0.08,  # 加快反應
-                        'max_depth': 5,         
+                        'n_estimators': 150,    
+                        'learning_rate': 0.05,  # 加快反應
+                        'max_depth': 4,         
                         'gamma': 0.1,           
                         'subsample': 0.8, 
                         'colsample_bytree': 0.8
@@ -3019,6 +3019,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
