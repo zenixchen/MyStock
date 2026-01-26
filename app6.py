@@ -2755,53 +2755,52 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     
                     st.info("💡 孤狼策略邏輯：專為 AVGO 這種「獨立走勢」的慢牛設計。切斷 NVDA 連動，只看 60日/120日 長線趨勢，並預測未來 20 天走勢。")
                 # ==========================================
-                # ★★★ 第一順位：TQQQ 最終融合版 (趨勢 + 波動 + 富爸爸) ★★★
+                # ★★★ TQQQ 最終攻擊版 (已修復 SMA_50 錯誤) ★★★
                 # ==========================================
                 elif "冠軍" in model_mode:
                     default_target = "TQQQ"
                     
-                    # 1. 下載數據 (★ 修正：把富爸爸 QQQ 加回來！)
+                    # 1. 下載數據
                     tickers = [target, "QQQ"]
-                    st.write(f"🚀 啟動 TQQQ 融合策略 (Trend + Volatility)...")
+                    st.write(f"🚀 啟動 TQQQ 最終攻擊策略 (Trend Only)...")
                     
                     # 維持 3y (專注近期)
-                    data = yf.download(tickers, period="3y", interval="1d", progress=False)
+                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
                     
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
                     else: df = data['Close'].copy()
                     
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
-                    # 2. 特徵工程 (★ 關鍵：舊版趨勢 + 新版波動)
+                    # 2. 特徵工程
                     
-                    # --- A. 舊版強勢因子 (方向核心) ---
-                    # 這是 TQQQ 的靈魂，絕對不能丟
-                    df['QQQ_Ret_5d'] = df['QQQ'].pct_change(5) # 富爸爸的動向
-                    df['Bias_50'] = (df[target] - ta.sma(df[target], 50)) / ta.sma(df[target], 50) # 生命線乖離
-                    df['Ret_5d'] = df[target].pct_change(5) # 自身動能
-                    df['RSI'] = ta.rsi(df[target], length=14) # 短線強弱
+                    # A. 富爸爸的動向 (最重要)
+                    df['QQQ_Ret_5d'] = df['QQQ'].pct_change(5) 
+                    
+                    # B. 自身的動能
+                    df['Ret_5d'] = df[target].pct_change(5)
+                    
+                    # C. 趨勢乖離 (生命線)
+                    # ★★★ 關鍵修正：必須先存下 SMA_50，否則最後的即時預測會報錯！ ★★★
+                    df['SMA_50'] = ta.sma(df[target], 50)
+                    df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50']
+                    
+                    # D. 短線強弱
+                    df['RSI'] = ta.rsi(df[target], length=14)
 
-                    # --- B. 新版冠軍因子 (波動濾網) ---
-                    # 加入這個是為了避開盤整，抓布林通道壓縮後的噴出
-                    bb = ta.bbands(df[target], length=20, std=2)
-                    if bb is not None:
-                        df['BB_Width'] = bb.iloc[:, 3] # 頻寬
-                    else:
-                        df['BB_Width'] = 0
-                    
                     df.dropna(inplace=True)
                     
-                    # ★ 最終特徵列表：5 大金剛
-                    features = ['QQQ_Ret_5d', 'Bias_50', 'Ret_5d', 'RSI', 'BB_Width'] 
+                    # ★ 最終特徵列表：只有 4 個純趨勢因子
+                    features = ['QQQ_Ret_5d', 'Bias_50', 'Ret_5d', 'RSI'] 
                     
                     # 3. 標籤 (預測未來 5 天)
                     future_ret = df[target].shift(-5) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
-                    # 4. 模型參數 (高反應速度，因為有趨勢因子)
+                    # 4. 模型參數 (高反應速度)
                     params = {
                         'n_estimators': 200,    
-                        'learning_rate': 0.08,  # 回復到較高的學習率，因為趨勢因子反應快
+                        'learning_rate': 0.08,
                         'max_depth': 4,         
                         'min_child_weight': 3,  
                         'gamma': 0.2,           
@@ -2812,7 +2811,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     weight_multiplier = 1.2 
                     buy_threshold = 0.50
                     
-                    st.info("💡 融合版邏輯：找回「QQQ連動 (方向)」與「均線乖離 (趨勢)」，並加入「布林寬度 (爆發濾網)」。這是理論上最強的組合。")
+                    st.info("💡 系統修復：已補回 SMA_50 欄位，即時預測功能將恢復正常。")
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -3026,6 +3025,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
