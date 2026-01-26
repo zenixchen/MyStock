@@ -2821,7 +2821,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 model_cat = CatBoostClassifier(iterations=params['n_estimators'], depth=params['max_depth'], learning_rate=params['learning_rate'], random_seed=42, verbose=0, scale_pos_weight=final_weight)
                 model_cat.fit(X_train, y_train)
 
-                # 4. 集成包裝器
+                # 4. 集成包裝器 (這是原本的，我們保留它來做預測)
                 class EnsembleWrapper:
                     def __init__(self, models): self.models = models
                     def predict_proba(self, X):
@@ -2831,36 +2831,82 @@ elif app_mode == "🌲 XGBoost 實驗室":
                         p3 = self.models[2].predict_proba(X)[:, 1]
                         avg = (p1 + p2 + p3) / 3
                         return np.vstack([1-avg, avg]).T
+                    
+                    # ★ 讓包裝器也能吐出特徵重要性 (借用 XGBoost 的)
                     @property
                     def feature_importances_(self): return self.models[0].feature_importances_
 
                 model = EnsembleWrapper([model_xgb, model_lgb, model_cat])
+
+                # =========================================================
+                # 🚀 A/B 測試邏輯開始：單挑 vs 群毆
+                # =========================================================
                 
-                # ★★★ 關鍵修復：補上預測邏輯 ★★★
                 threshold = locals().get('buy_threshold', 0.5)
+
+                # 1. 取得「單一 XGBoost」的預測
+                prob_xgb = model_xgb.predict_proba(X_test)[:, 1]
+                signal_xgb = np.where(prob_xgb > threshold, 1, 0)
+
+                # 2. 取得「集成三巨頭」的預測
                 y_probs = model.predict_proba(X_test)[:, 1]
-                y_pred_custom = np.where(y_probs > threshold, 1, 0)
-                
-                acc = accuracy_score(y_test, y_pred_custom)
-                st.success(f"✅ {target} 模型訓練完成！準確率: {acc*100:.1f}% (進場門檻: {threshold*100:.0f}%)")
+                y_pred_custom = np.where(y_probs > threshold, 1, 0) # 這是最終要用的訊號
 
-                # 資金曲線
-                test_df = df.iloc[split:].copy()
-                test_df['Signal'] = y_pred_custom 
-                test_df['Target_Ret'] = test_df[target].pct_change()
-                test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Target_Ret']
-                test_df['Cum_BuyHold'] = (1 + test_df['Target_Ret']).cumprod()
-                test_df['Cum_AI'] = (1 + test_df['Strategy_Ret']).cumprod()
-                
-                # (原本這裡有一行錯誤的 model.fit，已刪除)
+                # 3. 準備回測數據 (找出這段時間的真實漲跌幅)
+                # 使用 X_test 的索引來對應原始資料的漲跌幅
+                if 'Target_Ret_1d' in df.columns:
+                    market_ret = df.loc[X_test.index, 'Target_Ret_1d']
+                else:
+                    # 如果找不到 1d，嘗試用 target shift 來計算 (Fallback)
+                    market_ret = df.loc[X_test.index, target].pct_change().shift(-1).fillna(0)
 
-                c1, c2 = st.columns([2, 1])
-                with c1:
-                    st.subheader("💰 資金曲線")
-                    fig = make_subplots()
-                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_BuyHold'], name='Buy & Hold', line=dict(color='gray', width=1)))
-                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_AI'], name='AI 策略', line=dict(color='red', width=2)))
-                    st.plotly_chart(fig, use_container_width=True)
+                # 4. 計算三條資金曲線
+                # A. 買進持有 (基準)
+                cum_market = (1 + market_ret).cumprod()
+
+                # B. 單一 XGBoost 策略
+                strat_ret_xgb = signal_xgb * market_ret
+                cum_xgb = (1 + strat_ret_xgb).cumprod()
+
+                # C. 集成模型策略
+                strat_ret_ens = y_pred_custom * market_ret
+                cum_ens = (1 + strat_ret_ens).cumprod()
+
+                # =========================================================
+                # 📊 繪圖區
+                # =========================================================
+                st.markdown("### 🏆 頂上戰爭：單一模型 vs 集成模型")
+                
+                # 整合數據畫圖
+                chart_data = pd.DataFrame({
+                    '🔵 單一 XGBoost': cum_xgb,
+                    '🔴 集成三巨頭 (Ensemble)': cum_ens,
+                    '📓 買進持有 (Benchmark)': cum_market
+                }, index=X_test.index)
+                
+                st.line_chart(chart_data, color=["#0000FF", "#FF0000", "#808080"])
+
+                # 顯示最終報酬率數據比較
+                ret_xgb = cum_xgb.iloc[-1] - 1
+                ret_ens = cum_ens.iloc[-1] - 1
+                
+                c1, c2 = st.columns(2)
+                c1.metric("🔵 單一 XGB 總報酬", f"{ret_xgb*100:.1f}%")
+                c2.metric("🔴 集成模型 總報酬", f"{ret_ens*100:.1f}%", delta=f"{(ret_ens - ret_xgb)*100:.1f}% (vs 單一)")
+
+                # =========================================================
+                # 🔍 找回消失的特徵因子圖
+                # =========================================================
+                st.markdown("### 🔑 關鍵因子 (基於 XGBoost 視角)")
+                st.info("註：由於集成模型由三個大腦組成，此處顯示其中最具代表性的 XGBoost 判斷邏輯。")
+                
+                if hasattr(model_xgb, 'feature_importances_'):
+                    feat_imp = pd.DataFrame({
+                        'Feature': features, # 確保這裡的 features 變數是你上面定義過的列表
+                        'Importance': model_xgb.feature_importances_
+                    }).sort_values(by='Importance', ascending=False).head(10)
+                    
+                    st.bar_chart(feat_imp.set_index('Feature'), horizontal=True)
                 # ==========================================
                 # 實戰版：明日操作指引
                 # ==========================================
@@ -2911,6 +2957,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
