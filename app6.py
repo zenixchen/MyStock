@@ -17,6 +17,8 @@ import requests
 import xml.etree.ElementTree as ET
 import xgboost as xgb  # <--- 新增這行
 from sklearn.metrics import accuracy_score # <--- 新增這行
+import lightgbm as lgb
+from catboost import CatBoostClassifier
 
 def download_tw_stock_data(ticker):
     """
@@ -2794,18 +2796,75 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 multiplier = locals().get('weight_multiplier', 1.0) 
                 final_weight = base_weight * multiplier
 
-                model = xgb.XGBClassifier(
-                    **params, scale_pos_weight=final_weight, random_state=42
-                )
-                model.fit(X_train, y_train)
-
-                # 繪圖與結果
-                # ★★★ 應用 TQQQ 的降低門檻 (如果沒設定就是 0.5) ★★★
-                threshold = locals().get('buy_threshold', 0.5)
+                st.write('⚖️ 正在召喚集成模型三巨頭 (XGBoost + LightGBM + CatBoost)...')
                 
-                # 使用機率來決定 Signal，而不是直接用 predict()
-                y_probs = model.predict_proba(X_test)[:, 1]
-                y_pred_custom = np.where(y_probs > threshold, 1, 0) # 用自訂門檻切分
+                # 1. 訓練 XGBoost (老將)
+                model_xgb = xgb.XGBClassifier(
+                    **params, 
+                    scale_pos_weight=final_weight, 
+                    random_state=42
+                )
+                model_xgb.fit(X_train, y_train)
+
+                # 2. 訓練 LightGBM (速度擔當 - 需處理欄位名稱)
+                # LightGBM 不喜歡欄位有名稱底線，先拿掉
+                X_train_lgb = X_train.rename(columns=lambda x: x.replace('_', ''))
+                model_lgb = lgb.LGBMClassifier(
+                    n_estimators=params['n_estimators'], 
+                    max_depth=params['max_depth'],
+                    learning_rate=params['learning_rate'], 
+                    random_state=42, 
+                    verbose=-1,
+                    scale_pos_weight=final_weight
+                )
+                model_lgb.fit(X_train_lgb, y_train)
+
+                # 3. 訓練 CatBoost (穩健擔當)
+                model_cat = CatBoostClassifier(
+                    iterations=params['n_estimators'], 
+                    depth=params['max_depth'],
+                    learning_rate=params['learning_rate'], 
+                    random_seed=42, 
+                    verbose=0,
+                    scale_pos_weight=final_weight
+                )
+                model_cat.fit(X_train, y_train)
+
+                # 4. 建立集成包裝器 (把三個模型包成一個)
+                # 這樣後面的程式碼 (predict, plotting) 都不用改，直接用這個 wrapper
+                class EnsembleWrapper:
+                    def __init__(self, models):
+                        self.models = models # [xgb, lgb, cat]
+                    
+                    def predict_proba(self, X):
+                        # A. 取得 XGB 機率
+                        p1 = self.models[0].predict_proba(X)[:, 1]
+                        
+                        # B. 取得 LGB 機率 (記得欄位要改名)
+                        X_lgb = X.rename(columns=lambda x: x.replace('_', ''))
+                        p2 = self.models[1].predict_proba(X_lgb)[:, 1]
+                        
+                        # C. 取得 Cat 機率
+                        p3 = self.models[2].predict_proba(X)[:, 1]
+                        
+                        # D. ★ 關鍵：取平均 (Soft Voting)
+                        avg = (p1 + p2 + p3) / 3
+                        
+                        # 回傳格式必須跟 sklearn 一樣是 (N, 2)
+                        return np.vstack([1-avg, avg]).T
+                    
+                    def predict(self, X):
+                        # 如果大於 0.5 就說是 1
+                        probs = self.predict_proba(X)[:, 1]
+                        return np.where(probs > 0.5, 1, 0)
+                    
+                    @property
+                    def feature_importances_(self):
+                        # 為了讓畫圖功能正常，我們回傳 XGB 的特徵權重代表一下
+                        return self.models[0].feature_importances_
+
+                # ★ 最後把三個模型包起來，變回原本的變數名稱 'model'
+                model = EnsembleWrapper([model_xgb, model_lgb, model_cat])
                 
                 acc = accuracy_score(y_test, y_pred_custom)
                 st.success(f"✅ {target} 模型訓練完成！準確率: {acc*100:.1f}% (進場門檻: {threshold*100:.0f}%)")
@@ -2884,6 +2943,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
