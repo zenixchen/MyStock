@@ -2467,7 +2467,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 # ==========================================
                 # 策略 B: TQQQ 趨勢型 (升級版 - 加入日圓避險)
                 # ==========================================
-                elif "TQQQ" in model_mode:
+                elif "TQQQ" in model_mode and "冠軍" not in model_mode:
                     # 1. 下載數據 (★ 修改 1: 加入 JPY=X 和 VIX)
                     
                     tickers = [target, "QQQ"]
@@ -3047,6 +3047,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
