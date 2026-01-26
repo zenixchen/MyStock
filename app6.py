@@ -2780,8 +2780,8 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     }
                     look_ahead_days = 3
 
-                # ==========================================
-                # 通用訓練流程 (修正版)
+               # ==========================================
+                # 通用訓練流程 (集成模型終極修復版)
                 # ==========================================
                 X = df[features]
                 y = df['Label']
@@ -2791,92 +2791,57 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
                 # 計算基礎權重
                 base_weight = (len(y_train) - y_train.sum()) / y_train.sum()
-                
-                # ★★★ 應用 TQQQ 的加權倍率 (如果沒設定就是 1.0) ★★★
                 multiplier = locals().get('weight_multiplier', 1.0) 
                 final_weight = base_weight * multiplier
 
                 st.write('⚖️ 正在召喚集成模型三巨頭 (XGBoost + LightGBM + CatBoost)...')
                 
-                # 1. 訓練 XGBoost (老將)
-                model_xgb = xgb.XGBClassifier(
-                    **params, 
-                    scale_pos_weight=final_weight, 
-                    random_state=42
-                )
+                # 1. 訓練 XGBoost
+                model_xgb = xgb.XGBClassifier(**params, scale_pos_weight=final_weight, random_state=42)
                 model_xgb.fit(X_train, y_train)
 
-                # 2. 訓練 LightGBM (速度擔當 - 需處理欄位名稱)
-                # LightGBM 不喜歡欄位有名稱底線，先拿掉
+                # 2. 訓練 LightGBM (修正欄位名稱)
                 X_train_lgb = X_train.rename(columns=lambda x: x.replace('_', ''))
-                model_lgb = lgb.LGBMClassifier(
-                    n_estimators=params['n_estimators'], 
-                    max_depth=params['max_depth'],
-                    learning_rate=params['learning_rate'], 
-                    random_state=42, 
-                    verbose=-1,
-                    scale_pos_weight=final_weight
-                )
+                model_lgb = lgb.LGBMClassifier(n_estimators=params['n_estimators'], max_depth=params['max_depth'], learning_rate=params['learning_rate'], random_state=42, verbose=-1, scale_pos_weight=final_weight)
                 model_lgb.fit(X_train_lgb, y_train)
 
-                # 3. 訓練 CatBoost (穩健擔當)
-                model_cat = CatBoostClassifier(
-                    iterations=params['n_estimators'], 
-                    depth=params['max_depth'],
-                    learning_rate=params['learning_rate'], 
-                    random_seed=42, 
-                    verbose=0,
-                    scale_pos_weight=final_weight
-                )
+                # 3. 訓練 CatBoost
+                model_cat = CatBoostClassifier(iterations=params['n_estimators'], depth=params['max_depth'], learning_rate=params['learning_rate'], random_seed=42, verbose=0, scale_pos_weight=final_weight)
                 model_cat.fit(X_train, y_train)
 
-                # 4. 建立集成包裝器 (把三個模型包成一個)
-                # 這樣後面的程式碼 (predict, plotting) 都不用改，直接用這個 wrapper
+                # 4. 集成包裝器
                 class EnsembleWrapper:
-                    def __init__(self, models):
-                        self.models = models # [xgb, lgb, cat]
-                    
+                    def __init__(self, models): self.models = models
                     def predict_proba(self, X):
-                        # A. 取得 XGB 機率
                         p1 = self.models[0].predict_proba(X)[:, 1]
-                        
-                        # B. 取得 LGB 機率 (記得欄位要改名)
                         X_lgb = X.rename(columns=lambda x: x.replace('_', ''))
                         p2 = self.models[1].predict_proba(X_lgb)[:, 1]
-                        
-                        # C. 取得 Cat 機率
                         p3 = self.models[2].predict_proba(X)[:, 1]
-                        
-                        # D. ★ 關鍵：取平均 (Soft Voting)
                         avg = (p1 + p2 + p3) / 3
-                        
-                        # 回傳格式必須跟 sklearn 一樣是 (N, 2)
                         return np.vstack([1-avg, avg]).T
-                    
-                    def predict(self, X):
-                        # 如果大於 0.5 就說是 1
-                        probs = self.predict_proba(X)[:, 1]
-                        return np.where(probs > 0.5, 1, 0)
-                    
                     @property
-                    def feature_importances_(self):
-                        # 為了讓畫圖功能正常，我們回傳 XGB 的特徵權重代表一下
-                        return self.models[0].feature_importances_
+                    def feature_importances_(self): return self.models[0].feature_importances_
 
-                # ★ 最後把三個模型包起來，變回原本的變數名稱 'model'
                 model = EnsembleWrapper([model_xgb, model_lgb, model_cat])
+                
+                # ★★★ 關鍵修復：補上預測邏輯 ★★★
+                threshold = locals().get('buy_threshold', 0.5)
+                y_probs = model.predict_proba(X_test)[:, 1]
+                y_pred_custom = np.where(y_probs > threshold, 1, 0)
                 
                 acc = accuracy_score(y_test, y_pred_custom)
                 st.success(f"✅ {target} 模型訓練完成！準確率: {acc*100:.1f}% (進場門檻: {threshold*100:.0f}%)")
 
                 # 資金曲線
                 test_df = df.iloc[split:].copy()
-                test_df['Signal'] = y_pred_custom # 用調整過的訊號
+                test_df['Signal'] = y_pred_custom 
                 test_df['Target_Ret'] = test_df[target].pct_change()
                 test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Target_Ret']
                 test_df['Cum_BuyHold'] = (1 + test_df['Target_Ret']).cumprod()
                 test_df['Cum_AI'] = (1 + test_df['Strategy_Ret']).cumprod()
-                model.fit(X_train, y_train)
+                
+                # (原本這裡有一行錯誤的 model.fit，已刪除)
+
                 c1, c2 = st.columns([2, 1])
                 with c1:
                     st.subheader("💰 資金曲線")
@@ -2884,15 +2849,6 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_BuyHold'], name='Buy & Hold', line=dict(color='gray', width=1)))
                     fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_AI'], name='AI 策略', line=dict(color='red', width=2)))
                     st.plotly_chart(fig, use_container_width=True)
-                
-                with c2:
-                    st.subheader("🔍 關鍵因子")
-                    importance = model.feature_importances_
-                    feat_imp = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values('Importance', ascending=True)
-                    fig_imp = go.Figure(go.Bar(x=feat_imp['Importance'], y=feat_imp['Feature'], orientation='h', marker=dict(color='#00E676')))
-                    fig_imp.update_layout(height=400, margin=dict(t=0, b=0))
-                    st.plotly_chart(fig_imp, use_container_width=True)
-
                 # ==========================================
                 # 實戰版：明日操作指引
                 # ==========================================
@@ -2943,6 +2899,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
