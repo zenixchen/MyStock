@@ -2457,8 +2457,8 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 # ==========================================
                 elif "TQQQ" in model_mode:
                     # 1. 下載數據 (★ 修改 1: 加入 JPY=X 和 VIX)
-                    # 加入 JPY=X (日圓匯率) 和 ^VIX (恐慌指數)
-                    tickers = [target, "QQQ", "JPY=X", "^VIX"]
+                    
+                    tickers = [target, "QQQ"]
                     data = yf.download(tickers, period="5y", interval="1d", progress=False)
                     
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
@@ -2781,6 +2781,14 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 # ★★★ 新增這段：強制將所有特徵轉為數字，無法轉的變 NaN ★★★
                 for col in features:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
+                # --- 加入這個滑桿，讓您能自由控制紅線長度 ---
+                st.sidebar.divider()
+                st.sidebar.caption("🔧 模型實驗室設定")
+                test_ratio = st.sidebar.slider("回測比例 (Test Size)", 0.1, 0.5, 0.2, 0.05, help="調大=紅線變長(看更久)，調小=紅線變短(專注近期)")
+                
+                # 修改原本的 split 計算
+                split = int(len(df) * (1 - test_ratio)) 
+                # ----------------------------------------
                 
                 # 再次清除可能產生的 NaN (例如無限大或格式錯誤)
                 df.dropna(inplace=True)
@@ -2791,7 +2799,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.stop()
                 X = df[features]
                 y = df['Label']
-                split = int(len(df) * 0.8)
+                
                 X_train, X_test = X.iloc[:split], X.iloc[split:]
                 y_train, y_test = y.iloc[:split], y.iloc[split:]
 
@@ -2951,6 +2959,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
