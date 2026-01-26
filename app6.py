@@ -2462,27 +2462,18 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
-                    # 2. 特徵工程
-                    # A. 基礎趨勢因子
+                    # 2. 特徵工程 (★ 關鍵修改：移除 Vola)
+                    # 我們只留均線和 RSI，因為波動率(Vola)會在噴出段嚇跑 AI
                     df['SMA_50'] = ta.sma(df[target], length=50) 
                     df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50'] 
                     df['RSI'] = ta.rsi(df[target], length=14)
-                    
-                    # B. 動能因子
                     df['Ret_5d'] = df[target].pct_change(5)
                     df['QQQ_Ret_5d'] = df['QQQ'].pct_change(5)
                     
-                    # C. ★ 修改 2: 新增避險因子 (根據回測結果)
-                    # JPY_Ret: 偵測日圓是否暴升 (套利平倉風險)
-                    df['JPY_Ret'] = df['JPY=X'].pct_change()
-                    # VIX: 偵測市場恐慌度
-                    df['VIX'] = df['^VIX']
-                    
                     df.dropna(inplace=True)
+                    # ★ 特徵列表：只有純粹的趨勢與動能
+                    features = ['Bias_50', 'RSI', 'Ret_5d', 'QQQ_Ret_5d'] 
                     
-                    # ★ 修改 3: 更新特徵列表 (加入 JPY_Ret 和 VIX)
-                    features = ['Bias_50', 'RSI', 'Ret_5d', 'QQQ_Ret_5d', 'JPY_Ret', 'VIX'] 
-
                     # 3. 標籤 (預測未來 5 天)
                     future_ret = df[target].shift(-5) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
@@ -2957,6 +2948,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
