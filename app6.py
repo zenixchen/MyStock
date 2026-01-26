@@ -2494,7 +2494,6 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     weight_multiplier = 1.2 
                     buy_threshold = 0.50
                     
-                    st.info("💡 TQQQ 策略已升級：加入「日圓匯率 (JPY)」與「恐慌指數 (VIX)」因子，提升對 2022/2024 等崩盤段的防禦力。")
                     
                 # ==========================================
                 # 策略 D: 台股連動型 (TW Stocks - 跟著美股喝湯)
@@ -2948,6 +2947,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
