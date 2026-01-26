@@ -11,3 +11,5 @@ google-generativeai
 gspread
 oauth2client
 xgboost
+lightgbm
+catboost
