@@ -2780,9 +2780,21 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     }
                     look_ahead_days = 3
 
-               # ==========================================
-                # 通用訓練流程 (集成模型終極修復版)
                 # ==========================================
+                # 通用訓練流程 (修復版：加入強制轉型)
+                # ==========================================
+                
+                # ★★★ 新增這段：強制將所有特徵轉為數字，無法轉的變 NaN ★★★
+                for col in features:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                # 再次清除可能產生的 NaN (例如無限大或格式錯誤)
+                df.dropna(inplace=True)
+
+                # 確保還有資料
+                if len(df) < 50:
+                    st.error(f"❌ 數據清洗後樣本不足 ({len(df)}筆)，無法訓練。")
+                    st.stop()
                 X = df[features]
                 y = df['Label']
                 split = int(len(df) * 0.8)
@@ -2899,6 +2911,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
