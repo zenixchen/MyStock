@@ -2383,7 +2383,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
     # 1. 選擇策略模組
     model_mode = st.radio("選擇戰略模組：", 
-        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)", "🔥 AI 超級週期 (AVGO/MU)", "🐺 績優股長波段 (孤狼策略)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
+        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)", "🔥 AI 超級週期 (AVGO/MU)", "🐺 績優股長波段 (孤狼策略)","🏆 TQQQ 冠軍版 (波動率策略)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
         horizontal=True
     )
 
@@ -2754,6 +2754,86 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     buy_threshold = 0.50
                     
                     st.info("💡 孤狼策略邏輯：專為 AVGO 這種「獨立走勢」的慢牛設計。切斷 NVDA 連動，只看 60日/120日 長線趨勢，並預測未來 20 天走勢。")
+                # ==========================================
+                # ★★★ 新增策略: TQQQ 冠軍版 (波動率壓縮 + 籌碼) ★★★
+                # ==========================================
+                elif "冠軍" in model_mode: # 只要選單名稱包含 "冠軍" 就會執行這裡
+                    default_target = "TQQQ" # 強制預設 TQQQ
+                    
+                    # 1. 下載數據 (只抓 TQQQ 本身，數據最乾淨)
+                    tickers = [target]
+                    st.write(f"🚀 正在啟動冠軍策略，鎖定目標：{target}...")
+                    
+                    # ★ 關鍵設定：只看最近 3 年 (專注 AI 狂潮後的市場慣性)
+                    data = yf.download(tickers, period="3y", interval="1d", progress=False)
+                    
+                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+                    else: df = data['Close'].copy()
+                    
+                    # 補值
+                    df.ffill(inplace=True); df.dropna(inplace=True)
+
+                    # 為了計算 ATR 和 CMF，我們需要 High, Low, Volume
+                    # ★ 強制對齊索引，避免長度不一報錯
+                    try:
+                        high = data['High'][target].loc[df.index]
+                        low = data['Low'][target].loc[df.index]
+                        vol = data['Volume'][target].loc[df.index]
+                        close = df[target]
+                    except:
+                        st.error("❌ 數據對齊失敗，可能是 Yahoo Finance 缺少成交量數據。")
+                        st.stop()
+
+                    # 2. 特徵工程 (植入 Colab 驗證過的 Top 5 冠軍因子)
+                    
+                    # [No.1] BB_Width (布林通道寬度 - 抓壓縮噴出)
+                    bb = ta.bbands(close, length=20, std=2)
+                    if bb is not None:
+                        # pandas_ta 的 bbands 第 4 欄 (index 3) 是 Bandwidth (BBB)
+                        df['BB_Width'] = bb.iloc[:, 3]
+                    else:
+                        df['BB_Width'] = 0
+                        
+                    # [No.2] ATR (真實波幅 - 抓波動率)
+                    df['ATR'] = ta.atr(high, low, close, length=14)
+                    
+                    # [No.3] RSI_24 (長天期 RSI - 抓中期強弱)
+                    # TQQQ 喜歡看一個月的趨勢，而不是 14 天
+                    df['RSI_24'] = ta.rsi(close, length=24)
+                    
+                    # [No.4] CMF (蔡金資金流向 - 抓主力籌碼)
+                    df['CMF'] = ta.cmf(high, low, close, vol, length=20)
+                    
+                    # [No.5] Bias_60 (季線乖離 - 抓趨勢回歸)
+                    df['SMA_60'] = ta.sma(close, length=60)
+                    df['Bias_60'] = (close - df['SMA_60']) / df['SMA_60']
+
+                    # 清除計算過程產生的 NaN
+                    df.dropna(inplace=True)
+                    
+                    # ★ 設定最終特徵列表 (只給 AI 吃這 5 道菜)
+                    features = ['BB_Width', 'ATR', 'RSI_24', 'CMF', 'Bias_60'] 
+                    
+                    # 3. 標籤 (預測未來 5 天)
+                    future_ret = df[target].shift(-5) / df[target] - 1
+                    df['Label'] = np.where(future_ret > 0.0, 1, 0)
+
+                    # 4. 模型參數 (針對波動率特徵優化)
+                    # 降低學習率 (0.05)，增加樹的數量 (250)，讓它學得更細緻
+                    params = {
+                        'n_estimators': 250,    
+                        'learning_rate': 0.05, 
+                        'max_depth': 5,         
+                        'min_child_weight': 3,  
+                        'gamma': 0.2,           
+                        'subsample': 0.8, 
+                        'colsample_bytree': 0.8
+                    }
+                    look_ahead_days = 5 
+                    weight_multiplier = 1.1 
+                    buy_threshold = 0.50
+                    
+                    st.info("💡 策略邏輯：此策略專注於「波動率壓縮 (Squeeze)」。當布林通道寬度 (BB_Width) 極度壓縮後，通常會伴隨大行情噴出。")
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -2967,6 +3047,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
