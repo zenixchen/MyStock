@@ -2933,72 +2933,77 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     fig_imp.update_layout(height=450, margin=dict(t=30, b=0))
                     st.plotly_chart(fig_imp, use_container_width=True)
                 # ==========================================
-                # ★★★ 新增：AI 信心 vs 真實勝率 分析儀 ★★★
+                # 🧐 深度分析：AI 信心 vs 真實勝率 vs 準確度
                 # ==========================================
-                with st.expander("🧐 深度分析：AI 信心多少才值得信？ (校準圖)", expanded=True):
-                    
-                    # 1. 準備分析數據
-                    # 我們要把測試集的「預測機率」跟「真實結果」對起來
+                with st.expander("🧐 深度分析：AI 到底準不準？ (校準圖)", expanded=True):
+                    # 1. 準備數據
                     analysis_df = pd.DataFrame({
-                        'Confidence': y_probs,
-                        'Actual_Win': y_test.values, # 1=漲, 0=跌
+                        'Confidence': probs_ens,
+                        'Actual_Win': y_test.values,
                         'Return': test_df['Target_Ret'].values
                     })
                     
-                    # 2. 進行分桶 (Binning)：每 5% 切成一組 (0.00~0.05, ..., 0.95~1.00)
+                    # 2. 定義「AI 預測方向」與「是否猜對」
+                    # 如果信心 > 0.5 猜漲(1)，否則猜跌(0)
+                    analysis_df['Prediction'] = np.where(analysis_df['Confidence'] > 0.5, 1, 0)
+                    # 如果預測方向 == 真實方向，就是「準確 (Correct)」
+                    analysis_df['Is_Correct'] = (analysis_df['Prediction'] == analysis_df['Actual_Win']).astype(int)
+
+                    # 3. 分桶統計
                     bins = np.arange(0, 1.05, 0.05)
                     labels = [f"{int(b*100)}%" for b in bins[:-1]]
                     analysis_df['Conf_Bin'] = pd.cut(analysis_df['Confidence'], bins=bins, labels=labels)
                     
-                    # 3. 統計每一組的表現
-                    # count=出現次數, mean=真實勝率
-                    bin_stats = analysis_df.groupby('Conf_Bin').agg({
+                    # 統計：真實勝率 (Win_Rate) & 預測準確度 (Accuracy)
+                    bin_stats = analysis_df.groupby('Conf_Bin', observed=False).agg({
                         'Actual_Win': ['count', 'mean'],
-                        'Return': 'mean'
+                        'Is_Correct': 'mean' # 新增：計算準確率平均
                     })
-                    bin_stats.columns = ['Count', 'Win_Rate', 'Avg_Return']
+                    bin_stats.columns = ['Count', 'Win_Rate', 'Accuracy'] # 重新命名
                     bin_stats = bin_stats.reset_index()
                     
-                    # 過濾掉樣本太少的區間 (例如只有出現過 1 次的，統計沒意義)
+                    # 過濾樣本太少的
                     valid_stats = bin_stats[bin_stats['Count'] > 2].copy()
 
-                    # 4. 畫圖：真實勝率 vs AI 信心
+                    # 4. 繪圖
                     fig_cal = make_subplots(specs=[[{"secondary_y": True}]])
                     
-                    # 柱狀圖：交易次數 (背景)
+                    # 柱狀圖 (樣本數)
                     fig_cal.add_trace(go.Bar(
-                        x=valid_stats['Conf_Bin'], y=valid_stats['Count'],
-                        name='出現次數', marker_color='rgba(255, 255, 255, 0.1)'
+                        x=valid_stats['Conf_Bin'], y=valid_stats['Count'], 
+                        name='樣本數', marker_color='rgba(255,255,255,0.1)'
                     ), secondary_y=True)
                     
-                    # 折線圖：真實勝率 (主角)
+                    # 綠色線：真實勝率 (原本的線 - 看市場趨勢)
                     fig_cal.add_trace(go.Scatter(
-                        x=valid_stats['Conf_Bin'], y=valid_stats['Win_Rate'],
-                        name='真實勝率', line=dict(color='#00E676', width=3, shape='spline'),
+                        x=valid_stats['Conf_Bin'], y=valid_stats['Win_Rate'], 
+                        name='市場真實勝率', line=dict(color='#00E676', width=2, dash='dot'), 
                         mode='lines+markers'
                     ), secondary_y=False)
-                    
-                    # 參考線：50% 勝率
+
+                    # ★ 藍色線：模型準確度 (新的線 - 看模型腦袋)
+                    fig_cal.add_trace(go.Scatter(
+                        x=valid_stats['Conf_Bin'], y=valid_stats['Accuracy'], 
+                        name='AI 預測準確度', line=dict(color='#2979FF', width=4), 
+                        mode='lines+markers'
+                    ), secondary_y=False)
+
+                    # 參考線：50% 
                     fig_cal.add_hline(y=0.5, line_dash="dash", line_color="gray", secondary_y=False)
 
-                    # 找出「高勝率門檻」
-                    # 邏輯：找到第一個勝率穩定超過 60% 的信心區間
-                    high_prob_bins = valid_stats[valid_stats['Win_Rate'] > 0.6]
-                    if not high_prob_bins.empty:
-                        best_thresh = high_prob_bins['Conf_Bin'].iloc[0]
-                        st.success(f"💎 發現黃金區間：當 AI 信心 > **{best_thresh}** 時，歷史勝率顯著 > 60%！")
-                    else:
-                        st.warning("⚠️ 目前模型較為保守，沒有明顯的高勝率區間 (可能是空頭市場或特徵不足)。")
-
                     fig_cal.update_layout(
-                        title="AI 信心校準：它說 80% 把握時，真的有 80% 勝率嗎？",
-                        xaxis_title="AI 信心區間",
-                        yaxis_title="真實勝率 (Win Rate)",
-                        yaxis2_title="樣本數",
-                        height=400,
-                        hovermode="x unified"
+                        title="準度檢測：藍線越低 = 模型越笨",
+                        height=400, hovermode="x unified", 
+                        yaxis_title="百分比 (%)", 
+                        yaxis2_title="次數",
+                        legend=dict(orientation="h", y=1.1)
                     )
                     st.plotly_chart(fig_cal, use_container_width=True)
+                    
+                    # 簡單解讀
+                    st.info("💡 **如何解讀？**\n"
+                            "- **🟢 綠線 (市場)**：告訴你「歷史上這時候市場多會漲」。\n"
+                            "- **🔵 藍線 (準度)**：告訴你「AI 這次猜對了嗎」。**如果在某個區間藍線掉到 50% 以下，代表 AI 根本在亂猜，請避開該區間！**")
 
                 # ==========================================
                 # 實戰版：明日操作指引
@@ -3050,6 +3055,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
