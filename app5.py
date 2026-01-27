@@ -2754,8 +2754,8 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 # 確保清洗後還有數據
                 if len(df) < 50:
                     st.error(f"❌ 數據清洗後樣本不足 ({len(df)}筆)，無法訓練。")
-                    return # 或是 st.stop()
-
+                    st.stop()  # <--- 請改成這樣 (原本是 return)
+                    
                 X = df[features]
                 y = df['Label']
                 split = int(len(df) * 0.8)
@@ -2983,6 +2983,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
