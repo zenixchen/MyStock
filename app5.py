@@ -386,7 +386,7 @@ def get_tsm_swing_prediction():
         df_viz = None
         viz_acc = 0
         if len(X_test) > 0:
-            # ★ 改動 1: 取所有測試數據，不再限制 90 天，讓資金曲線更長
+            # ★ 改動 1: 取所有測試數據
             viz_len = len(X_test) 
             
             test_indices = test_df.index[lookback:] 
@@ -1774,35 +1774,38 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     # 準備校準數據
                     # Target 是 1 (大漲) 或 0 (盤跌)
                     # Prediction 是 1 (猜漲) 或 0 (猜跌)
-                    eval_df['Pred_Class'] = np.where(eval_df['Prob'] > 0.5, 1, 0)
-                    eval_df['Is_Correct'] = (eval_df['Pred_Class'] == eval_df['Target']).astype(int)
-                    
-                    # 分桶統計
-                    bins = np.arange(0, 1.05, 0.1) # 每 10% 一組
-                    labels = [f"{int(b*100)}%" for b in bins[:-1]]
-                    eval_df['Conf_Bin'] = pd.cut(eval_df['Prob'], bins=bins, labels=labels)
-                    
-                    bin_stats = eval_df.groupby('Conf_Bin', observed=False).agg({
-                        'Target': 'mean',      # 真實勝率 (Real Win Rate)
-                        'Is_Correct': 'mean',  # 預測準度 (Accuracy)
-                        'Prob': 'count'        # 樣本數
-                    }).rename(columns={'Target': 'Win_Rate', 'Prob': 'Count', 'Is_Correct': 'Accuracy'}).reset_index()
-                    
-                    valid_stats = bin_stats[bin_stats['Count'] > 0]
-                    
-                    fig_cal = make_subplots(specs=[[{"secondary_y": True}]])
-                    # 柱狀圖 (樣本數)
-                    fig_cal.add_trace(go.Bar(x=valid_stats['Conf_Bin'], y=valid_stats['Count'], name='出現次數', marker_color='rgba(255,255,255,0.1)'), secondary_y=True)
-                    
-                    # 綠線：真實勝率 (AI 喊 80% 時，真的有 80% 機率大漲嗎？)
-                    fig_cal.add_trace(go.Scatter(x=valid_stats['Conf_Bin'], y=valid_stats['Win_Rate'], name='真實勝率', line=dict(color='#00E676', width=2), mode='lines+markers'), secondary_y=False)
-                    
-                    # 藍線：準確度 (AI 在這個區間猜對了嗎？)
-                    fig_cal.add_trace(go.Scatter(x=valid_stats['Conf_Bin'], y=valid_stats['Accuracy'], name='預測準度', line=dict(color='#2979FF', width=4), mode='lines+markers'), secondary_y=False)
-                    
-                    fig_cal.add_hline(y=0.5, line_dash="dash", line_color="gray", secondary_y=False)
-                    fig_cal.update_layout(height=400, title="藍線 > 50% 代表模型有效", hovermode="x unified", legend=dict(orientation="h", y=1.1))
-                    st.plotly_chart(fig_cal, use_container_width=True)
+                    if 'Target' in eval_df.columns:
+                        eval_df['Pred_Class'] = np.where(eval_df['Prob'] > 0.5, 1, 0)
+                        eval_df['Is_Correct'] = (eval_df['Pred_Class'] == eval_df['Target']).astype(int)
+                        
+                        # 分桶統計
+                        bins = np.arange(0, 1.05, 0.1) # 每 10% 一組
+                        labels = [f"{int(b*100)}%" for b in bins[:-1]]
+                        eval_df['Conf_Bin'] = pd.cut(eval_df['Prob'], bins=bins, labels=labels)
+                        
+                        bin_stats = eval_df.groupby('Conf_Bin', observed=False).agg({
+                            'Target': 'mean',      # 真實勝率 (Real Win Rate)
+                            'Is_Correct': 'mean',  # 預測準度 (Accuracy)
+                            'Prob': 'count'        # 樣本數
+                        }).rename(columns={'Target': 'Win_Rate', 'Prob': 'Count', 'Is_Correct': 'Accuracy'}).reset_index()
+                        
+                        valid_stats = bin_stats[bin_stats['Count'] > 0]
+                        
+                        fig_cal = make_subplots(specs=[[{"secondary_y": True}]])
+                        # 柱狀圖 (樣本數)
+                        fig_cal.add_trace(go.Bar(x=valid_stats['Conf_Bin'], y=valid_stats['Count'], name='出現次數', marker_color='rgba(255,255,255,0.1)'), secondary_y=True)
+                        
+                        # 綠線：真實勝率 (AI 喊 80% 時，真的有 80% 機率大漲嗎？)
+                        fig_cal.add_trace(go.Scatter(x=valid_stats['Conf_Bin'], y=valid_stats['Win_Rate'], name='真實勝率', line=dict(color='#00E676', width=2), mode='lines+markers'), secondary_y=False)
+                        
+                        # 藍線：準確度 (AI 在這個區間猜對了嗎？)
+                        fig_cal.add_trace(go.Scatter(x=valid_stats['Conf_Bin'], y=valid_stats['Accuracy'], name='預測準度', line=dict(color='#2979FF', width=4), mode='lines+markers'), secondary_y=False)
+                        
+                        fig_cal.add_hline(y=0.5, line_dash="dash", line_color="gray", secondary_y=False)
+                        fig_cal.update_layout(height=400, title="藍線 > 50% 代表模型有效", hovermode="x unified", legend=dict(orientation="h", y=1.1))
+                        st.plotly_chart(fig_cal, use_container_width=True)
+                    else:
+                        st.warning("⚠️ 無法繪製校準圖：缺少 Target 數據 (請清除快取後重試)")
                     
             if df_viz_short is not None:
                 st.caption("⚡ T+3 狙擊回測 - 最佳門檻 > 0.45")
@@ -3033,6 +3036,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
