@@ -2987,6 +2987,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                         st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出**。\n- **空手者**：保持現金。")
                 
                 except Exception as e:
+                    # ★★★ 這一塊就是您原本缺少的結尾，請務必複製進去 ★★★
                     st.error(f"預測模組發生錯誤: {e}")
                     if 'last_feat' in locals():
                         st.write("Debug Info:", last_feat)
