@@ -290,10 +290,10 @@ def verify_performance_db():
         return 0
 
 # ==========================================
-# ★★★ TSM T+5 主帥版 (增強版：回傳完整回測數據) ★★★
+# ★★★ TSM T+5 主帥版 (v2 強制更新版) ★★★
 # ==========================================
 @st.cache_resource(ttl=300)
-def get_tsm_swing_prediction():
+def get_tsm_swing_prediction_v2():  # <--- 關鍵修改：改名了！
     # 預設回傳值
     current_price = 0.0
     
@@ -341,7 +341,7 @@ def get_tsm_swing_prediction():
 
         # C. 模型訓練
         future_ret = df['TSM'].shift(-5) / df['TSM'] - 1
-        feat['Target'] = (future_ret > 0.025).astype(int) # 目標：5天漲2.5%
+        feat['Target'] = (future_ret > 0.025).astype(int)
         
         valid_data = feat.iloc[:-5].copy()
         if len(valid_data) < 50: return None, None, current_price, None, 0
@@ -368,7 +368,7 @@ def get_tsm_swing_prediction():
         
         if len(X_train) == 0: return None, None, current_price, None, 0
 
-        # 簡單 LSTM 模型
+        # LSTM 模型
         from tensorflow.keras.layers import Input, LSTM
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
@@ -382,20 +382,17 @@ def get_tsm_swing_prediction():
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # D. 繪圖數據 (關鍵修改處)
+        # D. 繪圖數據 (確保這裡回傳正確)
         df_viz = None
         viz_acc = 0
         if len(X_test) > 0:
-            # ★ 改動 1: 取所有測試數據
             viz_len = len(X_test) 
-            
             test_indices = test_df.index[lookback:] 
             test_prices = df['TSM'].loc[test_indices]
-            
             preds_raw = model.predict(X_test, verbose=0).flatten()
             viz_probs_enhanced = [enhance_confidence(p, temperature=0.25) for p in preds_raw]
             
-            # ★ 改動 2: 把 Target (正確答案) 也存進去
+            # ★ Target 必須在這裡被打包
             viz_targets = y_test 
             
             df_viz = pd.DataFrame({
@@ -408,7 +405,7 @@ def get_tsm_swing_prediction():
             viz_preds_cls = (np.array(viz_probs_enhanced) > 0.5).astype(int)
             viz_acc = np.mean(viz_targets == viz_preds_cls)
 
-        # E. 預測最新一天
+        # E. 預測
         latest_seq_raw = feat[cols].iloc[-lookback:].values
         if len(latest_seq_raw) < lookback:
             padding = np.tile(latest_seq_raw[0], (lookback - len(latest_seq_raw), 1))
@@ -1585,7 +1582,27 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     st.session_state['tsm_result_v8'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
             
             # 解包數據
-            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v8']
+            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v8']with tab1:
+        st.subheader("📈 TSM 雙核心波段顧問")
+        st.caption("策略：長短雙模共振 | 冠軍參數：T+5 (70%) + T+3 (30%)")
+        
+        # 1. 啟動按鈕 (Key 改成 v9，強迫刷新 Session)
+        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm_gsheet_v9") or 'tsm_result_v9' in st.session_state:
+            
+            # 如果 Session 裡沒有資料，就跑模型
+            if 'tsm_result_v9' not in st.session_state:
+                with st.spinner("AI 正在進行雙重驗證 (應用 Grid Search 最佳化)..."):
+                    # ★★★ 這裡改成呼叫 v2 版函式！ ★★★
+                    p_long, a_long, price, df_viz_long, backtest_score = get_tsm_swing_prediction_v2()
+                    
+                    # 呼叫 T+3 (這個沒變)
+                    p_short, a_short, df_viz_short = get_tsm_short_prediction()
+                    
+                    # 存入 Session (Key 改成 v9)
+                    st.session_state['tsm_result_v9'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
+            
+            # 解包數據 (Key 改成 v9)
+            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v9']
             
             # 處理 None 的情況 (防呆)
             p5 = p_long if p_long is not None else 0.5
@@ -3036,6 +3053,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
