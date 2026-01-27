@@ -17,6 +17,9 @@ import requests
 import xml.etree.ElementTree as ET
 import xgboost as xgb  # <--- 新增這行
 from sklearn.metrics import accuracy_score # <--- 新增這行
+import re                   # 用來清洗欄位名稱 (原本沒有，必須加)
+import lightgbm as lgb      # 新模型
+from catboost import CatBoostClassifier # 新模型
 
 def download_tw_stock_data(ticker):
     """
@@ -2737,9 +2740,22 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     }
                     look_ahead_days = 3
 
+               # ==========================================
+                # 通用訓練流程 (集成模型終極版：XGB + LGB + Cat)
                 # ==========================================
-                # 通用訓練流程 (修正版)
-                # ==========================================
+                
+                # ★★★ 步驟 0: 強制數據清洗 (防止 Object/String 錯誤) ★★★
+                # 這一步最重要！強制把所有特徵轉成數字，轉不過來的變 NaN
+                for col in features:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+                df.dropna(inplace=True) # 清除髒數據
+                
+                # 確保清洗後還有數據
+                if len(df) < 50:
+                    st.error(f"❌ 數據清洗後樣本不足 ({len(df)}筆)，無法訓練。")
+                    return # 或是 st.stop()
+
                 X = df[features]
                 y = df['Label']
                 split = int(len(df) * 0.8)
@@ -2749,48 +2765,172 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 # 計算基礎權重
                 base_weight = (len(y_train) - y_train.sum()) / y_train.sum()
                 
-                # ★★★ 應用 TQQQ 的加權倍率 (如果沒設定就是 1.0) ★★★
+                # ★★★ 應用 TQQQ 的加權倍率 ★★★
                 multiplier = locals().get('weight_multiplier', 1.0) 
                 final_weight = base_weight * multiplier
 
-                model = xgb.XGBClassifier(
+                st.write('⚖️ 正在召喚集成模型三巨頭 (XGBoost + LightGBM + CatBoost)...')
+
+                # ==========================================
+                # ★★★ 步驟 1: 訓練三巨頭 ★★★
+                # ==========================================
+                
+                # 1. 訓練 XGBoost (老將)
+                model_xgb = xgb.XGBClassifier(
                     **params, scale_pos_weight=final_weight, random_state=42
                 )
-                model.fit(X_train, y_train)
+                model_xgb.fit(X_train, y_train)
 
-                # 繪圖與結果
+                # 2. 訓練 LightGBM (速度快，但討厭特殊符號)
+                # 修正欄位名稱 (例如把 JPY=X 改成 JPYX)
+                X_train_lgb = X_train.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
+                
+                # LightGBM 參數設定
+                model_lgb = lgb.LGBMClassifier(
+                    n_estimators=params['n_estimators'], 
+                    max_depth=params['max_depth'],
+                    learning_rate=params['learning_rate'], 
+                    random_state=42, 
+                    verbose=-1,
+                    scale_pos_weight=final_weight
+                )
+                model_lgb.fit(X_train_lgb, y_train)
+
+                # 3. 訓練 CatBoost (穩健，抗雜訊)
+                model_cat = CatBoostClassifier(
+                    iterations=params['n_estimators'], 
+                    depth=params['max_depth'],
+                    learning_rate=params['learning_rate'], 
+                    random_seed=42, 
+                    verbose=0,
+                    scale_pos_weight=final_weight
+                )
+                model_cat.fit(X_train, y_train)
+
+                # ==========================================
+                # ★★★ 步驟 2: 建立集成包裝器 (Wrapper) ★★★
+                # ==========================================
+                class EnsembleWrapper:
+                    def __init__(self, models):
+                        self.models = models # [xgb, lgb, cat]
+                    
+                    def predict_proba(self, X):
+                        # A. XGBoost 機率
+                        p1 = self.models[0].predict_proba(X)[:, 1]
+                        
+                        # B. LightGBM 機率 (記得先清洗欄位名稱)
+                        X_lgb = X.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
+                        p2 = self.models[1].predict_proba(X_lgb)[:, 1]
+                        
+                        # C. CatBoost 機率
+                        p3 = self.models[2].predict_proba(X)[:, 1]
+                        
+                        # D. ★ 投票核心：取平均值 (Soft Voting)
+                        avg = (p1 + p2 + p3) / 3
+                        
+                        # 回傳 sklearn 格式 (N, 2)
+                        return np.vstack([1-avg, avg]).T
+                    
+                    @property
+                    def feature_importances_(self):
+                        # 讓後面的畫圖程式抓 XGBoost 的重要性來畫
+                        return self.models[0].feature_importances_
+
+                # ★ 最後把三個模型包起來，賦值給 'model' 變數
+                # 這樣後面的程式碼完全不用改！
+                model = EnsembleWrapper([model_xgb, model_lgb, model_cat])
+
+                # ==========================================
+                # 後續結果與繪圖 (保持原樣)
+                # ==========================================
                 # ★★★ 應用 TQQQ 的降低門檻 (如果沒設定就是 0.5) ★★★
                 threshold = locals().get('buy_threshold', 0.5)
                 
-                # 使用機率來決定 Signal，而不是直接用 predict()
+                # 使用機率來決定 Signal
                 y_probs = model.predict_proba(X_test)[:, 1]
-                y_pred_custom = np.where(y_probs > threshold, 1, 0) # 用自訂門檻切分
+                y_pred_custom = np.where(y_probs > threshold, 1, 0) 
                 
                 acc = accuracy_score(y_test, y_pred_custom)
-                st.success(f"✅ {target} 模型訓練完成！準確率: {acc*100:.1f}% (進場門檻: {threshold*100:.0f}%)")
-
-                # 資金曲線
+                st.success(f"✅ {target} 集成模型訓練完成！準確率: {acc*100:.1f}% (進場門檻: {threshold*100:.0f}%)")
+                
+                # ==========================================
+                # 繪圖區：資金曲線 + AI 信心雷達
+                # ==========================================
+                
+                # 1. 準備數據
                 test_df = df.iloc[split:].copy()
-                test_df['Signal'] = y_pred_custom # 用調整過的訊號
+                
+                # 計算機率 (信心度)
+                y_probs = model.predict_proba(X_test)[:, 1]
+                test_df['Confidence'] = y_probs  # ★ 把信心度存起來
+                
+                # 計算訊號與回報
+                threshold = locals().get('buy_threshold', 0.5)
+                test_df['Signal'] = np.where(test_df['Confidence'] > threshold, 1, 0)
                 test_df['Target_Ret'] = test_df[target].pct_change()
                 test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Target_Ret']
+                
+                # 計算累積淨值
                 test_df['Cum_BuyHold'] = (1 + test_df['Target_Ret']).cumprod()
                 test_df['Cum_AI'] = (1 + test_df['Strategy_Ret']).cumprod()
-                model.fit(X_train, y_train)
+
                 c1, c2 = st.columns([2, 1])
+                
                 with c1:
-                    st.subheader("💰 資金曲線")
-                    fig = make_subplots()
-                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_BuyHold'], name='Buy & Hold', line=dict(color='gray', width=1)))
-                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_AI'], name='AI 策略', line=dict(color='red', width=2)))
+                    st.subheader("💰 資金曲線 & AI 信心")
+                    
+                    # ★ 建立雙軸圖表 (左邊看錢，右邊看信心)
+                    fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    
+                    # 1. 左軸：資金曲線 (紅色 AI，灰色 Buy&Hold)
+                    fig.add_trace(go.Scatter(
+                        x=test_df.index, y=test_df['Cum_BuyHold'], 
+                        name='Buy & Hold', line=dict(color='gray', width=1, dash='dot')
+                    ), secondary_y=False)
+                    
+                    fig.add_trace(go.Scatter(
+                        x=test_df.index, y=test_df['Cum_AI'], 
+                        name='AI 策略回報', line=dict(color='#FF5252', width=2)
+                    ), secondary_y=False)
+
+                    # 2. 右軸：信心度 (青色陰影區)
+                    # 這樣可以看出 AI 什麼時候「很確定」要漲
+                    fig.add_trace(go.Scatter(
+                        x=test_df.index, y=test_df['Confidence'], 
+                        name='AI 信心度', 
+                        line=dict(color='rgba(0, 255, 255, 0.3)', width=1),
+                        fill='tozeroy', # 填滿下方顏色，更有感
+                        fillcolor='rgba(0, 255, 255, 0.1)' 
+                    ), secondary_y=True)
+
+                    # 3. 畫出買進門檻線 (黃色虛線)
+                    fig.add_hline(y=threshold, line_dash="dash", line_color="yellow", annotation_text="買進門檻", secondary_y=True)
+
+                    # 設定版面
+                    fig.update_layout(
+                        height=450, 
+                        hovermode="x unified",
+                        margin=dict(t=30, b=0, l=0, r=0),
+                        legend=dict(orientation="h", y=1.1) # 圖例放上面
+                    )
+                    
+                    # 設定軸標籤
+                    fig.update_yaxes(title_text="資產倍數", secondary_y=False)
+                    fig.update_yaxes(title_text="AI 信心 (%)", range=[0, 1], secondary_y=True)
+                    
                     st.plotly_chart(fig, use_container_width=True)
                 
                 with c2:
                     st.subheader("🔍 關鍵因子")
+                    # 取得 XGBoost 的特徵重要性 (從 Wrapper 拿)
                     importance = model.feature_importances_
                     feat_imp = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values('Importance', ascending=True)
-                    fig_imp = go.Figure(go.Bar(x=feat_imp['Importance'], y=feat_imp['Feature'], orientation='h', marker=dict(color='#00E676')))
-                    fig_imp.update_layout(height=400, margin=dict(t=0, b=0))
+                    
+                    fig_imp = go.Figure(go.Bar(
+                        x=feat_imp['Importance'], y=feat_imp['Feature'], 
+                        orientation='h', marker=dict(color='#00E676')
+                    ))
+                    fig_imp.update_layout(height=450, margin=dict(t=30, b=0))
                     st.plotly_chart(fig_imp, use_container_width=True)
 
                 # ==========================================
@@ -2843,6 +2983,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
