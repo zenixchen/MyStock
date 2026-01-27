@@ -2740,213 +2740,155 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     }
                     look_ahead_days = 3
 
-               # ==========================================
-                # 通用訓練流程 (集成模型終極版：XGB + LGB + Cat)
+                # ==========================================
+                # 通用訓練流程 (終極整合版：單一 vs 集成 + 信心校準)
                 # ==========================================
                 
-                # ★★★ 步驟 0: 強制數據清洗 (防止 Object/String 錯誤) ★★★
-                # 這一步最重要！強制把所有特徵轉成數字，轉不過來的變 NaN
+                # 0. 強制數據清洗 (最重要的一步)
                 for col in features:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
+                df.dropna(inplace=True)
                 
-                df.dropna(inplace=True) # 清除髒數據
-                
-                # 確保清洗後還有數據
                 if len(df) < 50:
-                    st.error(f"❌ 數據清洗後樣本不足 ({len(df)}筆)，無法訓練。")
-                    st.stop()  # <--- 請改成這樣 (原本是 return)
-                    
+                    st.error(f"❌ 數據不足 ({len(df)}筆)，無法訓練。")
+                    st.stop()
+
                 X = df[features]
                 y = df['Label']
                 split = int(len(df) * 0.8)
                 X_train, X_test = X.iloc[:split], X.iloc[split:]
                 y_train, y_test = y.iloc[:split], y.iloc[split:]
 
-                # 計算基礎權重
+                # 權重設定
                 base_weight = (len(y_train) - y_train.sum()) / y_train.sum()
-                
-                # ★★★ 應用 TQQQ 的加權倍率 ★★★
                 multiplier = locals().get('weight_multiplier', 1.0) 
                 final_weight = base_weight * multiplier
 
-                st.write('⚖️ 正在召喚集成模型三巨頭 (XGBoost + LightGBM + CatBoost)...')
+                st.write('🥊 正在讓「單一 XGBoost」與「集成模型」進行對決...')
 
                 # ==========================================
-                # ★★★ 步驟 1: 訓練三巨頭 ★★★
+                # 🥊 角落 A: 單一 XGBoost (Single)
                 # ==========================================
-                
-                # 1. 訓練 XGBoost (老將)
-                model_xgb = xgb.XGBClassifier(
+                model_single = xgb.XGBClassifier(
                     **params, scale_pos_weight=final_weight, random_state=42
                 )
-                model_xgb.fit(X_train, y_train)
-
-                # 2. 訓練 LightGBM (速度快，但討厭特殊符號)
-                # 修正欄位名稱 (例如把 JPY=X 改成 JPYX)
-                X_train_lgb = X_train.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
+                model_single.fit(X_train, y_train)
                 
-                # LightGBM 參數設定
-                model_lgb = lgb.LGBMClassifier(
-                    n_estimators=params['n_estimators'], 
-                    max_depth=params['max_depth'],
-                    learning_rate=params['learning_rate'], 
-                    random_state=42, 
-                    verbose=-1,
-                    scale_pos_weight=final_weight
-                )
-                model_lgb.fit(X_train_lgb, y_train)
-
-                # 3. 訓練 CatBoost (穩健，抗雜訊)
-                model_cat = CatBoostClassifier(
-                    iterations=params['n_estimators'], 
-                    depth=params['max_depth'],
-                    learning_rate=params['learning_rate'], 
-                    random_seed=42, 
-                    verbose=0,
-                    scale_pos_weight=final_weight
-                )
-                model_cat.fit(X_train, y_train)
-
                 # ==========================================
-                # ★★★ 步驟 2: 建立集成包裝器 (Wrapper) ★★★
+                # 🥊 角落 B: 集成模型 (Ensemble)
                 # ==========================================
+                # 1. XGB (集成版)
+                ens_xgb = xgb.XGBClassifier(**params, scale_pos_weight=final_weight, random_state=42)
+                ens_xgb.fit(X_train, y_train)
+                
+                # 2. LightGBM (清洗欄位)
+                X_train_lgb = X_train.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
+                ens_lgb = lgb.LGBMClassifier(n_estimators=params['n_estimators'], max_depth=params['max_depth'], learning_rate=params['learning_rate'], random_state=42, verbose=-1, scale_pos_weight=final_weight)
+                ens_lgb.fit(X_train_lgb, y_train)
+                
+                # 3. CatBoost
+                ens_cat = CatBoostClassifier(iterations=params['n_estimators'], depth=params['max_depth'], learning_rate=params['learning_rate'], random_seed=42, verbose=0, scale_pos_weight=final_weight)
+                ens_cat.fit(X_train, y_train)
+
+                # 集成包裝器
                 class EnsembleWrapper:
-                    def __init__(self, models):
-                        self.models = models # [xgb, lgb, cat]
-                    
+                    def __init__(self, models): self.models = models
                     def predict_proba(self, X):
-                        # A. XGBoost 機率
                         p1 = self.models[0].predict_proba(X)[:, 1]
-                        
-                        # B. LightGBM 機率 (記得先清洗欄位名稱)
                         X_lgb = X.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
                         p2 = self.models[1].predict_proba(X_lgb)[:, 1]
-                        
-                        # C. CatBoost 機率
                         p3 = self.models[2].predict_proba(X)[:, 1]
-                        
-                        # D. ★ 投票核心：取平均值 (Soft Voting)
                         avg = (p1 + p2 + p3) / 3
-                        
-                        # 回傳 sklearn 格式 (N, 2)
                         return np.vstack([1-avg, avg]).T
-                    
                     @property
-                    def feature_importances_(self):
-                        # 讓後面的畫圖程式抓 XGBoost 的重要性來畫
-                        return self.models[0].feature_importances_
+                    def feature_importances_(self): return self.models[0].feature_importances_
 
-                # ★ 最後把三個模型包起來，賦值給 'model' 變數
-                # 這樣後面的程式碼完全不用改！
-                model = EnsembleWrapper([model_xgb, model_lgb, model_cat])
+                model_ensemble = EnsembleWrapper([ens_xgb, ens_lgb, ens_cat])
 
                 # ==========================================
-                # 後續結果與繪圖 (保持原樣)
+                # 📊 雙模回測計算 (先算再畫，順序不能錯)
                 # ==========================================
-                # ★★★ 應用 TQQQ 的降低門檻 (如果沒設定就是 0.5) ★★★
                 threshold = locals().get('buy_threshold', 0.5)
-                
-                # 使用機率來決定 Signal
-                y_probs = model.predict_proba(X_test)[:, 1]
-                y_pred_custom = np.where(y_probs > threshold, 1, 0) 
-                
-                acc = accuracy_score(y_test, y_pred_custom)
-                st.success(f"✅ {target} 集成模型訓練完成！準確率: {acc*100:.1f}% (進場門檻: {threshold*100:.0f}%)")
-                
-                # ==========================================
-                # 繪圖區：資金曲線 + AI 信心雷達
-                # ==========================================
-                
-                # 1. 準備數據
                 test_df = df.iloc[split:].copy()
-                
-                # 計算機率 (信心度)
-                y_probs = model.predict_proba(X_test)[:, 1]
-                test_df['Confidence'] = y_probs  # ★ 把信心度存起來
-                
-                # 計算訊號與回報
-                threshold = locals().get('buy_threshold', 0.5)
-                test_df['Signal'] = np.where(test_df['Confidence'] > threshold, 1, 0)
                 test_df['Target_Ret'] = test_df[target].pct_change()
-                test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Target_Ret']
-                
-                # 計算累積淨值
                 test_df['Cum_BuyHold'] = (1 + test_df['Target_Ret']).cumprod()
-                test_df['Cum_AI'] = (1 + test_df['Strategy_Ret']).cumprod()
 
+                # --- 1. 計算 單一 XGB 績效 ---
+                probs_single = model_single.predict_proba(X_test)[:, 1]
+                test_df['Sig_Single'] = np.where(probs_single > threshold, 1, 0)
+                test_df['Ret_Single'] = test_df['Sig_Single'].shift(1) * test_df['Target_Ret']
+                test_df['Cum_Single'] = (1 + test_df['Ret_Single']).cumprod()
+                acc_single = accuracy_score(y_test, np.where(probs_single > threshold, 1, 0))
+
+                # --- 2. 計算 集成模型 績效 ---
+                probs_ens = model_ensemble.predict_proba(X_test)[:, 1] # ★ 關鍵：在這裡定義 probs_ens
+                test_df['Sig_Ens'] = np.where(probs_ens > threshold, 1, 0)
+                test_df['Ret_Ens'] = test_df['Sig_Ens'].shift(1) * test_df['Target_Ret']
+                test_df['Cum_Ens'] = (1 + test_df['Ret_Ens']).cumprod()
+                acc_ens = accuracy_score(y_test, np.where(probs_ens > threshold, 1, 0))
+
+                # 顯示準確率對決
+                st.success(f"🏆 對決結果 (門檻 {threshold*100:.0f}%)：\n* **單一 XGB**: {acc_single*100:.1f}%\n* **集成模型**: {acc_ens*100:.1f}%")
+
+                # ==========================================
+                # 📈 視覺化儀表板
+                # ==========================================
                 c1, c2 = st.columns([2, 1])
                 
                 with c1:
-                    st.subheader("💰 資金曲線 & AI 信心")
+                    # 建立分頁
+                    tab_money, tab_brain = st.tabs(["💰 資金曲線對決", "🧠 三巨頭信心拆解"])
                     
-                    # ★ 建立雙軸圖表 (左邊看錢，右邊看信心)
-                    fig = make_subplots(specs=[[{"secondary_y": True}]])
-                    
-                    # 1. 左軸：資金曲線 (紅色 AI，灰色 Buy&Hold)
-                    fig.add_trace(go.Scatter(
-                        x=test_df.index, y=test_df['Cum_BuyHold'], 
-                        name='Buy & Hold', line=dict(color='gray', width=1, dash='dot')
-                    ), secondary_y=False)
-                    
-                    fig.add_trace(go.Scatter(
-                        x=test_df.index, y=test_df['Cum_AI'], 
-                        name='AI 策略回報', line=dict(color='#FF5252', width=2)
-                    ), secondary_y=False)
+                    # Tab 1: 資金曲線
+                    with tab_money:
+                        st.caption("藍色=單一衝勁，紅色=集成穩健")
+                        fig = make_subplots()
+                        fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_BuyHold'], name='Buy & Hold', line=dict(color='gray', width=1, dash='dot')))
+                        fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_Single'], name='單一 XGBoost', line=dict(color='#2962FF', width=2)))
+                        fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_Ens'], name='集成模型 (Ensemble)', line=dict(color='#FF5252', width=3)))
+                        fig.update_layout(height=450, margin=dict(t=10, b=0), hovermode="x unified", legend=dict(orientation="h", y=1.1))
+                        st.plotly_chart(fig, use_container_width=True)
 
-                    # 2. 右軸：信心度 (青色陰影區)
-                    # 這樣可以看出 AI 什麼時候「很確定」要漲
-                    fig.add_trace(go.Scatter(
-                        x=test_df.index, y=test_df['Confidence'], 
-                        name='AI 信心度', 
-                        line=dict(color='rgba(0, 255, 255, 0.3)', width=1),
-                        fill='tozeroy', # 填滿下方顏色，更有感
-                        fillcolor='rgba(0, 255, 255, 0.1)' 
-                    ), secondary_y=True)
-
-                    # 3. 畫出買進門檻線 (黃色虛線)
-                    fig.add_hline(y=threshold, line_dash="dash", line_color="yellow", annotation_text="買進門檻", secondary_y=True)
-
-                    # 設定版面
-                    fig.update_layout(
-                        height=450, 
-                        hovermode="x unified",
-                        margin=dict(t=30, b=0, l=0, r=0),
-                        legend=dict(orientation="h", y=1.1) # 圖例放上面
-                    )
-                    
-                    # 設定軸標籤
-                    fig.update_yaxes(title_text="資產倍數", secondary_y=False)
-                    fig.update_yaxes(title_text="AI 信心 (%)", range=[0, 1], secondary_y=True)
-                    
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Tab 2: 信心拆解
+                    with tab_brain:
+                        st.caption("觀察三個大腦是否意見一致？(糾結=共識高，發散=風險高)")
+                        # 重新取得個別機率
+                        p_xgb = model_ensemble.models[0].predict_proba(X_test)[:, 1]
+                        X_test_lgb = X_test.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
+                        p_lgb = model_ensemble.models[1].predict_proba(X_test_lgb)[:, 1]
+                        p_cat = model_ensemble.models[2].predict_proba(X_test)[:, 1]
+                        
+                        fig_brain = make_subplots()
+                        fig_brain.add_trace(go.Scatter(x=test_df.index, y=p_lgb, name='LightGBM', line=dict(color='#00E676', width=1), opacity=0.6))
+                        fig_brain.add_trace(go.Scatter(x=test_df.index, y=p_xgb, name='XGBoost', line=dict(color='#2962FF', width=1), opacity=0.6))
+                        fig_brain.add_trace(go.Scatter(x=test_df.index, y=p_cat, name='CatBoost', line=dict(color='#AA00FF', width=1), opacity=0.6))
+                        fig_brain.add_trace(go.Scatter(x=test_df.index, y=probs_ens, name='★ 平均信心', line=dict(color='black', width=3)))
+                        fig_brain.add_hline(y=0.5, line_dash="dash", line_color="gray")
+                        fig_brain.update_layout(height=450, margin=dict(t=10, b=0), hovermode="x unified", yaxis_title="看漲信心", legend=dict(orientation="h", y=1.1))
+                        st.plotly_chart(fig_brain, use_container_width=True)
                 
                 with c2:
                     st.subheader("🔍 關鍵因子")
-                    # 取得 XGBoost 的特徵重要性 (從 Wrapper 拿)
-                    importance = model.feature_importances_
+                    # 用 XGBoost 的觀點來看特徵重要性
+                    importance = model_single.feature_importances_
                     feat_imp = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values('Importance', ascending=True)
-                    
-                    fig_imp = go.Figure(go.Bar(
-                        x=feat_imp['Importance'], y=feat_imp['Feature'], 
-                        orientation='h', marker=dict(color='#00E676')
-                    ))
+                    fig_imp = go.Figure(go.Bar(x=feat_imp['Importance'], y=feat_imp['Feature'], orientation='h', marker=dict(color='#00E676')))
                     fig_imp.update_layout(height=450, margin=dict(t=30, b=0))
                     st.plotly_chart(fig_imp, use_container_width=True)
+
                 # ==========================================
                 # 🧐 深度分析：AI 信心 vs 真實勝率 vs 準確度
                 # ==========================================
                 with st.expander("🧐 深度分析：AI 到底準不準？ (校準圖)", expanded=True):
                     # 1. 準備數據
                     analysis_df = pd.DataFrame({
-                        'Confidence': probs_ens,
+                        'Confidence': probs_ens, # ★ 這裡用到 probs_ens，確保上方已定義
                         'Actual_Win': y_test.values,
                         'Return': test_df['Target_Ret'].values
                     })
                     
                     # 2. 定義「AI 預測方向」與「是否猜對」
-                    # 如果信心 > 0.5 猜漲(1)，否則猜跌(0)
                     analysis_df['Prediction'] = np.where(analysis_df['Confidence'] > 0.5, 1, 0)
-                    # 如果預測方向 == 真實方向，就是「準確 (Correct)」
                     analysis_df['Is_Correct'] = (analysis_df['Prediction'] == analysis_df['Actual_Win']).astype(int)
 
                     # 3. 分桶統計
@@ -2954,15 +2896,13 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     labels = [f"{int(b*100)}%" for b in bins[:-1]]
                     analysis_df['Conf_Bin'] = pd.cut(analysis_df['Confidence'], bins=bins, labels=labels)
                     
-                    # 統計：真實勝率 (Win_Rate) & 預測準確度 (Accuracy)
+                    # 統計
                     bin_stats = analysis_df.groupby('Conf_Bin', observed=False).agg({
                         'Actual_Win': ['count', 'mean'],
-                        'Is_Correct': 'mean' # 新增：計算準確率平均
+                        'Is_Correct': 'mean' # 準確率
                     })
-                    bin_stats.columns = ['Count', 'Win_Rate', 'Accuracy'] # 重新命名
+                    bin_stats.columns = ['Count', 'Win_Rate', 'Accuracy']
                     bin_stats = bin_stats.reset_index()
-                    
-                    # 過濾樣本太少的
                     valid_stats = bin_stats[bin_stats['Count'] > 2].copy()
 
                     # 4. 繪圖
@@ -2974,21 +2914,20 @@ elif app_mode == "🌲 XGBoost 實驗室":
                         name='樣本數', marker_color='rgba(255,255,255,0.1)'
                     ), secondary_y=True)
                     
-                    # 綠色線：真實勝率 (原本的線 - 看市場趨勢)
+                    # 綠色線：真實勝率
                     fig_cal.add_trace(go.Scatter(
                         x=valid_stats['Conf_Bin'], y=valid_stats['Win_Rate'], 
                         name='市場真實勝率', line=dict(color='#00E676', width=2, dash='dot'), 
                         mode='lines+markers'
                     ), secondary_y=False)
 
-                    # ★ 藍色線：模型準確度 (新的線 - 看模型腦袋)
+                    # 藍色線：模型準確度 (重點觀察這條！)
                     fig_cal.add_trace(go.Scatter(
                         x=valid_stats['Conf_Bin'], y=valid_stats['Accuracy'], 
                         name='AI 預測準確度', line=dict(color='#2979FF', width=4), 
                         mode='lines+markers'
                     ), secondary_y=False)
 
-                    # 參考線：50% 
                     fig_cal.add_hline(y=0.5, line_dash="dash", line_color="gray", secondary_y=False)
 
                     fig_cal.update_layout(
@@ -2999,11 +2938,12 @@ elif app_mode == "🌲 XGBoost 實驗室":
                         legend=dict(orientation="h", y=1.1)
                     )
                     st.plotly_chart(fig_cal, use_container_width=True)
-                    
-                    # 簡單解讀
-                    st.info("💡 **如何解讀？**\n"
-                            "- **🟢 綠線 (市場)**：告訴你「歷史上這時候市場多會漲」。\n"
-                            "- **🔵 藍線 (準度)**：告訴你「AI 這次猜對了嗎」。**如果在某個區間藍線掉到 50% 以下，代表 AI 根本在亂猜，請避開該區間！**")
+                    st.info("💡 **藍線判讀**：如果在某個信心區間（例如 20%），藍線掉到 50% 以下，代表 AI 判斷錯誤，請反著做！")
+
+                # ==========================================
+                # ★ 關鍵交棒：將最強的集成模型指派給 model 變數
+                # ==========================================
+                model = model_ensemble 
 
                 # ==========================================
                 # 實戰版：明日操作指引
@@ -3011,50 +2951,45 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 st.divider()
                 st.subheader(f"🔮 AI 對明日開盤的戰術指令")
                 
-                # 1. 準備最新數據
-                last_feat = X.iloc[-1:].copy()
-                live_price = get_real_live_price(target)
-                
-                # 注入即時數據 (讓預測更準)
-                if live_price:
-                    if "TQQQ" in model_mode:
-                         sma50 = df['SMA_50'].iloc[-1]
-                         last_feat['Bias_50'] = (live_price - sma50) / sma50
-                         st.caption(f"⚡ 即時價格 ${live_price} | 均線數據已即時修正")
-                    elif "TSM" in model_mode:
-                         prev_close = df[target].iloc[-2]
-                         last_feat['Target_Ret_1d'] = (live_price - prev_close) / prev_close
-                         st.caption(f"⚡ 即時價格 ${live_price} | 動能數據已即時修正")
-                
-                # 2. AI 計算勝率
-                prob = model.predict_proba(last_feat)[0][1]
-                
-                # 3. 取得您的門檻 (TQQQ=0.5, 其他預設0.5)
-                thresh = locals().get('buy_threshold', 0.5)
+                try:
+                    # 1. 準備最新數據
+                    last_feat = X.iloc[-1:].copy()
+                    
+                    # 嘗試取得即時價格修正
+                    live_price = get_real_live_price(target)
+                    if live_price:
+                        if "TQQQ" in model_mode:
+                             sma50 = df['SMA_50'].iloc[-1]
+                             last_feat['Bias_50'] = (live_price - sma50) / sma50
+                             st.caption(f"⚡ 即時價格 ${live_price} | 乖離率已即時修正")
+                        elif "TSM" in model_mode:
+                             prev_close = df[target].iloc[-2]
+                             last_feat['Target_Ret_1d'] = (live_price - prev_close) / prev_close
+                             st.caption(f"⚡ 即時價格 ${live_price} | 動能數據已即時修正")
+                    
+                    # 2. AI 計算勝率
+                    prob = model.predict_proba(last_feat)[0][1]
+                    
+                    # 3. 取得您的門檻
+                    thresh = locals().get('threshold', 0.5)
 
-                # 4. 顯示儀表板
-                c1, c2, c3 = st.columns(3)
+                    # 4. 顯示儀表板
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("AI 上漲信心", f"{prob*100:.1f}%", help=f"超過 {thresh*100:.0f}% 才會動作")
+                    
+                    if prob > thresh:
+                        c2.metric("趨勢判斷", "📈 多頭", delta="偏多")
+                        c3.success(f"🔥 指令：持有 / 買進")
+                        st.markdown(f"**操作建議：**\n- **空手者**：明早開盤買進。\n- **持有者**：續抱，不停利。")
+                    else:
+                        c2.metric("趨勢判斷", "📉 空頭/盤整", delta="-偏空", delta_color="inverse")
+                        c3.error(f"🛑 指令：賣出 / 空手")
+                        st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出**。\n- **空手者**：保持現金。")
                 
-                # 欄位 A: 勝率數值
-                c1.metric("AI 上漲信心", f"{prob*100:.1f}%", help=f"超過 {thresh*100:.0f}% 才會動作")
-                
-                # 欄位 B: 趨勢方向
-                if prob > thresh:
-                    c2.metric("趨勢判斷", "📈 多頭 (Bullish)", delta="偏多")
-                else:
-                    c2.metric("趨勢判斷", "📉 空頭/盤整", delta="-偏空", delta_color="inverse")
-                
-                # 欄位 C: ★★★ 最重要的實戰指令 ★★★
-                if prob > thresh:
-                    # 勝率夠高 -> 買進或續抱
-                    c3.success(f"🔥 指令：持有 / 買進")
-                    st.markdown(f"**操作建議：**\n- **空手者**：明早開盤買進。\n- **持有者**：續抱，不停利。")
-                else:
-                    # 勝率不足 -> 賣出或觀望
-                    c3.error(f"🛑 指令：賣出 / 空手")
-                    st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
-            except Exception as e:
-                st.error(f"發生錯誤: {e}")
+                except Exception as e:
+                    st.error(f"預測模組發生錯誤: {e}")
+                    if 'last_feat' in locals():
+                        st.write("Debug Info:", last_feat)
 
 
 
