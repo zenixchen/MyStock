@@ -2772,73 +2772,69 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 st.write('⚖️ 正在召喚集成模型三巨頭 (XGBoost + LightGBM + CatBoost)...')
 
                 # ==========================================
-                # ★★★ 步驟 1: 訓練三巨頭 ★★★
+                # 通用訓練流程 (雙模大對決：單一 vs 集成)
                 # ==========================================
                 
-                # 1. 訓練 XGBoost (老將)
-                model_xgb = xgb.XGBClassifier(
+                # 0. 強制數據清洗
+                for col in features:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                df.dropna(inplace=True)
+                
+                if len(df) < 50:
+                    st.error(f"❌ 數據不足 ({len(df)}筆)，無法訓練。")
+                    st.stop()
+
+                X = df[features]
+                y = df['Label']
+                split = int(len(df) * 0.8)
+                X_train, X_test = X.iloc[:split], X.iloc[split:]
+                y_train, y_test = y.iloc[:split], y.iloc[split:]
+
+                # 權重設定
+                base_weight = (len(y_train) - y_train.sum()) / y_train.sum()
+                multiplier = locals().get('weight_multiplier', 1.0) 
+                final_weight = base_weight * multiplier
+
+                st.write('🥊 正在讓「單一 XGBoost」與「集成模型」進行對決...')
+
+                # ==========================================
+                # 🥊 角落 A: 單一 XGBoost (Single)
+                # ==========================================
+                model_single = xgb.XGBClassifier(
                     **params, scale_pos_weight=final_weight, random_state=42
                 )
-                model_xgb.fit(X_train, y_train)
-
-                # 2. 訓練 LightGBM (速度快，但討厭特殊符號)
-                # 修正欄位名稱 (例如把 JPY=X 改成 JPYX)
-                X_train_lgb = X_train.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
+                model_single.fit(X_train, y_train)
                 
-                # LightGBM 參數設定
-                model_lgb = lgb.LGBMClassifier(
-                    n_estimators=params['n_estimators'], 
-                    max_depth=params['max_depth'],
-                    learning_rate=params['learning_rate'], 
-                    random_state=42, 
-                    verbose=-1,
-                    scale_pos_weight=final_weight
-                )
-                model_lgb.fit(X_train_lgb, y_train)
-
-                # 3. 訓練 CatBoost (穩健，抗雜訊)
-                model_cat = CatBoostClassifier(
-                    iterations=params['n_estimators'], 
-                    depth=params['max_depth'],
-                    learning_rate=params['learning_rate'], 
-                    random_seed=42, 
-                    verbose=0,
-                    scale_pos_weight=final_weight
-                )
-                model_cat.fit(X_train, y_train)
-
                 # ==========================================
-                # ★★★ 步驟 2: 建立集成包裝器 (Wrapper) ★★★
+                # 🥊 角落 B: 集成模型 (Ensemble)
                 # ==========================================
+                # 1. XGB (集成版)
+                ens_xgb = xgb.XGBClassifier(**params, scale_pos_weight=final_weight, random_state=42)
+                ens_xgb.fit(X_train, y_train)
+                
+                # 2. LightGBM
+                X_train_lgb = X_train.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
+                ens_lgb = lgb.LGBMClassifier(n_estimators=params['n_estimators'], max_depth=params['max_depth'], learning_rate=params['learning_rate'], random_state=42, verbose=-1, scale_pos_weight=final_weight)
+                ens_lgb.fit(X_train_lgb, y_train)
+                
+                # 3. CatBoost
+                ens_cat = CatBoostClassifier(iterations=params['n_estimators'], depth=params['max_depth'], learning_rate=params['learning_rate'], random_seed=42, verbose=0, scale_pos_weight=final_weight)
+                ens_cat.fit(X_train, y_train)
+
+                # 集成包裝器
                 class EnsembleWrapper:
-                    def __init__(self, models):
-                        self.models = models # [xgb, lgb, cat]
-                    
+                    def __init__(self, models): self.models = models
                     def predict_proba(self, X):
-                        # A. XGBoost 機率
                         p1 = self.models[0].predict_proba(X)[:, 1]
-                        
-                        # B. LightGBM 機率 (記得先清洗欄位名稱)
                         X_lgb = X.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
                         p2 = self.models[1].predict_proba(X_lgb)[:, 1]
-                        
-                        # C. CatBoost 機率
                         p3 = self.models[2].predict_proba(X)[:, 1]
-                        
-                        # D. ★ 投票核心：取平均值 (Soft Voting)
                         avg = (p1 + p2 + p3) / 3
-                        
-                        # 回傳 sklearn 格式 (N, 2)
                         return np.vstack([1-avg, avg]).T
-                    
                     @property
-                    def feature_importances_(self):
-                        # 讓後面的畫圖程式抓 XGBoost 的重要性來畫
-                        return self.models[0].feature_importances_
+                    def feature_importances_(self): return self.models[0].feature_importances_
 
-                # ★ 最後把三個模型包起來，賦值給 'model' 變數
-                # 這樣後面的程式碼完全不用改！
-                model = EnsembleWrapper([model_xgb, model_lgb, model_cat])
+                model_ensemble = EnsembleWrapper([ens_xgb, ens_lgb, ens_cat])
 
                 # ==========================================
                 # 後續結果與繪圖 (保持原樣)
@@ -2877,48 +2873,80 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 c1, c2 = st.columns([2, 1])
                 
                 with c1:
-                    st.subheader("💰 資金曲線 & AI 信心")
+                    # 建立分頁：第一個看錢，第二個看信心細節
+                    tab_money, tab_brain = st.tabs(["💰 資金曲線對決", "🧠 三巨頭信心拆解"])
                     
-                    # ★ 建立雙軸圖表 (左邊看錢，右邊看信心)
-                    fig = make_subplots(specs=[[{"secondary_y": True}]])
-                    
-                    # 1. 左軸：資金曲線 (紅色 AI，灰色 Buy&Hold)
-                    fig.add_trace(go.Scatter(
-                        x=test_df.index, y=test_df['Cum_BuyHold'], 
-                        name='Buy & Hold', line=dict(color='gray', width=1, dash='dot')
-                    ), secondary_y=False)
-                    
-                    fig.add_trace(go.Scatter(
-                        x=test_df.index, y=test_df['Cum_AI'], 
-                        name='AI 策略回報', line=dict(color='#FF5252', width=2)
-                    ), secondary_y=False)
+                    # ==========================================
+                    # Tab 1: 資金曲線 (維持原樣)
+                    # ==========================================
+                    with tab_money:
+                        st.caption("比較「單一模型」與「集成模型」的累積報酬率")
+                        fig = make_subplots()
+                        # 灰色：買進持有
+                        fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_BuyHold'], name='Buy & Hold', line=dict(color='gray', width=1, dash='dot')))
+                        # 藍色：單一 XGBoost
+                        fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_Single'], name='單一 XGBoost', line=dict(color='#2962FF', width=2)))
+                        # 紅色：集成模型
+                        fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_Ens'], name='集成模型 (Ensemble)', line=dict(color='#FF5252', width=3)))
+                        
+                        fig.update_layout(height=450, margin=dict(t=10, b=0), hovermode="x unified", legend=dict(orientation="h", y=1.1))
+                        st.plotly_chart(fig, use_container_width=True)
 
-                    # 2. 右軸：信心度 (青色陰影區)
-                    # 這樣可以看出 AI 什麼時候「很確定」要漲
-                    fig.add_trace(go.Scatter(
-                        x=test_df.index, y=test_df['Confidence'], 
-                        name='AI 信心度', 
-                        line=dict(color='rgba(0, 255, 255, 0.3)', width=1),
-                        fill='tozeroy', # 填滿下方顏色，更有感
-                        fillcolor='rgba(0, 255, 255, 0.1)' 
-                    ), secondary_y=True)
-
-                    # 3. 畫出買進門檻線 (黃色虛線)
-                    fig.add_hline(y=threshold, line_dash="dash", line_color="yellow", annotation_text="買進門檻", secondary_y=True)
-
-                    # 設定版面
-                    fig.update_layout(
-                        height=450, 
-                        hovermode="x unified",
-                        margin=dict(t=30, b=0, l=0, r=0),
-                        legend=dict(orientation="h", y=1.1) # 圖例放上面
-                    )
-                    
-                    # 設定軸標籤
-                    fig.update_yaxes(title_text="資產倍數", secondary_y=False)
-                    fig.update_yaxes(title_text="AI 信心 (%)", range=[0, 1], secondary_y=True)
-                    
-                    st.plotly_chart(fig, use_container_width=True)
+                    # ==========================================
+                    # Tab 2: 信心拆解 (新功能！)
+                    # ==========================================
+                    with tab_brain:
+                        st.caption("觀察三個模型是否「意見一致」？ (分歧越大 = 風險越高)")
+                        
+                        # 1. 重新計算個別模型的信心 (還原現場)
+                        # XGBoost (集成內的那個)
+                        p_xgb = model_ensemble.models[0].predict_proba(X_test)[:, 1]
+                        
+                        # LightGBM (記得洗欄位名)
+                        X_test_lgb = X_test.rename(columns=lambda x: re.sub('[^A-Za-z0-9_]+', '', x))
+                        p_lgb = model_ensemble.models[1].predict_proba(X_test_lgb)[:, 1]
+                        
+                        # CatBoost
+                        p_cat = model_ensemble.models[2].predict_proba(X_test)[:, 1]
+                        
+                        # 2. 畫圖
+                        fig_brain = make_subplots()
+                        
+                        # 綠色：LightGBM (機靈鬼)
+                        fig_brain.add_trace(go.Scatter(
+                            x=test_df.index, y=p_lgb, name='LightGBM',
+                            line=dict(color='#00E676', width=1), opacity=0.7
+                        ))
+                        
+                        # 藍色：XGBoost (老大哥)
+                        fig_brain.add_trace(go.Scatter(
+                            x=test_df.index, y=p_xgb, name='XGBoost',
+                            line=dict(color='#2962FF', width=1), opacity=0.7
+                        ))
+                        
+                        # 紫色：CatBoost (穩重派)
+                        fig_brain.add_trace(go.Scatter(
+                            x=test_df.index, y=p_cat, name='CatBoost',
+                            line=dict(color='#AA00FF', width=1), opacity=0.7
+                        ))
+                        
+                        # 黑色粗線：平均信心 (最終決策)
+                        fig_brain.add_trace(go.Scatter(
+                            x=test_df.index, y=probs_ens, name='★ 平均信心',
+                            line=dict(color='black', width=3)
+                        ))
+                        
+                        # 畫出 0.5 分界線
+                        fig_brain.add_hline(y=0.5, line_dash="dash", line_color="gray")
+                        
+                        fig_brain.update_layout(
+                            height=450, 
+                            margin=dict(t=10, b=0), 
+                            hovermode="x unified",
+                            yaxis_title="看漲信心 (0~1)",
+                            legend=dict(orientation="h", y=1.1)
+                        )
+                        st.plotly_chart(fig_brain, use_container_width=True)
                 
                 with c2:
                     st.subheader("🔍 關鍵因子")
@@ -3050,6 +3078,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
