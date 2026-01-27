@@ -290,96 +290,60 @@ def verify_performance_db():
         return 0
 
 # ==========================================
-# ★★★ TSM T+5 主帥版 (絕對防崩潰救命版) ★★★
+# ★★★ TSM T+5 主帥版 (增強版：回傳完整回測數據) ★★★
 # ==========================================
-# 1. 定義信心放大函數 (確保函數存在)
-def enhance_confidence(prob, temperature=0.25):
-    import numpy as np
-    prob = np.clip(prob, 0.001, 0.999)
-    logit = np.log(prob / (1 - prob))
-    scaled_logit = logit / temperature
-    new_prob = 1 / (1 + np.exp(-scaled_logit))
-    return new_prob
-
 @st.cache_resource(ttl=300)
 def get_tsm_swing_prediction():
-    # 預設回傳值，確保發生天災人禍時，至少介面不會掛掉
+    # 預設回傳值
     current_price = 0.0
     
     if not HAS_TENSORFLOW: return None, None, 0.0, None, 0
     try:
-        # 1. 下載數據 (放寬 Timeout)
+        # 1. 下載數據
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
         data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
         
-        # 資料防呆
-        if data is None or data.empty:
-            print("❌ Error: 數據下載為空")
-            return None, None, 0.0, None, 0
+        if data is None or data.empty: return None, None, 0.0, None, 0
 
-        # 處理資料結構
-        if isinstance(data.columns, pd.MultiIndex):
-            df = data['Close'].copy()
-        else:
-            df = data['Close'].copy()
+        if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
+        else: df = data['Close'].copy()
 
-        # 確保 TSM 欄位存在
         if 'TSM' not in df.columns: return None, None, 0.0, None, 0
 
-        # ---------------------------------------------------
-        # ★ 步驟 A: 強制注入即時價格 (Live Price Injection)
-        # ---------------------------------------------------
+        # A. 注入即時價格
         try:
             live_price = get_real_live_price("TSM")
             if live_price and live_price > 0:
                 current_price = live_price
-                last_idx = df.index[-1]
-                # 強制覆蓋最後一筆收盤價
-                df.at[last_idx, 'TSM'] = live_price
+                df.at[df.index[-1], 'TSM'] = live_price
             else:
                 current_price = float(df['TSM'].iloc[-1])
         except:
             current_price = float(df['TSM'].iloc[-1]) if not df.empty else 0.0
 
-        # 補值：這是最關鍵的一步
         df.ffill(inplace=True)
         
-        # ---------------------------------------------------
-        # ★ 步驟 B: 寬鬆特徵工程 (Loose Feature Engineering)
-        # ---------------------------------------------------
+        # B. 特徵工程
         feat = pd.DataFrame()
         try:
-            # 就算某些欄位抓不到，也用 0 填補，不要讓程式崩潰
             feat['TSM_Ret'] = df['TSM'].pct_change()
             feat['RSI'] = ta.rsi(df['TSM'], length=5) 
             feat['MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
-            
-            # 選用特徵 (如果抓不到就填 0)
             feat['NVDA_Ret'] = df['NVDA'].pct_change() if 'NVDA' in df else 0
             feat['SOX_Ret'] = df['^SOX'].pct_change() if '^SOX' in df else 0
             feat['TNX_Chg'] = df['^TNX'].pct_change() if '^TNX' in df else 0
             feat['VIX'] = df['^VIX'] if '^VIX' in df else 0
-            
-        except Exception as e:
-            print(f"❌ 特徵計算失敗: {e}")
-            return None, None, current_price, None, 0
+        except: return None, None, current_price, None, 0
         
-        # 再次補值
-        feat.ffill(inplace=True)
-        feat.dropna(inplace=True)
-        
+        feat.ffill(inplace=True); feat.dropna(inplace=True)
         cols = ['NVDA_Ret', 'SOX_Ret', 'TNX_Chg', 'VIX', 'TSM_Ret', 'RSI', 'MACD']
         lookback = 20
 
-        # ---------------------------------------------------
-        # ★ 步驟 C: 模型訓練與建立
-        # ---------------------------------------------------
-        # 標籤 (Target)
+        # C. 模型訓練
         future_ret = df['TSM'].shift(-5) / df['TSM'] - 1
-        feat['Target'] = (future_ret > 0.025).astype(int)
+        feat['Target'] = (future_ret > 0.025).astype(int) # 目標：5天漲2.5%
         
         valid_data = feat.iloc[:-5].copy()
-        # 確保數據夠長
         if len(valid_data) < 50: return None, None, current_price, None, 0
 
         split_idx = int(len(valid_data) * 0.8)
@@ -388,7 +352,6 @@ def get_tsm_swing_prediction():
         
         scaler = StandardScaler()
         scaler.fit(train_df[cols]) 
-        
         train_scaled = scaler.transform(train_df[cols])
         test_scaled = scaler.transform(test_df[cols])
         
@@ -405,82 +368,61 @@ def get_tsm_swing_prediction():
         
         if len(X_train) == 0: return None, None, current_price, None, 0
 
-        # 計算權重
-        from sklearn.utils.class_weight import compute_class_weight
-        class_weight_dict = None
-        if len(np.unique(y_train)) > 1:
-            class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-            class_weight_dict = dict(enumerate(class_weights))
-        
+        # 簡單 LSTM 模型
         from tensorflow.keras.layers import Input, LSTM
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
-        model.add(LSTM(64, return_sequences=True))
-        model.add(Dropout(0.2)) 
-        model.add(LSTM(64))
-        model.add(Dropout(0.2))
+        model.add(LSTM(64, return_sequences=True)); model.add(Dropout(0.2)) 
+        model.add(LSTM(64)); model.add(Dropout(0.2))
         model.add(Dense(1, activation='sigmoid'))
         
         model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
         early = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-        
-        model.fit(X_train, y_train, validation_data=(X_test, y_test),
-                  epochs=25, batch_size=32, callbacks=[early], 
-                  class_weight=class_weight_dict, verbose=0)
+        model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=25, batch_size=32, callbacks=[early], verbose=0)
         
         loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # ---------------------------------------------------
-        # ★ 步驟 D: 繪圖數據 (Viz)
-        # ---------------------------------------------------
+        # D. 繪圖數據 (關鍵修改處)
         df_viz = None
         viz_acc = 0
         if len(X_test) > 0:
-            viz_len = min(len(X_test), 90)
+            # ★ 改動 1: 取所有測試數據，不再限制 90 天，讓資金曲線更長
+            viz_len = len(X_test) 
+            
             test_indices = test_df.index[lookback:] 
             test_prices = df['TSM'].loc[test_indices]
+            
             preds_raw = model.predict(X_test, verbose=0).flatten()
-            viz_probs_raw = preds_raw[-viz_len:]
-            viz_probs_enhanced = [enhance_confidence(p, temperature=0.25) for p in viz_probs_raw]
+            viz_probs_enhanced = [enhance_confidence(p, temperature=0.25) for p in preds_raw]
+            
+            # ★ 改動 2: 把 Target (正確答案) 也存進去
+            viz_targets = y_test 
             
             df_viz = pd.DataFrame({
-                'Date': test_indices[-viz_len:],
-                'Price': test_prices.iloc[-viz_len:].values,
-                'Prob': viz_probs_enhanced
+                'Date': test_indices,
+                'Price': test_prices.values,
+                'Prob': viz_probs_enhanced,
+                'Target': viz_targets
             })
             
-            viz_targets = y_test[-viz_len:]
             viz_preds_cls = (np.array(viz_probs_enhanced) > 0.5).astype(int)
             viz_acc = np.mean(viz_targets == viz_preds_cls)
 
-        # ---------------------------------------------------
-        # ★ 步驟 E: 預測最新一天 (Shape Mismatch 終極修正)
-        # ---------------------------------------------------
+        # E. 預測最新一天
         latest_seq_raw = feat[cols].iloc[-lookback:].values
-        
-        # [救命機制] 如果資料少於 20 筆 (例如只有 19 筆)，用第一筆複製來補齊
-        # 這能保證維度永遠是 (20, 7)，不會 Crash
-        current_len = len(latest_seq_raw)
-        if current_len < lookback:
-            # print(f"⚠️ 數據不足 ({current_len})，啟動自動補齊機制...")
-            missing_count = lookback - current_len
-            # 複製第一列來填補前面的空缺
-            padding = np.tile(latest_seq_raw[0], (missing_count, 1))
+        if len(latest_seq_raw) < lookback:
+            padding = np.tile(latest_seq_raw[0], (lookback - len(latest_seq_raw), 1))
             latest_seq_raw = np.vstack([padding, latest_seq_raw])
 
-        # 現在長度保證是 20 了
         latest_seq_scaled = scaler.transform(latest_seq_raw)
-        
-        # 進行預測
-        input_seq = np.expand_dims(latest_seq_scaled, axis=0) # shape (1, 20, 7)
+        input_seq = np.expand_dims(latest_seq_scaled, axis=0)
         prob_latest_raw = model.predict(input_seq, verbose=0)[0][0]
         prob_latest = enhance_confidence(prob_latest_raw, temperature=0.25)
         
         return prob_latest, acc, current_price, df_viz, viz_acc
 
     except Exception as e:
-        print(f"❌ TSM Model Final Crash: {e}")
-        # 發生任何錯誤，至少回傳 current_price
+        print(f"TSM Model Crash: {e}")
         return None, None, current_price, None, 0
         
 # ==========================================
@@ -1780,23 +1722,88 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     st.info("📉 資料不足，請累積更多紀錄。")
 
             # ==========================================
-            # ★★★ 回測圖表區 (完整保留) ★★★
+            # ★★★ LSTM 戰情儀表板 (資金曲線 + 校準圖) ★★★
             # ==========================================
             if df_viz_long is not None:
                 st.divider()
-                st.caption(f"🔭 T+5 波段回測 (擬合度: {backtest_score*100:.1f}%) - 最佳門檻 > 0.5")
-                fig = make_subplots(specs=[[{"secondary_y": True}]])
-                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Price'], name="股價", line=dict(color='gray')), secondary_y=False)
+                st.subheader("📊 LSTM 模型深度體檢")
                 
-                # 更新：顯示新的冠軍門檻 0.5
-                buy = df_viz_long[df_viz_long['Prob'] > 0.5]
-                if not buy.empty: fig.add_trace(go.Scatter(x=buy['Date'], y=buy['Price'], mode='markers', marker=dict(color='cyan', size=8, symbol='triangle-up'), name='Buy Signal'), secondary_y=False)
+                # 準備數據
+                eval_df = df_viz_long.copy()
+                # 計算每日漲跌幅 (用來算資金曲線)
+                eval_df['Daily_Ret'] = eval_df['Price'].pct_change().fillna(0)
+                # 策略訊號：如果信心 > 0.5，假設持有 (這裡用簡單的日級別模擬)
+                eval_df['Signal'] = np.where(eval_df['Prob'] > 0.5, 1, 0)
+                # 策略回報 = 昨天的訊號 * 今天的漲跌
+                eval_df['Strat_Ret'] = eval_df['Signal'].shift(1) * eval_df['Daily_Ret']
                 
-                fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Prob'], name="信心", line=dict(color='rgba(0,255,255,0.5)')), secondary_y=True)
-                fig.add_hline(y=0.5, line_dash="dot", line_color="cyan", secondary_y=True)
-                fig.update_layout(height=350, margin=dict(t=10, b=10))
-                st.plotly_chart(fig, use_container_width=True)
+                # 計算累積報酬
+                eval_df['Cum_BuyHold'] = (1 + eval_df['Daily_Ret']).cumprod()
+                eval_df['Cum_Strategy'] = (1 + eval_df['Strat_Ret']).cumprod()
+                
+                # 建立分頁
+                t1, t2 = st.tabs(["💰 資金曲線 (Backtest)", "🧐 準度校準 (Calibration)"])
+                
+                # --- Tab 1: 資金曲線 ---
+                with t1:
+                    st.caption(f"回測期間：{eval_df['Date'].iloc[0].strftime('%Y-%m-%d')} ~ {eval_df['Date'].iloc[-1].strftime('%Y-%m-%d')}")
+                    fig_eq = make_subplots()
+                    # 灰色：買進持有
+                    fig_eq.add_trace(go.Scatter(x=eval_df['Date'], y=eval_df['Cum_BuyHold'], name='Buy & Hold (大盤)', line=dict(color='gray', width=1, dash='dot')))
+                    # 紅色：LSTM 策略
+                    fig_eq.add_trace(go.Scatter(x=eval_df['Date'], y=eval_df['Cum_Strategy'], name='LSTM 策略', line=dict(color='#FF5252', width=2)))
+                    
+                    # 標註買點
+                    buy_points = eval_df[eval_df['Prob'] > 0.7] # 信心 > 70% 的強力買點
+                    fig_eq.add_trace(go.Scatter(x=buy_points['Date'], y=buy_points['Cum_Strategy'], mode='markers', marker=dict(color='yellow', size=5), name='高信心情境'))
+                    
+                    fig_eq.update_layout(height=400, margin=dict(t=10, b=0), hovermode="x unified", legend=dict(orientation="h", y=1.1))
+                    st.plotly_chart(fig_eq, use_container_width=True)
+                    
+                    # 顯示績效數據
+                    tot_ret = (eval_df['Cum_Strategy'].iloc[-1] - 1) * 100
+                    bh_ret = (eval_df['Cum_BuyHold'].iloc[-1] - 1) * 100
+                    c1, c2 = st.columns(2)
+                    c1.metric("LSTM 策略報酬", f"{tot_ret:.1f}%", delta=f"{tot_ret - bh_ret:.1f}% vs 大盤")
+                    c2.metric("買進持有報酬", f"{bh_ret:.1f}%")
 
+                # --- Tab 2: 準度校準圖 ---
+                with t2:
+                    st.caption("檢測 LSTM 在不同信心區間的表現 (藍線越像『/』越好)")
+                    
+                    # 準備校準數據
+                    # Target 是 1 (大漲) 或 0 (盤跌)
+                    # Prediction 是 1 (猜漲) 或 0 (猜跌)
+                    eval_df['Pred_Class'] = np.where(eval_df['Prob'] > 0.5, 1, 0)
+                    eval_df['Is_Correct'] = (eval_df['Pred_Class'] == eval_df['Target']).astype(int)
+                    
+                    # 分桶統計
+                    bins = np.arange(0, 1.05, 0.1) # 每 10% 一組
+                    labels = [f"{int(b*100)}%" for b in bins[:-1]]
+                    eval_df['Conf_Bin'] = pd.cut(eval_df['Prob'], bins=bins, labels=labels)
+                    
+                    bin_stats = eval_df.groupby('Conf_Bin', observed=False).agg({
+                        'Target': 'mean',      # 真實勝率 (Real Win Rate)
+                        'Is_Correct': 'mean',  # 預測準度 (Accuracy)
+                        'Prob': 'count'        # 樣本數
+                    }).rename(columns={'Target': 'Win_Rate', 'Prob': 'Count', 'Is_Correct': 'Accuracy'}).reset_index()
+                    
+                    valid_stats = bin_stats[bin_stats['Count'] > 0]
+                    
+                    fig_cal = make_subplots(specs=[[{"secondary_y": True}]])
+                    # 柱狀圖 (樣本數)
+                    fig_cal.add_trace(go.Bar(x=valid_stats['Conf_Bin'], y=valid_stats['Count'], name='出現次數', marker_color='rgba(255,255,255,0.1)'), secondary_y=True)
+                    
+                    # 綠線：真實勝率 (AI 喊 80% 時，真的有 80% 機率大漲嗎？)
+                    fig_cal.add_trace(go.Scatter(x=valid_stats['Conf_Bin'], y=valid_stats['Win_Rate'], name='真實勝率', line=dict(color='#00E676', width=2), mode='lines+markers'), secondary_y=False)
+                    
+                    # 藍線：準確度 (AI 在這個區間猜對了嗎？)
+                    fig_cal.add_trace(go.Scatter(x=valid_stats['Conf_Bin'], y=valid_stats['Accuracy'], name='預測準度', line=dict(color='#2979FF', width=4), mode='lines+markers'), secondary_y=False)
+                    
+                    fig_cal.add_hline(y=0.5, line_dash="dash", line_color="gray", secondary_y=False)
+                    fig_cal.update_layout(height=400, title="藍線 > 50% 代表模型有效", hovermode="x unified", legend=dict(orientation="h", y=1.1))
+                    st.plotly_chart(fig_cal, use_container_width=True)
+                    
             if df_viz_short is not None:
                 st.caption("⚡ T+3 狙擊回測 - 最佳門檻 > 0.45")
                 fig_s = make_subplots(specs=[[{"secondary_y": True}]])
@@ -3026,6 +3033,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
