@@ -2942,8 +2942,10 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     fig_cal.update_layout(title="信心校準曲線 (越像左下右上越好)", height=350, hovermode="x unified", yaxis_title="真實勝率", yaxis2_title="次數")
                     st.plotly_chart(fig_cal, use_container_width=True)
 
-                # 最後設定：讓下方的「明日操作指引」使用最強的集成模型
-                model = model_ensemble
+                # ==========================================
+                # ★ 關鍵交棒：將最強的集成模型指派給 model 變數
+                # ==========================================
+                model = model_ensemble 
 
                 # ==========================================
                 # 實戰版：明日操作指引 (這裡會自動使用上面的集成模型)
@@ -2999,6 +3001,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                         st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
                 
                 except Exception as e:
+                    # ★★★ 就是這裡！您原本少了這一段 ★★★
                     st.error(f"預測模組發生錯誤: {e}")
                     # 如果出錯，顯示除錯資訊
                     st.write("Debug Info:", last_feat)
