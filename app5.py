@@ -2849,7 +2849,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                         fig.update_layout(height=450, margin=dict(t=10, b=0), hovermode="x unified", legend=dict(orientation="h", y=1.1))
                         st.plotly_chart(fig, use_container_width=True)
 
-                    # Tab 2: 信心拆解
+                    # Tab 2: 信心拆解 (高對比配色版)
                     with tab_brain:
                         st.caption("觀察三個大腦是否意見一致？(糾結=共識高，發散=風險高)")
                         # 重新取得個別機率
@@ -2859,12 +2859,41 @@ elif app_mode == "🌲 XGBoost 實驗室":
                         p_cat = model_ensemble.models[2].predict_proba(X_test)[:, 1]
                         
                         fig_brain = make_subplots()
-                        fig_brain.add_trace(go.Scatter(x=test_df.index, y=p_lgb, name='LightGBM', line=dict(color='#00E676', width=1), opacity=0.6))
-                        fig_brain.add_trace(go.Scatter(x=test_df.index, y=p_xgb, name='XGBoost', line=dict(color='#2962FF', width=1), opacity=0.6))
-                        fig_brain.add_trace(go.Scatter(x=test_df.index, y=p_cat, name='CatBoost', line=dict(color='#AA00FF', width=1), opacity=0.6))
-                        fig_brain.add_trace(go.Scatter(x=test_df.index, y=probs_ens, name='★ 平均信心', line=dict(color='black', width=3)))
+                        
+                        # 1. LightGBM -> 🧪 螢光青 (Cyan)
+                        fig_brain.add_trace(go.Scatter(
+                            x=test_df.index, y=p_lgb, name='LightGBM', 
+                            line=dict(color='#00E5FF', width=1.5), opacity=0.8
+                        ))
+                        
+                        # 2. XGBoost -> 🍊 亮橘色 (Orange)
+                        fig_brain.add_trace(go.Scatter(
+                            x=test_df.index, y=p_xgb, name='XGBoost', 
+                            line=dict(color='#FF9100', width=1.5), opacity=0.8
+                        ))
+                        
+                        # 3. CatBoost -> 🩷 螢光粉 (Hot Pink)
+                        fig_brain.add_trace(go.Scatter(
+                            x=test_df.index, y=p_cat, name='CatBoost', 
+                            line=dict(color='#F50057', width=1.5), opacity=0.8
+                        ))
+                        
+                        # 4. 平均信心 -> ⚪ 純白粗線 (White)
+                        # (原本是黑色 black，在深色模式會看不見，改成 white)
+                        fig_brain.add_trace(go.Scatter(
+                            x=test_df.index, y=probs_ens, name='★ 平均信心', 
+                            line=dict(color='white', width=3)
+                        ))
+                        
                         fig_brain.add_hline(y=0.5, line_dash="dash", line_color="gray")
-                        fig_brain.update_layout(height=450, margin=dict(t=10, b=0), hovermode="x unified", yaxis_title="看漲信心", legend=dict(orientation="h", y=1.1))
+                        
+                        fig_brain.update_layout(
+                            height=450, 
+                            margin=dict(t=10, b=0), 
+                            hovermode="x unified", 
+                            yaxis_title="看漲信心", 
+                            legend=dict(orientation="h", y=1.1)
+                        )
                         st.plotly_chart(fig_brain, use_container_width=True)
                 
                 with c2:
@@ -2997,6 +3026,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
