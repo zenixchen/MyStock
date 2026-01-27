@@ -2992,11 +2992,12 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     if 'last_feat' in locals():
                         st.write("Debug Info:", last_feat)
 
-        except Exception as e:
+            except Exception as e:
             # ★★★ 這是【外層】的例外處理 (針對整個訓練流程) ★★★
             # 您原本少的就是這一段！
-            st.error(f"訓練流程發生意外錯誤: {e}")
-            st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+                st.error(f"訓練流程發生意外錯誤: {e}")
+                st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
