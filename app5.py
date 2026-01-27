@@ -1581,28 +1581,16 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     # 存入 Session
                     st.session_state['tsm_result_v8'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
             
-            # 解包數據
-            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v8']with tab1:
+                       # 解包數據 (Key 改成 v9)
+            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v9']
+
+            # --- 顯示即時價格 ---
+            st.metric("TSM 即時價格", f"${price:.2f}")
+            st.divider()
+            
         st.subheader("📈 TSM 雙核心波段顧問")
         st.caption("策略：長短雙模共振 | 冠軍參數：T+5 (70%) + T+3 (30%)")
         
-        # 1. 啟動按鈕 (Key 改成 v9，強迫刷新 Session)
-        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm_gsheet_v9") or 'tsm_result_v9' in st.session_state:
-            
-            # 如果 Session 裡沒有資料，就跑模型
-            if 'tsm_result_v9' not in st.session_state:
-                with st.spinner("AI 正在進行雙重驗證 (應用 Grid Search 最佳化)..."):
-                    # ★★★ 這裡改成呼叫 v2 版函式！ ★★★
-                    p_long, a_long, price, df_viz_long, backtest_score = get_tsm_swing_prediction_v2()
-                    
-                    # 呼叫 T+3 (這個沒變)
-                    p_short, a_short, df_viz_short = get_tsm_short_prediction()
-                    
-                    # 存入 Session (Key 改成 v9)
-                    st.session_state['tsm_result_v9'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
-            
-            # 解包數據 (Key 改成 v9)
-            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v9']
             
             # 處理 None 的情況 (防呆)
             p5 = p_long if p_long is not None else 0.5
@@ -3053,6 +3041,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
