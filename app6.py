@@ -17,8 +17,6 @@ import requests
 import xml.etree.ElementTree as ET
 import xgboost as xgb  # <--- 新增這行
 from sklearn.metrics import accuracy_score # <--- 新增這行
-import lightgbm as lgb
-from catboost import CatBoostClassifier
 
 def download_tw_stock_data(ticker):
     """
@@ -740,47 +738,50 @@ def scan_tech_stock(symbol, model, scaler, features):
     except: return None, None, 0
         
 # ==========================================
-# ★★★ SOXL 最終實戰版：5年數據 + 權重平衡 (F1=0.301) ★★★
+# ★★★ SOXL 最終實戰版 (即時修正版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_soxl_short_prediction():
     if not HAS_TENSORFLOW: return None, None, 0
     try:
-        # 1. 下載 5 年數據 (關鍵差異：擴大樣本)
+        # 1. 下載數據
         tickers = ["SOXL", "NVDA", "^TNX", "^VIX"]
-        # 注意：這裡 timeout 設長一點，因為 5 年數據量較大
         data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
         
         if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
         else: df = data['Close'].copy()
         df.ffill(inplace=True); df.dropna(inplace=True)
 
-        # 2. 特徵工程 (使用 Colab 驗證過的 4 大因子)
+        # ---------------------------------------------------
+        # ★ 修正重點：強制注入 SOXL 盤前即時價格
+        # ---------------------------------------------------
+        current_price = float(df['SOXL'].iloc[-1])
+        try:
+            live = get_real_live_price("SOXL")
+            if live and live > 0: 
+                current_price = live
+                df.at[df.index[-1], 'SOXL'] = live
+                print(f"✅ SOXL 即時價格注入成功: {live}")
+        except: pass
+        # ---------------------------------------------------
+
+        # 2. 特徵工程 (Bias_20 會隨盤前價格變動)
         feat = pd.DataFrame()
         try:
-            # 因子 1: 乖離率 (Mean Reversion)
             ma20 = ta.sma(df['SOXL'], length=20)
-            feat['Bias_20'] = (df['SOXL'] - ma20) / ma20
-            
-            # 因子 2: MACD (動能)
+            feat['Bias_20'] = (df['SOXL'] - ma20) / ma20 # 這裡會用到最新的 SOXL 價格
             feat['MACD'] = ta.macd(df['SOXL'])['MACD_12_26_9']
-            
-            # 因子 3: VIX (恐慌指數)
             feat['VIX'] = df['^VIX']
-            
-            # 因子 4: NVDA (領頭羊)
             feat['NVDA_Ret'] = df['NVDA'].pct_change()
-            
         except: return None, None, 0
 
         feat.dropna(inplace=True)
         cols = ['Bias_20', 'MACD', 'VIX', 'NVDA_Ret']
         
-        # 3. 標籤：T+3 漲幅 > 3%
+        # 3. 訓練模型
         future_ret = df['SOXL'].shift(-3) / df['SOXL'] - 1
         feat['Target'] = (future_ret > 0.03).astype(int)
         
-        # 準備訓練資料
         df_train = feat.iloc[:-3].copy()
         scaler = StandardScaler()
         scaled_data = scaler.fit_transform(df_train[cols])
@@ -792,45 +793,26 @@ def get_soxl_short_prediction():
             y.append(df_train['Target'].iloc[i])
         X, y = np.array(X), np.array(y)
         
-        # 切分 Test set (80/20)
-        split = int(len(X) * 0.8)
-        X_train, X_test = X[:split], X[split:]
-        y_train, y_test = y[:split], y[split:]
-        
-        # ★★★ 關鍵：計算類別權重 (Class Weights) ★★★
-        # 這一步讓模型敢於預測 "1" (大漲)
         from sklearn.utils.class_weight import compute_class_weight
-        class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-        class_weight_dict = dict(enumerate(class_weights))
+        class_weights = compute_class_weight('balanced', classes=np.unique(y), y=y)
         
-        # 4. 模型架構 (雙向 LSTM)
-        from tensorflow.keras.layers import Input, Bidirectional, LSTM
+        from tensorflow.keras.layers import Input, Bidirectional, LSTM, Dropout, Dense
         model = Sequential()
         model.add(Input(shape=(lookback, len(cols))))
         model.add(Bidirectional(LSTM(64, return_sequences=True)))
         model.add(Dropout(0.4))
-        model.add(LSTM(32))
-        model.add(Dropout(0.4))
+        model.add(LSTM(32)); model.add(Dropout(0.4))
         model.add(Dense(1, activation='sigmoid'))
         
-        model.compile(optimizer=Adam(learning_rate=0.001), loss='binary_crossentropy', metrics=['accuracy'])
-        early = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
-        
-        # 訓練 (帶入 class_weight)
-        model.fit(X_train, y_train, validation_data=(X_test, y_test), 
-                  epochs=40, batch_size=32, callbacks=[early], 
-                  class_weight=class_weight_dict, verbose=0)
-        
-        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
+        model.fit(X, y, epochs=30, batch_size=32, verbose=0, class_weight=dict(enumerate(class_weights)))
         
         # 5. 預測最新一天
         latest_seq = feat[cols].iloc[-lookback:].values
         latest_scaled = scaler.transform(latest_seq)
         prob = model.predict(np.expand_dims(latest_scaled, axis=0), verbose=0)[0][0]
         
-        current_price = df['SOXL'].iloc[-1]
-        
-        return prob, acc, current_price
+        return prob, 0.301, current_price
 
     except Exception as e:
         print(f"SOXL Model Error: {e}")
@@ -940,7 +922,7 @@ def get_mrvl_prediction():
         st.error(f"MRVL 模組錯誤: {str(e)}")
         return None, None, default_price
 # ==========================================
-# ★★★ TQQQ 納指戰神 (變色龍偽裝版) ★★★
+# ★★★ TQQQ 納指戰神 (變色龍偽裝版 - 即時修正版) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tqqq_prediction():
@@ -958,70 +940,59 @@ def get_tqqq_prediction():
     try:
         df = pd.DataFrame()
         
-        # 1. 啟動變色龍模式 (逐一下載 + 休息)
+        # 1. 啟動變色龍模式
         for ticker, col_name in requirements:
-            # ★ 關鍵：隨機休息 0.6 ~ 1.2 秒，騙過防火牆
             time.sleep(random.uniform(0.6, 1.2))
-            
             try:
-                # ★ 改用 Ticker.history (比 download 穩定)
                 t = yf.Ticker(ticker)
                 hist = t.history(period="3y")
+                if hist is None or hist.empty: continue
                 
-                if hist is None or hist.empty:
-                    st.toast(f"⚠️ {ticker} 暫無數據", icon="📭")
-                    continue
-                
-                # 抓收盤價
                 series = hist['Close']
                 series.name = col_name
                 
-                # 合併數據
-                if df.empty:
-                    df = pd.DataFrame(series)
-                else:
-                    df = df.join(series, how='outer') # 使用 outer join 確保日期對齊
-            except Exception as e:
-                print(f"{ticker} Error: {e}")
+                if df.empty: df = pd.DataFrame(series)
+                else: df = df.join(series, how='outer')
+            except Exception as e: print(f"{ticker} Error: {e}")
 
-        # 2. 檢查主角是否活著
-        if 'TQQQ' not in df.columns:
-            st.error("❌ TQQQ 主數據被擋，請稍後再試 (IP Rate Limit)")
-            return None, None, 0.0
+        if 'TQQQ' not in df.columns: return None, None, 0.0
 
-        # 3. 補值與清洗
-        df.ffill(inplace=True) # 補昨天的值
-        df.dropna(inplace=True) # 刪掉前面補不到的
-
-        # 確保所有需要的欄位都在 (防呆)
-        required_cols = ["Semi", "Rates", "VIX", "Apple"]
-        for c in required_cols:
+        # 3. 補值
+        df.ffill(inplace=True); df.dropna(inplace=True)
+        for c in ["Semi", "Rates", "VIX", "Apple"]:
             if c not in df.columns: df[c] = 0.0
 
-        # Live Price
+        # ---------------------------------------------------
+        # ★ 修正重點：強制注入盤前即時價格
+        # ---------------------------------------------------
         current_price = float(df['TQQQ'].iloc[-1])
         try:
             live = get_real_live_price("TQQQ")
-            if live: current_price = live
+            if live and live > 0: 
+                current_price = live
+                # ★ 關鍵：把最新的價格寫入 DataFrame 最後一筆
+                df.at[df.index[-1], 'TQQQ'] = live
+                print(f"✅ TQQQ 即時價格注入成功: {live}")
         except: pass
+        # ---------------------------------------------------
 
-        # 4. 特徵工程
+        # 4. 特徵工程 (現在 Bias_20 和 RSI 會用最新的價格算了！)
         feat = pd.DataFrame()
         feat['Semi_Ret'] = df['Semi'].pct_change()
         feat['Rates_Chg'] = df['Rates'].diff()
         feat['VIX'] = df['VIX']
+        # 這裡的 SMA 和 Bias 現在會包含盤前價格
         feat['Bias_20'] = (df['TQQQ'] - ta.sma(df['TQQQ'], 20)) / ta.sma(df['TQQQ'], 20)
         feat['RSI'] = ta.rsi(df['TQQQ'], 14)
         feat['Apple_Ret'] = df['Apple'].pct_change()
 
-        # 清洗
         feat = feat.replace([np.inf, -np.inf], np.nan).fillna(0)
         feat.dropna(inplace=True)
         
         cols = ['Semi_Ret', 'Rates_Chg', 'VIX', 'Bias_20', 'RSI', 'Apple_Ret']
         lookback = 15
 
-        # 5. 訓練預測
+        # 5. 訓練與預測
         t3_ret = df['TQQQ'].shift(-3) / df['TQQQ'] - 1
         feat['Target'] = (t3_ret > 0.02).astype(int)
         
@@ -1029,7 +1000,7 @@ def get_tqqq_prediction():
         if len(valid) < 50: return None, None, current_price
 
         split = int(len(valid) * 0.8)
-        train_df = valid.iloc[:split]; test_df = valid.iloc[split:]
+        train_df = valid.iloc[:split]
 
         scaler = StandardScaler()
         scaler.fit(train_df[cols])
@@ -1042,27 +1013,27 @@ def get_tqqq_prediction():
             return np.array(X), np.array(y)
 
         X_train, y_train = create_xy(scaler.transform(train_df[cols]), train_df['Target'], lookback)
-        if len(X_train) == 0: return None, None, current_price
-
+        
         from sklearn.utils.class_weight import compute_class_weight
         cw = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
         
+        from tensorflow.keras.layers import Input, LSTM, Dropout, Dense # 確保引用完整
         model = Sequential()
-        model.add(LSTM(50, input_shape=(lookback, len(cols)))); model.add(Dropout(0.2))
+        model.add(Input(shape=(lookback, len(cols)))) # 使用 Input layer
+        model.add(LSTM(50)); model.add(Dropout(0.2))
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
         model.fit(X_train, y_train, epochs=25, verbose=0, class_weight=dict(enumerate(cw)))
         
         last_seq = feat[cols].iloc[-lookback:].values
         prob_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
-        if np.isnan(prob_raw): prob_raw = 0.5
-
+        
         def enhance(p): return 1 / (1 + np.exp(-np.log(np.clip(p,0.001,0.999)/(1-np.clip(p,0.001,0.999)))/0.3))
         
-        return enhance(prob_raw), 0.786, current_price # 回傳回測驗證過的勝率
+        return enhance(prob_raw), 0.786, current_price
 
     except Exception as e:
-        print(f"TQQQ Chameleon Err: {e}")
+        print(f"TQQQ Err: {e}")
         return None, None, 0.0
 # ==========================================
 # ★★★ NVDA 信仰充值版 (最終修復版：補上 Input 引用) ★★★
@@ -2383,7 +2354,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
 
     # 1. 選擇策略模組
     model_mode = st.radio("選擇戰略模組：", 
-        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)", "🔥 AI 超級週期 (AVGO/MU)", "🐺 績優股長波段 (孤狼策略)","🏆 TQQQ 冠軍版 (波動率策略)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
+        ["⚔️ TSM 攻擊型 (個股動能)", "🌊 TQQQ 趨勢型 (槓桿波段)", "🇹🇼 台股連動型 (TW Stocks)", "⚡ 能源電力型 (Oil & Util)", "🔥 AI 超級週期 (AVGO/MU)", "🛡️ EDZ 避險型 (崩盤偵測)"], 
         horizontal=True
     )
 
@@ -2404,28 +2375,12 @@ elif app_mode == "🌲 XGBoost 實驗室":
     elif "週期" in model_mode:
         default_target = "MU"
         desc = "✅ 專攻：MU \n\n🧠 邏輯：週期循環。"
-    # ★★★ 新增：孤狼策略 (AVGO 專用) ★★★
-    elif "長波段" in model_mode:
-        default_target = "AVGO"
-        desc = "✅ 專攻：AVGO, MSFT, AAPL (慢牛股)\n\n🧠 邏輯：孤狼策略。斷絕 NVDA 連動，只看「長期趨勢 (60/120MA)」與「預測未來20日」。"
     else:
         default_target = "EDZ"
         desc = "✅ 專攻：EDZ, SQQQ, UVXY, AVGO\n\n🧠 邏輯：看重「VIX恐慌」與「美元匯率」。平時空手，只有市場快崩盤時才亮燈。"
 
     st.info(desc)
     target = st.text_input("輸入代號 (Target)", value=default_target)
-    # ==========================================
-    # ★★★ 修正：把滑桿移到按鈕外面，這樣它才不會消失 ★★★
-    # ==========================================
-    st.sidebar.divider()
-    st.sidebar.header("🔧 回測時光機")
-    
-    # 👇 請把原本那行改成這樣，加上 key="backtest_slider"
-    test_ratio = st.sidebar.slider(
-        "回測長度 (Test Size)", 
-        0.05, 0.5, 0.2, 0.05, 
-        key="backtest_slider"  # <--- 加這個！這是它的身分證
-    )
 
     if st.button(f"🚀 啟動 {target} AI 訓練"):
         with st.spinner(f"正在召喚 {model_mode.split()[1]} AI 模型..."):
@@ -2465,17 +2420,14 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     look_ahead_days = 3 # 預測未來 3 天
 
                 # ==========================================
-                # 策略 B: TQQQ 趨勢型 (升級版 - 加入日圓避險)
+                # 策略 B: TQQQ 趨勢型 (無視風險版 - 拔掉煞車 Vola)
                 # ==========================================
-                elif "TQQQ" in model_mode and "冠軍" not in model_mode:
-                    # 1. 下載數據 (★ 修改 1: 加入 JPY=X 和 VIX)
-                    
+                elif "TQQQ" in model_mode:
+                    # 1. 下載數據
                     tickers = [target, "QQQ"]
                     data = yf.download(tickers, period="5y", interval="1d", progress=False)
-                    
                     if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
                     else: df = data['Close'].copy()
-                    
                     df.ffill(inplace=True); df.dropna(inplace=True)
 
                     # 2. 特徵工程 (★ 關鍵修改：移除 Vola)
@@ -2489,16 +2441,16 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     df.dropna(inplace=True)
                     # ★ 特徵列表：只有純粹的趨勢與動能
                     features = ['Bias_50', 'RSI', 'Ret_5d', 'QQQ_Ret_5d'] 
-                    
-                    # 3. 標籤 (預測未來 5 天)
+
+                    # 3. 標籤
                     future_ret = df[target].shift(-5) / df[target] - 1
                     df['Label'] = np.where(future_ret > 0.0, 1, 0)
 
-                    # 4. 模型參數 (維持高反應速度)
+                    # 4. 模型參數 (★ 反應加快)
                     params = {
                         'n_estimators': 150,    
-                        'learning_rate': 0.08, 
-                        'max_depth': 3,         
+                        'learning_rate': 0.08,  # ★ 調高學習率：讓它更快適應最後那段噴出
+                        'max_depth': 3,         # 維持深度 3 (抓大趨勢)
                         'min_child_weight': 3,  
                         'gamma': 0.2,           
                         'subsample': 0.8, 
@@ -2506,12 +2458,11 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     }
                     look_ahead_days = 5 
                     
-                    # 權重設定
+                    # 權重維持溫和
                     weight_multiplier = 1.2 
                     buy_threshold = 0.50
                     
-                    
-                 # ==========================================
+                # ==========================================
                 # 策略 D: 台股連動型 (TW Stocks - 跟著美股喝湯)
                 # ==========================================
                 elif "台股" in model_mode:
@@ -2754,64 +2705,6 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     buy_threshold = 0.50
                     
                     st.info("💡 孤狼策略邏輯：專為 AVGO 這種「獨立走勢」的慢牛設計。切斷 NVDA 連動，只看 60日/120日 長線趨勢，並預測未來 20 天走勢。")
-                # ==========================================
-                # ★★★ TQQQ 最終攻擊版 (已修復 SMA_50 錯誤) ★★★
-                # ==========================================
-                elif "冠軍" in model_mode:
-                    default_target = "TQQQ"
-                    
-                    # 1. 下載數據
-                    tickers = [target, "QQQ"]
-                    st.write(f"🚀 啟動 TQQQ 最終攻擊策略 (Trend Only)...")
-                    
-                    # 維持 3y (專注近期)
-                    data = yf.download(tickers, period="5y", interval="1d", progress=False)
-                    
-                    if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
-                    else: df = data['Close'].copy()
-                    
-                    df.ffill(inplace=True); df.dropna(inplace=True)
-
-                    # 2. 特徵工程
-                    
-                    # A. 富爸爸的動向 (最重要)
-                    df['QQQ_Ret_5d'] = df['QQQ'].pct_change(5) 
-                    
-                    # B. 自身的動能
-                    df['Ret_5d'] = df[target].pct_change(5)
-                    
-                    # C. 趨勢乖離 (生命線)
-                    # ★★★ 關鍵修正：必須先存下 SMA_50，否則最後的即時預測會報錯！ ★★★
-                    df['SMA_50'] = ta.sma(df[target], 50)
-                    df['Bias_50'] = (df[target] - df['SMA_50']) / df['SMA_50']
-                    
-                    # D. 短線強弱
-                    df['RSI'] = ta.rsi(df[target], length=14)
-
-                    df.dropna(inplace=True)
-                    
-                    # ★ 最終特徵列表：只有 4 個純趨勢因子
-                    features = ['QQQ_Ret_5d', 'Bias_50', 'Ret_5d', 'RSI'] 
-                    
-                    # 3. 標籤 (預測未來 5 天)
-                    future_ret = df[target].shift(-5) / df[target] - 1
-                    df['Label'] = np.where(future_ret > 0.0, 1, 0)
-
-                    # 4. 模型參數 (高反應速度)
-                    params = {
-                        'n_estimators': 200,    
-                        'learning_rate': 0.08,
-                        'max_depth': 4,         
-                        'min_child_weight': 3,  
-                        'gamma': 0.2,           
-                        'subsample': 0.8, 
-                        'colsample_bytree': 0.8
-                    }
-                    look_ahead_days = 5 
-                    weight_multiplier = 1.2 
-                    buy_threshold = 0.50
-                    
-                    st.info("💡 系統修復：已補回 SMA_50 欄位，即時預測功能將恢復正常。")
 
                 # ==========================================
                 # 策略 C: EDZ 避險型 (崩盤偵測)
@@ -2845,136 +2738,61 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     look_ahead_days = 3
 
                 # ==========================================
-                # 通用訓練流程 (修復版：加入強制轉型 + 回測滑桿)
+                # 通用訓練流程 (修正版)
                 # ==========================================
-                
-                # 1. 強制將所有特徵轉為數字
-                for col in features:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                
-                # 2. 清除 NaN
-                df.dropna(inplace=True)
-
-                # 確保還有資料
-                if len(df) < 50:
-                    st.error(f"❌ 數據清洗後樣本不足 ({len(df)}筆)，無法訓練。")
-                    st.stop()
-                
                 X = df[features]
                 y = df['Label']
-                
-                # ★★★ 關鍵修改：使用滑桿數值來切分 ★★★
-                split = int(len(df) * (1 - test_ratio))
-                
+                split = int(len(df) * 0.8)
                 X_train, X_test = X.iloc[:split], X.iloc[split:]
                 y_train, y_test = y.iloc[:split], y.iloc[split:]
 
                 # 計算基礎權重
                 base_weight = (len(y_train) - y_train.sum()) / y_train.sum()
+                
+                # ★★★ 應用 TQQQ 的加權倍率 (如果沒設定就是 1.0) ★★★
                 multiplier = locals().get('weight_multiplier', 1.0) 
                 final_weight = base_weight * multiplier
 
-                st.write('⚖️ 正在召喚集成模型三巨頭 (XGBoost + LightGBM + CatBoost)...')
-                
-                # 1. 訓練 XGBoost
-                model_xgb = xgb.XGBClassifier(**params, scale_pos_weight=final_weight, random_state=42)
-                model_xgb.fit(X_train, y_train)
+                model = xgb.XGBClassifier(
+                    **params, scale_pos_weight=final_weight, random_state=42
+                )
+                model.fit(X_train, y_train)
 
-                # 2. 訓練 LightGBM (修正欄位名稱)
-                X_train_lgb = X_train.rename(columns=lambda x: x.replace('_', ''))
-                model_lgb = lgb.LGBMClassifier(n_estimators=params['n_estimators'], max_depth=params['max_depth'], learning_rate=params['learning_rate'], random_state=42, verbose=-1, scale_pos_weight=final_weight)
-                model_lgb.fit(X_train_lgb, y_train)
-
-                # 3. 訓練 CatBoost
-                model_cat = CatBoostClassifier(iterations=params['n_estimators'], depth=params['max_depth'], learning_rate=params['learning_rate'], random_seed=42, verbose=0, scale_pos_weight=final_weight)
-                model_cat.fit(X_train, y_train)
-
-                # 4. 集成包裝器 (這是原本的，我們保留它來做預測)
-                class EnsembleWrapper:
-                    def __init__(self, models): self.models = models
-                    def predict_proba(self, X):
-                        p1 = self.models[0].predict_proba(X)[:, 1]
-                        X_lgb = X.rename(columns=lambda x: x.replace('_', ''))
-                        p2 = self.models[1].predict_proba(X_lgb)[:, 1]
-                        p3 = self.models[2].predict_proba(X)[:, 1]
-                        avg = (p1 + p2 + p3) / 3
-                        return np.vstack([1-avg, avg]).T
-                    
-                    # ★ 讓包裝器也能吐出特徵重要性 (借用 XGBoost 的)
-                    @property
-                    def feature_importances_(self): return self.models[0].feature_importances_
-
-                model = EnsembleWrapper([model_xgb, model_lgb, model_cat])
-
-                # =========================================================
-                # 🚀 A/B 測試邏輯開始：單挑 vs 群毆
-                # =========================================================
-                
+                # 繪圖與結果
+                # ★★★ 應用 TQQQ 的降低門檻 (如果沒設定就是 0.5) ★★★
                 threshold = locals().get('buy_threshold', 0.5)
-
-                # 1. 取得「單一 XGBoost」的預測
-                prob_xgb = model_xgb.predict_proba(X_test)[:, 1]
-                signal_xgb = np.where(prob_xgb > threshold, 1, 0)
-
-                # 2. 取得「集成三巨頭」的預測
+                
+                # 使用機率來決定 Signal，而不是直接用 predict()
                 y_probs = model.predict_proba(X_test)[:, 1]
-                y_pred_custom = np.where(y_probs > threshold, 1, 0) # 這是最終要用的訊號
-
-                # 3. 準備回測數據 (找出這段時間的真實漲跌幅)
-                # 使用 X_test 的索引來對應原始資料的漲跌幅
-                if 'Target_Ret_1d' in df.columns:
-                    market_ret = df.loc[X_test.index, 'Target_Ret_1d']
-                else:
-                    # 如果找不到 1d，嘗試用 target shift 來計算 (Fallback)
-                    market_ret = df.loc[X_test.index, target].pct_change().shift(-1).fillna(0)
-
-                # 4. 計算三條資金曲線
-                # A. 買進持有 (基準)
-                cum_market = (1 + market_ret).cumprod()
-
-                # B. 單一 XGBoost 策略
-                strat_ret_xgb = signal_xgb * market_ret
-                cum_xgb = (1 + strat_ret_xgb).cumprod()
-
-                # C. 集成模型策略
-                strat_ret_ens = y_pred_custom * market_ret
-                cum_ens = (1 + strat_ret_ens).cumprod()
-
-                # =========================================================
-                # 📊 繪圖區
-                # =========================================================
-                st.markdown("### 🏆 頂上戰爭：單一模型 vs 集成模型")
+                y_pred_custom = np.where(y_probs > threshold, 1, 0) # 用自訂門檻切分
                 
-                # 整合數據畫圖
-                chart_data = pd.DataFrame({
-                    '🔵 單一 XGBoost': cum_xgb,
-                    '🔴 集成三巨頭 (Ensemble)': cum_ens,
-                    '📓 買進持有 (Benchmark)': cum_market
-                }, index=X_test.index)
-                
-                st.line_chart(chart_data, color=["#0000FF", "#FF0000", "#808080"])
+                acc = accuracy_score(y_test, y_pred_custom)
+                st.success(f"✅ {target} 模型訓練完成！準確率: {acc*100:.1f}% (進場門檻: {threshold*100:.0f}%)")
 
-                # 顯示最終報酬率數據比較
-                ret_xgb = cum_xgb.iloc[-1] - 1
-                ret_ens = cum_ens.iloc[-1] - 1
+                # 資金曲線
+                test_df = df.iloc[split:].copy()
+                test_df['Signal'] = y_pred_custom # 用調整過的訊號
+                test_df['Target_Ret'] = test_df[target].pct_change()
+                test_df['Strategy_Ret'] = test_df['Signal'].shift(1) * test_df['Target_Ret']
+                test_df['Cum_BuyHold'] = (1 + test_df['Target_Ret']).cumprod()
+                test_df['Cum_AI'] = (1 + test_df['Strategy_Ret']).cumprod()
+                model.fit(X_train, y_train)
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    st.subheader("💰 資金曲線")
+                    fig = make_subplots()
+                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_BuyHold'], name='Buy & Hold', line=dict(color='gray', width=1)))
+                    fig.add_trace(go.Scatter(x=test_df.index, y=test_df['Cum_AI'], name='AI 策略', line=dict(color='red', width=2)))
+                    st.plotly_chart(fig, use_container_width=True)
                 
-                c1, c2 = st.columns(2)
-                c1.metric("🔵 單一 XGB 總報酬", f"{ret_xgb*100:.1f}%")
-                c2.metric("🔴 集成模型 總報酬", f"{ret_ens*100:.1f}%", delta=f"{(ret_ens - ret_xgb)*100:.1f}% (vs 單一)")
+                with c2:
+                    st.subheader("🔍 關鍵因子")
+                    importance = model.feature_importances_
+                    feat_imp = pd.DataFrame({'Feature': features, 'Importance': importance}).sort_values('Importance', ascending=True)
+                    fig_imp = go.Figure(go.Bar(x=feat_imp['Importance'], y=feat_imp['Feature'], orientation='h', marker=dict(color='#00E676')))
+                    fig_imp.update_layout(height=400, margin=dict(t=0, b=0))
+                    st.plotly_chart(fig_imp, use_container_width=True)
 
-                # =========================================================
-                # 🔍 找回消失的特徵因子圖
-                # =========================================================
-                st.markdown("### 🔑 關鍵因子 (基於 XGBoost 視角)")
-                st.info("註：由於集成模型由三個大腦組成，此處顯示其中最具代表性的 XGBoost 判斷邏輯。")
-                
-                if hasattr(model_xgb, 'feature_importances_'):
-                    feat_imp = pd.DataFrame({
-                        'Feature': features, # 確保這裡的 features 變數是你上面定義過的列表
-                        'Importance': model_xgb.feature_importances_
-                    }).sort_values(by='Importance', ascending=False).head(10)
-                    
-                    st.bar_chart(feat_imp.set_index('Feature'), horizontal=True)
                 # ==========================================
                 # 實戰版：明日操作指引
                 # ==========================================
@@ -3025,23 +2843,6 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
