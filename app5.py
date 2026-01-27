@@ -2932,6 +2932,73 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     ))
                     fig_imp.update_layout(height=450, margin=dict(t=30, b=0))
                     st.plotly_chart(fig_imp, use_container_width=True)
+                # ==========================================
+                # ★★★ 新增：AI 信心 vs 真實勝率 分析儀 ★★★
+                # ==========================================
+                with st.expander("🧐 深度分析：AI 信心多少才值得信？ (校準圖)", expanded=True):
+                    
+                    # 1. 準備分析數據
+                    # 我們要把測試集的「預測機率」跟「真實結果」對起來
+                    analysis_df = pd.DataFrame({
+                        'Confidence': y_probs,
+                        'Actual_Win': y_test.values, # 1=漲, 0=跌
+                        'Return': test_df['Target_Ret'].values
+                    })
+                    
+                    # 2. 進行分桶 (Binning)：每 5% 切成一組 (0.00~0.05, ..., 0.95~1.00)
+                    bins = np.arange(0, 1.05, 0.05)
+                    labels = [f"{int(b*100)}%" for b in bins[:-1]]
+                    analysis_df['Conf_Bin'] = pd.cut(analysis_df['Confidence'], bins=bins, labels=labels)
+                    
+                    # 3. 統計每一組的表現
+                    # count=出現次數, mean=真實勝率
+                    bin_stats = analysis_df.groupby('Conf_Bin').agg({
+                        'Actual_Win': ['count', 'mean'],
+                        'Return': 'mean'
+                    })
+                    bin_stats.columns = ['Count', 'Win_Rate', 'Avg_Return']
+                    bin_stats = bin_stats.reset_index()
+                    
+                    # 過濾掉樣本太少的區間 (例如只有出現過 1 次的，統計沒意義)
+                    valid_stats = bin_stats[bin_stats['Count'] > 2].copy()
+
+                    # 4. 畫圖：真實勝率 vs AI 信心
+                    fig_cal = make_subplots(specs=[[{"secondary_y": True}]])
+                    
+                    # 柱狀圖：交易次數 (背景)
+                    fig_cal.add_trace(go.Bar(
+                        x=valid_stats['Conf_Bin'], y=valid_stats['Count'],
+                        name='出現次數', marker_color='rgba(255, 255, 255, 0.1)'
+                    ), secondary_y=True)
+                    
+                    # 折線圖：真實勝率 (主角)
+                    fig_cal.add_trace(go.Scatter(
+                        x=valid_stats['Conf_Bin'], y=valid_stats['Win_Rate'],
+                        name='真實勝率', line=dict(color='#00E676', width=3, shape='spline'),
+                        mode='lines+markers'
+                    ), secondary_y=False)
+                    
+                    # 參考線：50% 勝率
+                    fig_cal.add_hline(y=0.5, line_dash="dash", line_color="gray", secondary_y=False)
+
+                    # 找出「高勝率門檻」
+                    # 邏輯：找到第一個勝率穩定超過 60% 的信心區間
+                    high_prob_bins = valid_stats[valid_stats['Win_Rate'] > 0.6]
+                    if not high_prob_bins.empty:
+                        best_thresh = high_prob_bins['Conf_Bin'].iloc[0]
+                        st.success(f"💎 發現黃金區間：當 AI 信心 > **{best_thresh}** 時，歷史勝率顯著 > 60%！")
+                    else:
+                        st.warning("⚠️ 目前模型較為保守，沒有明顯的高勝率區間 (可能是空頭市場或特徵不足)。")
+
+                    fig_cal.update_layout(
+                        title="AI 信心校準：它說 80% 把握時，真的有 80% 勝率嗎？",
+                        xaxis_title="AI 信心區間",
+                        yaxis_title="真實勝率 (Win Rate)",
+                        yaxis2_title="樣本數",
+                        height=400,
+                        hovermode="x unified"
+                    )
+                    st.plotly_chart(fig_cal, use_container_width=True)
 
                 # ==========================================
                 # 實戰版：明日操作指引
@@ -2983,6 +3050,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
                     st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出** (不要猶豫)。\n- **空手者**：保持現金，不要進場。")
             except Exception as e:
                 st.error(f"發生錯誤: {e}")
+
 
 
 
