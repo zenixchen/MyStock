@@ -17,7 +17,6 @@ import requests
 import xml.etree.ElementTree as ET
 import xgboost as xgb  # <--- 新增這行
 from sklearn.metrics import accuracy_score # <--- 新增這行
-from sklearn.metrics import classification_report, confusion_matrix
 import re                   # 用來清洗欄位名稱 (原本沒有，必須加)
 import lightgbm as lgb      # 新模型
 from catboost import CatBoostClassifier # 新模型
@@ -429,24 +428,7 @@ def get_tsm_swing_prediction():
                   epochs=25, batch_size=32, callbacks=[early], 
                   class_weight=class_weight_dict, verbose=0)
         
-        # --- ★★★ 新增：詳細準確度計算模組 ★★★ ---
-        # 1. 取得測試集的預測機率
-# ★★★ 新增：計算原始準確率 (去除權重影響) ★★★
-        y_pred_prob = model.predict(X_test, verbose=0)
-        # 原始門檻 0.5
-        y_pred_raw = (y_pred_prob > 0.5).astype(int)
-        
-        from sklearn.metrics import accuracy_score
-        # 這是最純粹的準確率，不受 class_weight 影響評估
-        raw_acc = accuracy_score(y_test, y_pred_raw) 
-        
-        # 這是原本 Keras 計算的 (受 loss function 影響)
-        loss, strategy_acc = model.evaluate(X_test, y_test, verbose=0)
-        
-        # ... (後面代碼不用變，記得 return 要多回傳 raw_acc) ...
-        return prob_latest, raw_acc, current_price, df_viz, viz_acc, precision, recall # 注意回傳 raw_acc
-        
-        # -----------------------------------------------
+        loss, acc = model.evaluate(X_test, y_test, verbose=0)
         
         # ---------------------------------------------------
         # ★ 步驟 D: 繪圖數據 (Viz)
@@ -494,7 +476,7 @@ def get_tsm_swing_prediction():
         prob_latest_raw = model.predict(input_seq, verbose=0)[0][0]
         prob_latest = enhance_confidence(prob_latest_raw, temperature=0.25)
         
-        return prob_latest, acc, current_price, df_viz, viz_acc, precision, recall
+        return prob_latest, acc, current_price, df_viz, viz_acc
 
     except Exception as e:
         print(f"❌ TSM Model Final Crash: {e}")
@@ -600,23 +582,9 @@ def get_tsm_short_prediction():
         viz_dates = test_indices[-viz_len:]
         viz_prices = df_main['TSM'].loc[viz_dates].values
         
-# 取得預測值
+        # 取得預測值
         preds_all = model.predict(X_test, verbose=0).flatten()
         viz_probs_raw = preds_all[-viz_len:]
-        
-        # ======================================================
-        # ★★★ 新增：在這裡計算原始準確率 (Raw Accuracy) ★★★
-        # ======================================================
-        # 1. 取得這段時間的正確答案 (Target)
-        viz_targets = y_test[-viz_len:]
-        
-        # 2. 用原始機率 (未平移) 以 0.5 為門檻來判斷
-        raw_cls = (viz_probs_raw > 0.5).astype(int)
-        
-        # 3. 計算準確率
-        raw_acc = np.mean(viz_targets == raw_cls)
-        # ======================================================
-
         viz_probs = apply_shift_and_enhance(viz_probs_raw) # 經過平移與放大的機率
         
         df_viz = pd.DataFrame({
@@ -642,7 +610,7 @@ def get_tsm_short_prediction():
             if current_vix > 28: prob_latest = prob_latest * 0.8
         except: pass
 
-        return prob_latest, raw_acc, df_viz
+        return prob_latest, acc, df_viz # 多回傳 df_viz
 
     except Exception as e:
         print(f"Short Model Error: {e}")
@@ -1661,56 +1629,32 @@ if app_mode == "🤖 AI 深度學習實驗室":
         st.caption("策略：長短雙模共振 | 冠軍參數：T+5 (70%) + T+3 (30%)")
         
         # 1. 啟動按鈕
-        # 使用新的 key (v9) 強迫刷新，避免舊的 session state 格式衝突
-        if st.button("🚀 啟動雙模型分析 (含詳細戰力)", key="btn_tsm_gsheet_v9") or 'tsm_result_v9' in st.session_state:
+        # 使用 v8 版本號強迫刷新 (避免舊資料干擾)
+        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm_gsheet_v8") or 'tsm_result_v8' in st.session_state:
             
             # 如果 Session 裡沒有資料，就跑模型
-            if 'tsm_result_v9' not in st.session_state:
-                with st.spinner("AI 正在進行雙重驗證 (計算 Precision/Recall)..."):
-                    # 呼叫 T+5 (注意：這裡假設你已經修改了函數，會回傳 7 個值)
-                    # 回傳順序：機率, 準確度, 現價, 視覺化DF, 回測準度, 精確率, 召回率
-                    p_long, a_long, price, df_viz_long, backtest_score, prec_long, rec_long = get_tsm_swing_prediction()
-                    
-                    # 呼叫 T+3 (保持原樣，回傳 3 個值)
+            if 'tsm_result_v8' not in st.session_state:
+                with st.spinner("AI 正在進行雙重驗證 (應用 Grid Search 最佳化)..."):
+                    # 呼叫 T+5
+                    p_long, a_long, price, df_viz_long, backtest_score = get_tsm_swing_prediction()
+                    # 呼叫 T+3
                     p_short, a_short, df_viz_short = get_tsm_short_prediction()
-                    
-                    # 存入 Session (現在存 10 個變數)
-                    st.session_state['tsm_result_v9'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short, prec_long, rec_long)
+                    # 存入 Session
+                    st.session_state['tsm_result_v8'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
             
-            # 解包數據 (從 Session 拿出來用)
-            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short, prec_long, rec_long = st.session_state['tsm_result_v9']
+            # 解包數據
+            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v8']
             
-            # 防呆處理 (如果發生錯誤回傳 None 的時候)
+            # 處理 None 的情況 (防呆)
             p5 = p_long if p_long is not None else 0.5
             p3 = p_short if p_short is not None else 0.5
-            prec_long = prec_long if prec_long is not None else 0
-            rec_long = rec_long if rec_long is not None else 0
 
             # --- 顯示即時價格 ---
             st.metric("TSM 即時價格", f"${price:.2f}")
-            
-            # ==========================================
-            # ★★★ 新增：模型戰力儀表板 (UI 重點) ★★★
-            # ==========================================
-            st.markdown("### 📊 T+5 模型戰力分析")
-            m1, m2, m3 = st.columns(3)
-            
-            with m1:
-                st.metric("🎯 整體準確度 (Acc)", f"{a_long*100:.1f}%", help="模型整體猜對的比例")
-            with m2:
-                # 這是交易者最在乎的：喊單勝率
-                st.metric("🔫 出手勝率 (Precision)", f"{prec_long*100:.1f}%", 
-                          delta="核心指標", delta_color="normal",
-                          help="當模型喊 'Buy' 時，實際上漲的機率 (越高越好，代表不隨便亂喊)")
-            with m3:
-                # 這是機會捕捉率
-                st.metric("📡 機會捕捉率 (Recall)", f"{rec_long*100:.1f}%", 
-                          help="市場真的大漲時，模型有抓到的比例 (太低代表容易漏掉行情)")
-            
             st.divider()
 
             # ==========================================
-            # ★★★ 以下維持原有的冠軍參數邏輯 ★★★
+            # ★★★ 核心修正：應用冠軍參數邏輯 ★★★
             # ==========================================
             # 根據 Grid Search 結果：
             # T+5 最佳門檻 > 0.5
@@ -1778,7 +1722,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
             """, unsafe_allow_html=True)
 
             # ==========================================
-            # ★★★ Google Sheet 存檔區 (保持不變) ★★★
+            # ★★★ Google Sheet 存檔區 (邏輯微調) ★★★
             # ==========================================
             st.divider()
             c_save, c_chart = st.columns([1, 2])
@@ -1787,10 +1731,11 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 st.subheader("💾 雲端戰報")
                 st.caption("將今日訊號寫入資料庫")
                 
+                # 自動修正：如果信心太低，強制轉為 Neutral 避免亂存
                 if p5 < 0.4 and p3 < 0.4: final_dir = "Bear"
                 avg_conf = (p5 + p3) / 2
                 
-                if st.button("📥 寫入資料庫", key="btn_save_gsheet_v9", use_container_width=True):
+                if st.button("📥 寫入資料庫", key="btn_save_gsheet_v8", use_container_width=True):
                     if final_dir == "Neutral":
                         st.warning("⚠️ 趨勢不明，建議不記錄。")
                     else:
@@ -1809,7 +1754,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     st.caption("📜 雲端最近紀錄")
                     st.dataframe(df_hist.tail(3)[['date', 'direction', 'return_pct']], use_container_width=True, hide_index=True)
 
-            # 右邊：畫出雲端歷史圖
+            # 右邊：畫出雲端歷史圖 (保持不變)
             with c_chart:
                 st.subheader("📊 雲端戰績回顧")
                 with st.spinner("🤖 對帳中..."):
@@ -1835,7 +1780,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     st.info("📉 資料不足，請累積更多紀錄。")
 
             # ==========================================
-            # ★★★ 回測圖表區 (保持不變) ★★★
+            # ★★★ 回測圖表區 (完整保留) ★★★
             # ==========================================
             if df_viz_long is not None:
                 st.divider()
@@ -1843,6 +1788,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 fig = make_subplots(specs=[[{"secondary_y": True}]])
                 fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Price'], name="股價", line=dict(color='gray')), secondary_y=False)
                 
+                # 更新：顯示新的冠軍門檻 0.5
                 buy = df_viz_long[df_viz_long['Prob'] > 0.5]
                 if not buy.empty: fig.add_trace(go.Scatter(x=buy['Date'], y=buy['Price'], mode='markers', marker=dict(color='cyan', size=8, symbol='triangle-up'), name='Buy Signal'), secondary_y=False)
                 
@@ -1856,6 +1802,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 fig_s = make_subplots(specs=[[{"secondary_y": True}]])
                 fig_s.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Price'], name="股價", line=dict(color='gray')), secondary_y=False)
                 
+                # 更新：顯示新的冠軍門檻 0.45
                 buy_s = df_viz_short[df_viz_short['Prob'] > 0.45]
                 if not buy_s.empty: fig_s.add_trace(go.Scatter(x=buy_s['Date'], y=buy_s['Price'], mode='markers', marker=dict(color='orange', size=10, symbol='star'), name='Sniper Buy'), secondary_y=False)
                 
@@ -3079,9 +3026,6 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
-
-
-
 
 
 
