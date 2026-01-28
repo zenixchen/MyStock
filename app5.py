@@ -351,24 +351,34 @@ def verify_performance_db():
         return 0
 
 # ==========================================
-# ★★★ TSM T+5 (含回測數據版) ★★★
+# ★★★ TSM T+5 (標準化版：回傳 4 個值) ★★★
 # ==========================================
 @st.cache_resource(ttl=300)
 def get_tsm_swing_prediction():
-    if not HAS_TENSORFLOW: return None, None, 0.0, None
+    # 定義預設回傳 (發生錯誤時用)
+    # 格式: (Prob, Acc, Price, DataFrame)
+    err_ret = (None, 0.0, 0.0, None)
+    
+    if not HAS_TENSORFLOW: return err_ret
     try:
         # 1. 下載數據
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
         data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=30)
+        
         if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
         else: df = data['Close'].copy()
         
-        # 即時價格注入
+        # 取得現價
+        if 'TSM' not in df.columns: return err_ret
         current_price = float(df['TSM'].iloc[-1])
-        live = get_real_live_price("TSM")
-        if live: 
-            current_price = live
-            df.at[df.index[-1], 'TSM'] = live
+        
+        # 嘗試即時價格
+        try:
+            live = get_real_live_price("TSM")
+            if live and live > 0: 
+                current_price = live
+                df.at[df.index[-1], 'TSM'] = live
+        except: pass
             
         df.ffill(inplace=True); df.dropna(inplace=True)
         
@@ -386,13 +396,14 @@ def get_tsm_swing_prediction():
         cols = ['NVDA_Ret', 'SOX_Ret', 'TNX_Chg', 'VIX', 'TSM_Ret', 'RSI', 'MACD']
         lookback = 20
         
-        # 3. 標籤 (T+5 > 2.5%)
+        # 3. 標籤
         future_ret = df['TSM'].shift(-5) / df['TSM'] - 1
         feat['Target'] = (future_ret > 0.025).astype(int)
-        feat['Price'] = df['TSM'] # 保留價格供回測
+        feat['Price'] = df['TSM']
         
-        # 4. 切分 (保留最後 20% 做回測驗證)
         valid = feat.iloc[:-5].copy() 
+        if len(valid) < 50: return err_ret # 資料不足
+
         split = int(len(valid) * 0.8)
         train_df = valid.iloc[:split]
         test_df = valid.iloc[split:] 
@@ -411,14 +422,18 @@ def get_tsm_swing_prediction():
         X_train, y_train = create_xy(train_df, lookback)
         X_test, y_test = create_xy(test_df, lookback)
         
+        if len(X_train) == 0: return err_ret
+
+        from tensorflow.keras.layers import Input, LSTM
         model = Sequential()
-        model.add(LSTM(64, return_sequences=True, input_shape=(lookback, len(cols))))
-        model.add(Dropout(0.2)); model.add(LSTM(64)); model.add(Dropout(0.2))
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(LSTM(64, return_sequences=True)); model.add(Dropout(0.2))
+        model.add(LSTM(64)); model.add(Dropout(0.2))
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
         model.fit(X_train, y_train, epochs=25, batch_size=32, verbose=0)
         
-        # 5. 產生回測數據
+        # 5. 回測數據
         preds_test = model.predict(X_test, verbose=0).flatten()
         preds_test_enhanced = [enhance_confidence(p, 0.25) for p in preds_test]
         
@@ -430,29 +445,43 @@ def get_tsm_swing_prediction():
             'Target': y_test
         })
         
-        # 6. 預測最新一天
+        # 6. 最新預測
         last_seq = feat[cols].iloc[-lookback:].values
-        prob_latest = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
-        prob_latest = enhance_confidence(prob_latest, 0.25)
+        if len(last_seq) < lookback: # 補齊機制
+             padding = np.tile(last_seq[0], (lookback - len(last_seq), 1))
+             last_seq = np.vstack([padding, last_seq])
+
+        prob_latest_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
+        prob_latest = enhance_confidence(prob_latest_raw, 0.25)
         
         acc = accuracy_score(y_test, (np.array(preds_test_enhanced)>0.5).astype(int))
-        return prob_latest, acc, current_price, df_backtest # 多回傳了 df_backtest
+        
+        # ★★★ 統一回傳 4 個值 ★★★
+        return prob_latest, acc, current_price, df_backtest
 
     except Exception as e:
-        print(f"TSM Error: {e}")
-        return None, None, 0, None
+        print(f"TSM T+5 Error: {e}")
+        return err_ret
 
 # ==========================================
-# ★★★ TSM T+3 (含回測數據版) ★★★
+# ★★★ TSM T+3 (標準化版：回傳 4 個值) ★★★
 # ==========================================
 @st.cache_resource(ttl=3600)
 def get_tsm_short_prediction():
-    if not HAS_TENSORFLOW: return None, None, None, None
+    # 定義預設回傳
+    err_ret = (None, 0.0, 0.0, None)
+    
+    if not HAS_TENSORFLOW: return err_ret
     try:
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
         data = yf.download(tickers, period="2y", interval="1d", progress=False)
+        
         if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
         else: df = data['Close'].copy()
+        
+        if 'TSM' not in df.columns: return err_ret
+        current_price = float(df['TSM'].iloc[-1])
+        
         df.ffill(inplace=True); df.dropna(inplace=True)
 
         feat = pd.DataFrame()
@@ -468,36 +497,43 @@ def get_tsm_short_prediction():
         
         future_ret = df['TSM'].shift(-3) / df['TSM'] - 1
         feat['Target'] = (future_ret > 0.015).astype(int)
-        feat['Price'] = df['TSM'] 
+        feat['Price'] = df['TSM'] # 用於回測
         
         valid = feat.iloc[:-3].copy()
+        if len(valid) < 35: return err_ret
+
         split = int(len(valid) * 0.8)
         train_df = valid.iloc[:split]
         test_df = valid.iloc[split:]
         
         scaler = StandardScaler(); scaler.fit(train_df[cols])
+        train_scaled = scaler.transform(train_df[cols])
+        test_scaled = scaler.transform(test_df[cols])
         
-        lookback = 30
-        def create_xy(d_df, lb):
-            scaled = scaler.transform(d_df[cols])
+        lookback = 30 
+        def make_seq(d, t):
             X, y = [], []
-            t = d_df['Target'].values
-            for i in range(lb, len(d_df)):
-                X.append(scaled[i-lb:i])
-                y.append(t[i])
+            for i in range(lookback, len(d)):
+                X.append(d[i-lookback:i])
+                y.append(t.iloc[i])
             return np.array(X), np.array(y)
-
-        X_train, y_train = create_xy(train_df, lookback)
-        X_test, y_test = create_xy(test_df, lookback)
+            
+        X_train, y_train = make_seq(train_scaled, train_df['Target'])
+        X_test, y_test = make_seq(test_scaled, test_df['Target'])
         
+        if len(X_train) == 0: return err_ret
+
+        from tensorflow.keras.layers import Input, LSTM
         model = Sequential()
-        model.add(LSTM(64, input_shape=(lookback, len(cols)))); model.add(Dropout(0.2))
+        model.add(Input(shape=(lookback, len(cols))))
+        model.add(LSTM(64)); model.add(Dropout(0.2))
         model.add(Dense(1, activation='sigmoid'))
         model.compile(optimizer=Adam(0.001), loss='binary_crossentropy', metrics=['accuracy'])
         model.fit(X_train, y_train, epochs=25, verbose=0)
         
+        # 回測數據
         preds_test = model.predict(X_test, verbose=0).flatten()
-        preds_test = np.clip(preds_test + (0.5 - 0.6), 0.001, 0.999) # 平移校準
+        preds_test = np.clip(preds_test + (0.5 - 0.6), 0.001, 0.999) 
         
         backtest_indices = test_df.index[lookback:]
         df_backtest = pd.DataFrame({
@@ -507,15 +543,24 @@ def get_tsm_short_prediction():
             'Target': y_test
         })
         
+        # 最新預測
         last_seq = feat[cols].iloc[-lookback:].values
+        if len(last_seq) < lookback:
+             padding = np.tile(last_seq[0], (lookback - len(last_seq), 1))
+             last_seq = np.vstack([padding, last_seq])
+
         prob_raw = model.predict(np.expand_dims(scaler.transform(last_seq), axis=0), verbose=0)[0][0]
         prob_latest = np.clip(prob_raw + (0.5 - 0.6), 0.001, 0.999)
         
         acc = accuracy_score(y_test, (preds_test > 0.5).astype(int))
-        return prob_latest, acc, df_backtest, None # 注意回傳數量
+        
+        # ★★★ 統一回傳 4 個值 ★★★
+        return prob_latest, acc, current_price, df_backtest
 
-    except Exception as e: return None, None, None, None
-
+    except Exception as e:
+        print(f"TSM T+3 Error: {e}")
+        return err_ret
+        
 # --- B. EDZ/Macro ---
 @st.cache_resource(ttl=43200)
 def get_macro_prediction(target_symbol, features_dict):
@@ -1528,7 +1573,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
         st.subheader("📈 TSM 雙核心波段顧問")
         st.caption("策略：長短雙模共振 | 冠軍參數：T+5 (70%) + T+3 (30%)")
         
-        # 1. 初始化變數 (預設值)
+        # 1. 初始化變數
         p5, p3 = 0.5, 0.5 
         price = 0.0
         final_dir = "Neutral"
@@ -1536,41 +1581,37 @@ if app_mode == "🤖 AI 深度學習實驗室":
         has_result = False 
 
         # 2. 啟動按鈕邏輯
-        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm_gsheet_v10") or 'tsm_result_v10' in st.session_state:
+        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm_final_v11") or 'tsm_res_v11' in st.session_state:
             
-            if 'tsm_result_v10' not in st.session_state:
+            if 'tsm_res_v11' not in st.session_state:
                 with st.spinner("AI 正在進行雙重驗證 (T+5 & T+3)..."):
                     res_long = get_tsm_swing_prediction()
                     res_short = get_tsm_short_prediction()
-                    st.session_state['tsm_result_v10'] = (res_long, res_short)
+                    st.session_state['tsm_res_v11'] = (res_long, res_short)
             
-            res_long, res_short = st.session_state['tsm_result_v10']
+            res_long, res_short = st.session_state['tsm_res_v11']
             
-            # --- ★★★ 關鍵修正：使用切片 [:4] 強制只取前 4 個值 ★★★ ---
+            # --- ★★★ 安全接收資料 (不再使用 Unpack) ★★★ ---
             
-            # 1. 解析 T+5 結果 (預期 4 個值: prob, acc, price, df)
-            if res_long and len(res_long) >= 4:
-                try:
-                    # 只取前 4 個，忽略後面多餘的 (如果有)
-                    p_long, a_long, price_l, df_viz_long = res_long[:4]
-                    if p_long is not None: 
-                        p5 = p_long
-                        if price_l > 0: price = price_l
-                except Exception as e:
-                    st.error(f"T+5 解析錯誤: {e}")
+            # 1. T+5 結果處理
+            if res_long and res_long[0] is not None:
+                p5 = res_long[0]      # Prob
+                # res_long[1] 是 Acc
+                if res_long[2] > 0:   # Price
+                    price = res_long[2] 
+                df_viz_long = res_long[3] # DataFrame
             else:
-                st.error(f"⚠️ T+5 模型回傳異常 (資料長度: {len(res_long) if res_long else 0})")
+                st.error("⚠️ T+5 模型載入失敗 (可能數據源超時)")
 
-            # 2. 解析 T+3 結果 (預期 4 個值: prob, acc, df, None)
-            if res_short and len(res_short) >= 3:
-                try:
-                    # 只取前 3 個真正需要的 (prob, acc, df)
-                    p_short, a_short, df_viz_short = res_short[:3]
-                    if p_short is not None: p3 = p_short
-                except Exception as e:
-                    st.warning(f"T+3 解析錯誤: {e}")
+            # 2. T+3 結果處理
+            if res_short and res_short[0] is not None:
+                p3 = res_short[0]     # Prob
+                # res_short[1] 是 Acc
+                if price == 0 and res_short[2] > 0: # 如果 T+5 沒抓到價格，用 T+3 的補
+                    price = res_short[2]
+                df_viz_short = res_short[3] # DataFrame
             else:
-                st.warning("⚠️ T+3 模型回傳異常")
+                st.warning("⚠️ T+3 模型載入失敗")
 
             has_result = True
 
@@ -1648,7 +1689,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 if p5 < 0.4 and p3 < 0.4: final_dir = "Bear"
                 avg_conf = (p5 + p3) / 2
                 
-                if st.button("📥 寫入資料庫", key="btn_save_gsheet_v10", use_container_width=True):
+                if st.button("📥 寫入資料庫", key="btn_save_gsheet_v11", use_container_width=True):
                     if final_dir == "Neutral":
                         st.warning("⚠️ 趨勢不明，建議不記錄。")
                     else:
@@ -1689,6 +1730,18 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     st.plotly_chart(fig_rec, use_container_width=True)
                 else:
                     st.info("📉 資料不足，請累積更多紀錄。")
+
+            # ==========================================
+            # ★★★ 回測圖表區 (畫圖功能) ★★★
+            # ==========================================
+            if has_result:
+                if df_viz_long is not None and not df_viz_long.empty:
+                    st.divider()
+                    plot_lstm_performance(df_viz_long, "TSM (T+5)", threshold=0.5)
+
+                if df_viz_short is not None and not df_viz_short.empty:
+                    st.divider()
+                    plot_lstm_performance(df_viz_short, "TSM (T+3)", threshold=0.45)
 
             # ==========================================
             # ★★★ 回測圖表區 (畫圖功能) ★★★
@@ -2917,6 +2970,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
