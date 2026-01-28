@@ -431,23 +431,20 @@ def get_tsm_swing_prediction():
         
         # --- ★★★ 新增：詳細準確度計算模組 ★★★ ---
         # 1. 取得測試集的預測機率
+# ★★★ 新增：計算原始準確率 (去除權重影響) ★★★
         y_pred_prob = model.predict(X_test, verbose=0)
+        # 原始門檻 0.5
+        y_pred_raw = (y_pred_prob > 0.5).astype(int)
         
-        # 2. 設定門檻 (例如 0.5，但你的策略可能有更嚴格的門檻)
-        threshold = 0.5
-        y_pred_class = (y_pred_prob > threshold).astype(int)
+        from sklearn.metrics import accuracy_score
+        # 這是最純粹的準確率，不受 class_weight 影響評估
+        raw_acc = accuracy_score(y_test, y_pred_raw) 
         
-        # 3. 計算詳細指標
-        from sklearn.metrics import accuracy_score, precision_score, recall_score
+        # 這是原本 Keras 計算的 (受 loss function 影響)
+        loss, strategy_acc = model.evaluate(X_test, y_test, verbose=0)
         
-        # 整體準確度 (Accuracy)
-        acc = accuracy_score(y_test, y_pred_class)
-        
-        # 精確率 (Precision) = 預測會漲，結果真的漲的比例 (即策略勝率)
-        precision = precision_score(y_test, y_pred_class, zero_division=0)
-        
-        # 召回率 (Recall) = 真的有漲，模型有抓到的比例
-        recall = recall_score(y_test, y_pred_class, zero_division=0)
+        # ... (後面代碼不用變，記得 return 要多回傳 raw_acc) ...
+        return prob_latest, raw_acc, current_price, df_viz, viz_acc, precision, recall # 注意回傳 raw_acc
         
         # -----------------------------------------------
         
@@ -603,9 +600,23 @@ def get_tsm_short_prediction():
         viz_dates = test_indices[-viz_len:]
         viz_prices = df_main['TSM'].loc[viz_dates].values
         
-        # 取得預測值
+# 取得預測值
         preds_all = model.predict(X_test, verbose=0).flatten()
         viz_probs_raw = preds_all[-viz_len:]
+        
+        # ======================================================
+        # ★★★ 新增：在這裡計算原始準確率 (Raw Accuracy) ★★★
+        # ======================================================
+        # 1. 取得這段時間的正確答案 (Target)
+        viz_targets = y_test[-viz_len:]
+        
+        # 2. 用原始機率 (未平移) 以 0.5 為門檻來判斷
+        raw_cls = (viz_probs_raw > 0.5).astype(int)
+        
+        # 3. 計算準確率
+        raw_acc = np.mean(viz_targets == raw_cls)
+        # ======================================================
+
         viz_probs = apply_shift_and_enhance(viz_probs_raw) # 經過平移與放大的機率
         
         df_viz = pd.DataFrame({
@@ -631,7 +642,7 @@ def get_tsm_short_prediction():
             if current_vix > 28: prob_latest = prob_latest * 0.8
         except: pass
 
-        return prob_latest, acc, df_viz # 多回傳 df_viz
+        return prob_latest, raw_acc, df_viz
 
     except Exception as e:
         print(f"Short Model Error: {e}")
@@ -3068,6 +3079,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
