@@ -1650,32 +1650,56 @@ if app_mode == "🤖 AI 深度學習實驗室":
         st.caption("策略：長短雙模共振 | 冠軍參數：T+5 (70%) + T+3 (30%)")
         
         # 1. 啟動按鈕
-        # 使用 v8 版本號強迫刷新 (避免舊資料干擾)
-        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm_gsheet_v8") or 'tsm_result_v8' in st.session_state:
+        # 使用新的 key (v9) 強迫刷新，避免舊的 session state 格式衝突
+        if st.button("🚀 啟動雙模型分析 (含詳細戰力)", key="btn_tsm_gsheet_v9") or 'tsm_result_v9' in st.session_state:
             
             # 如果 Session 裡沒有資料，就跑模型
-            if 'tsm_result_v8' not in st.session_state:
-                with st.spinner("AI 正在進行雙重驗證 (應用 Grid Search 最佳化)..."):
-                    # 呼叫 T+5
-                    p_long, a_long, price, df_viz_long, backtest_score = get_tsm_swing_prediction()
-                    # 呼叫 T+3
+            if 'tsm_result_v9' not in st.session_state:
+                with st.spinner("AI 正在進行雙重驗證 (計算 Precision/Recall)..."):
+                    # 呼叫 T+5 (注意：這裡假設你已經修改了函數，會回傳 7 個值)
+                    # 回傳順序：機率, 準確度, 現價, 視覺化DF, 回測準度, 精確率, 召回率
+                    p_long, a_long, price, df_viz_long, backtest_score, prec_long, rec_long = get_tsm_swing_prediction()
+                    
+                    # 呼叫 T+3 (保持原樣，回傳 3 個值)
                     p_short, a_short, df_viz_short = get_tsm_short_prediction()
-                    # 存入 Session
-                    st.session_state['tsm_result_v8'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short)
+                    
+                    # 存入 Session (現在存 10 個變數)
+                    st.session_state['tsm_result_v9'] = (p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short, prec_long, rec_long)
             
-            # 解包數據
-            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short = st.session_state['tsm_result_v8']
+            # 解包數據 (從 Session 拿出來用)
+            p_long, a_long, p_short, a_short, price, df_viz_long, backtest_score, df_viz_short, prec_long, rec_long = st.session_state['tsm_result_v9']
             
-            # 處理 None 的情況 (防呆)
+            # 防呆處理 (如果發生錯誤回傳 None 的時候)
             p5 = p_long if p_long is not None else 0.5
             p3 = p_short if p_short is not None else 0.5
+            prec_long = prec_long if prec_long is not None else 0
+            rec_long = rec_long if rec_long is not None else 0
 
             # --- 顯示即時價格 ---
             st.metric("TSM 即時價格", f"${price:.2f}")
+            
+            # ==========================================
+            # ★★★ 新增：模型戰力儀表板 (UI 重點) ★★★
+            # ==========================================
+            st.markdown("### 📊 T+5 模型戰力分析")
+            m1, m2, m3 = st.columns(3)
+            
+            with m1:
+                st.metric("🎯 整體準確度 (Acc)", f"{a_long*100:.1f}%", help="模型整體猜對的比例")
+            with m2:
+                # 這是交易者最在乎的：喊單勝率
+                st.metric("🔫 出手勝率 (Precision)", f"{prec_long*100:.1f}%", 
+                          delta="核心指標", delta_color="normal",
+                          help="當模型喊 'Buy' 時，實際上漲的機率 (越高越好，代表不隨便亂喊)")
+            with m3:
+                # 這是機會捕捉率
+                st.metric("📡 機會捕捉率 (Recall)", f"{rec_long*100:.1f}%", 
+                          help="市場真的大漲時，模型有抓到的比例 (太低代表容易漏掉行情)")
+            
             st.divider()
 
             # ==========================================
-            # ★★★ 核心修正：應用冠軍參數邏輯 ★★★
+            # ★★★ 以下維持原有的冠軍參數邏輯 ★★★
             # ==========================================
             # 根據 Grid Search 結果：
             # T+5 最佳門檻 > 0.5
@@ -1743,7 +1767,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
             """, unsafe_allow_html=True)
 
             # ==========================================
-            # ★★★ Google Sheet 存檔區 (邏輯微調) ★★★
+            # ★★★ Google Sheet 存檔區 (保持不變) ★★★
             # ==========================================
             st.divider()
             c_save, c_chart = st.columns([1, 2])
@@ -1752,11 +1776,10 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 st.subheader("💾 雲端戰報")
                 st.caption("將今日訊號寫入資料庫")
                 
-                # 自動修正：如果信心太低，強制轉為 Neutral 避免亂存
                 if p5 < 0.4 and p3 < 0.4: final_dir = "Bear"
                 avg_conf = (p5 + p3) / 2
                 
-                if st.button("📥 寫入資料庫", key="btn_save_gsheet_v8", use_container_width=True):
+                if st.button("📥 寫入資料庫", key="btn_save_gsheet_v9", use_container_width=True):
                     if final_dir == "Neutral":
                         st.warning("⚠️ 趨勢不明，建議不記錄。")
                     else:
@@ -1775,7 +1798,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     st.caption("📜 雲端最近紀錄")
                     st.dataframe(df_hist.tail(3)[['date', 'direction', 'return_pct']], use_container_width=True, hide_index=True)
 
-            # 右邊：畫出雲端歷史圖 (保持不變)
+            # 右邊：畫出雲端歷史圖
             with c_chart:
                 st.subheader("📊 雲端戰績回顧")
                 with st.spinner("🤖 對帳中..."):
@@ -1801,7 +1824,7 @@ if app_mode == "🤖 AI 深度學習實驗室":
                     st.info("📉 資料不足，請累積更多紀錄。")
 
             # ==========================================
-            # ★★★ 回測圖表區 (完整保留) ★★★
+            # ★★★ 回測圖表區 (保持不變) ★★★
             # ==========================================
             if df_viz_long is not None:
                 st.divider()
@@ -1809,7 +1832,6 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 fig = make_subplots(specs=[[{"secondary_y": True}]])
                 fig.add_trace(go.Scatter(x=df_viz_long['Date'], y=df_viz_long['Price'], name="股價", line=dict(color='gray')), secondary_y=False)
                 
-                # 更新：顯示新的冠軍門檻 0.5
                 buy = df_viz_long[df_viz_long['Prob'] > 0.5]
                 if not buy.empty: fig.add_trace(go.Scatter(x=buy['Date'], y=buy['Price'], mode='markers', marker=dict(color='cyan', size=8, symbol='triangle-up'), name='Buy Signal'), secondary_y=False)
                 
@@ -1823,7 +1845,6 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 fig_s = make_subplots(specs=[[{"secondary_y": True}]])
                 fig_s.add_trace(go.Scatter(x=df_viz_short['Date'], y=df_viz_short['Price'], name="股價", line=dict(color='gray')), secondary_y=False)
                 
-                # 更新：顯示新的冠軍門檻 0.45
                 buy_s = df_viz_short[df_viz_short['Prob'] > 0.45]
                 if not buy_s.empty: fig_s.add_trace(go.Scatter(x=buy_s['Date'], y=buy_s['Price'], mode='markers', marker=dict(color='orange', size=10, symbol='star'), name='Sniper Buy'), secondary_y=False)
                 
@@ -3047,6 +3068,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
