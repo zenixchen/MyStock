@@ -17,6 +17,7 @@ import requests
 import xml.etree.ElementTree as ET
 import xgboost as xgb  # <--- 新增這行
 from sklearn.metrics import accuracy_score # <--- 新增這行
+from sklearn.metrics import classification_report, confusion_matrix
 import re                   # 用來清洗欄位名稱 (原本沒有，必須加)
 import lightgbm as lgb      # 新模型
 from catboost import CatBoostClassifier # 新模型
@@ -428,7 +429,27 @@ def get_tsm_swing_prediction():
                   epochs=25, batch_size=32, callbacks=[early], 
                   class_weight=class_weight_dict, verbose=0)
         
-        loss, acc = model.evaluate(X_test, y_test, verbose=0)
+        # --- ★★★ 新增：詳細準確度計算模組 ★★★ ---
+        # 1. 取得測試集的預測機率
+        y_pred_prob = model.predict(X_test, verbose=0)
+        
+        # 2. 設定門檻 (例如 0.5，但你的策略可能有更嚴格的門檻)
+        threshold = 0.5
+        y_pred_class = (y_pred_prob > threshold).astype(int)
+        
+        # 3. 計算詳細指標
+        from sklearn.metrics import accuracy_score, precision_score, recall_score
+        
+        # 整體準確度 (Accuracy)
+        acc = accuracy_score(y_test, y_pred_class)
+        
+        # 精確率 (Precision) = 預測會漲，結果真的漲的比例 (即策略勝率)
+        precision = precision_score(y_test, y_pred_class, zero_division=0)
+        
+        # 召回率 (Recall) = 真的有漲，模型有抓到的比例
+        recall = recall_score(y_test, y_pred_class, zero_division=0)
+        
+        # -----------------------------------------------
         
         # ---------------------------------------------------
         # ★ 步驟 D: 繪圖數據 (Viz)
@@ -476,7 +497,7 @@ def get_tsm_swing_prediction():
         prob_latest_raw = model.predict(input_seq, verbose=0)[0][0]
         prob_latest = enhance_confidence(prob_latest_raw, temperature=0.25)
         
-        return prob_latest, acc, current_price, df_viz, viz_acc
+        return prob_latest, acc, current_price, df_viz, viz_acc, precision, recall
 
     except Exception as e:
         print(f"❌ TSM Model Final Crash: {e}")
@@ -3026,6 +3047,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
