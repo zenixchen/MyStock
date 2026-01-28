@@ -22,7 +22,7 @@ import lightgbm as lgb      # 新模型
 from catboost import CatBoostClassifier # 新模型
 
 # ==========================================
-# ★★★ 通用繪圖模組：LSTM 績效分析儀表板 ★★★
+# ★★★ 通用繪圖模組：LSTM 績效分析儀表板 (修復 ID 衝突版) ★★★
 # ==========================================
 def plot_lstm_performance(df_backtest, target_name="Stock", threshold=0.5):
     """
@@ -33,40 +33,45 @@ def plot_lstm_performance(df_backtest, target_name="Stock", threshold=0.5):
         st.warning("⚠️ 數據不足，無法繪製回測圖表")
         return
 
+    # ★★★ 關鍵修正：產生獨一無二的 key (防止 StreamlitDuplicateElementId) ★★★
+    import random
+    unique_suffix = f"{target_name}_{threshold}_{random.randint(0, 99999)}"
+
     # 1. 計算資金曲線
-    # 策略邏輯：若 信心 > 門檻，則持有(1)，否則空手(0)
-    df_backtest['Return'] = df_backtest['Price'].pct_change()
-    df_backtest['Signal'] = (df_backtest['Prob'] > threshold).astype(int)
+    df = df_backtest.copy() # 避免修改原始資料
+    df['Return'] = df['Price'].pct_change()
+    df['Signal'] = (df['Prob'] > threshold).astype(int)
     # 策略回報 = 昨天的訊號 * 今天的漲跌 (Shift 1)
-    df_backtest['Strat_Ret'] = df_backtest['Signal'].shift(1) * df_backtest['Return']
-    df_backtest.fillna(0, inplace=True)
+    df['Strat_Ret'] = df['Signal'].shift(1) * df['Return']
+    df.fillna(0, inplace=True)
     
     # 計算累計回報
-    df_backtest['Cum_BuyHold'] = (1 + df_backtest['Return']).cumprod()
-    df_backtest['Cum_Strat'] = (1 + df_backtest['Strat_Ret']).cumprod()
+    df['Cum_BuyHold'] = (1 + df['Return']).cumprod()
+    df['Cum_Strat'] = (1 + df['Strat_Ret']).cumprod()
 
     # --- 圖表 A: 資金曲線對決 ---
     fig_eq = make_subplots()
-    fig_eq.add_trace(go.Scatter(x=df_backtest['Date'], y=df_backtest['Cum_BuyHold'], name='Buy & Hold (大盤)', line=dict(color='gray', width=1, dash='dot')))
-    fig_eq.add_trace(go.Scatter(x=df_backtest['Date'], y=df_backtest['Cum_Strat'], name='AI 策略', line=dict(color='#00E676', width=2)))
-    fig_eq.add_trace(go.Scatter(x=df_backtest['Date'], y=df_backtest['Prob'], name='AI 信心', yaxis='y2', line=dict(color='rgba(41, 98, 255, 0.2)', width=0), fill='tozeroy'))
+    fig_eq.add_trace(go.Scatter(x=df['Date'], y=df['Cum_BuyHold'], name='Buy & Hold (大盤)', line=dict(color='gray', width=1, dash='dot')))
+    fig_eq.add_trace(go.Scatter(x=df['Date'], y=df['Cum_Strat'], name='AI 策略', line=dict(color='#00E676', width=2)))
+    fig_eq.add_trace(go.Scatter(x=df['Date'], y=df['Prob'], name='AI 信心', yaxis='y2', line=dict(color='rgba(41, 98, 255, 0.2)', width=0), fill='tozeroy'))
     
     fig_eq.update_layout(
         title=f"💰 {target_name} 資金回測 (門檻 > {threshold})",
         height=350, margin=dict(t=30, b=10), hovermode="x unified",
         yaxis2=dict(overlaying='y', side='right', range=[0, 1], showgrid=False, visible=False)
     )
-    st.plotly_chart(fig_eq, use_container_width=True)
+    # ★ key 加入 unique_suffix
+    st.plotly_chart(fig_eq, use_container_width=True, key=f"chart_eq_{unique_suffix}")
 
     # --- 圖表 B: 準確度校準圖 ---
-    with st.expander("🧐 深度分析：AI 信心校準 (藍線越像爬樓梯越好)", expanded=True):
+    with st.expander(f"🧐 {target_name} 深度分析：AI 信心校準", expanded=True):
         bins = np.arange(0, 1.05, 0.1)
         labels = [f"{int(b*100)}%" for b in bins[:-1]]
-        df_backtest['Conf_Bin'] = pd.cut(df_backtest['Prob'], bins=bins, labels=labels)
-        df_backtest['Pred_Dir'] = (df_backtest['Prob'] > 0.5).astype(int)
-        df_backtest['Is_Correct'] = (df_backtest['Pred_Dir'] == df_backtest['Target']).astype(int)
+        df['Conf_Bin'] = pd.cut(df['Prob'], bins=bins, labels=labels)
+        df['Pred_Dir'] = (df['Prob'] > 0.5).astype(int)
+        df['Is_Correct'] = (df['Pred_Dir'] == df['Target']).astype(int)
         
-        bin_stats = df_backtest.groupby('Conf_Bin', observed=False).agg({
+        bin_stats = df.groupby('Conf_Bin', observed=False).agg({
             'Target': ['count', 'mean'], 
             'Is_Correct': 'mean'
         })
@@ -80,44 +85,9 @@ def plot_lstm_performance(df_backtest, target_name="Stock", threshold=0.5):
         fig_cal.add_trace(go.Scatter(x=valid_stats['Conf_Bin'], y=valid_stats['Model_Accuracy'], name='AI 預測準度', line=dict(color='#2979FF', width=3), mode='lines+markers'), secondary_y=False)
         fig_cal.add_hline(y=0.5, line_dash="dash", line_color="gray", secondary_y=False)
         fig_cal.update_layout(height=350, yaxis_title="比率", yaxis2_title="次數")
-        st.plotly_chart(fig_cal, use_container_width=True)
-
-def download_tw_stock_data(ticker):
-    """
-    聰明的台股下載器：自動處理 .TW/.TWO 後綴，並修正空值數據
-    """
-    # 1. 自動修正代號格式
-    target_ticker = ticker.upper()
-    if not (target_ticker.endswith(".TW") or target_ticker.endswith(".TWO")):
-        # 先嘗試加上 .TW (上市)
-        test_data = yf.download(f"{target_ticker}.TW", period="5d", progress=False)
-        if not test_data.empty:
-            target_ticker = f"{target_ticker}.TW"
-        else:
-            # 如果抓不到，嘗試 .TWO (上櫃)
-            target_ticker = f"{target_ticker}.TWO"
-    
-    st.write(f"🔄 正在鎖定台股目標：{target_ticker}")
-
-    # 2. 下載數據 (連同美股對照組一起抓)
-    # 這裡我們一定要抓：費半(^SOX) 和 輝達(NVDA) 作為領先指標
-    tickers_to_download = [target_ticker, "^SOX", "NVDA"]
-    data = yf.download(tickers_to_download, period="5y", interval="1d", progress=False)
-    
-    # 處理 MultiIndex (Yahoo 下載多檔股票時的格式問題)
-    if isinstance(data.columns, pd.MultiIndex):
-        # 只取 Close 收盤價
-        df = data['Close'].copy()
-    else:
-        df = data['Close'].copy()
         
-    # 3. 防雷處理：修正台股特有的「零成交量」或「颱風假」問題
-    # 如果某天台股是 NaN (例如颱風假)，但美股有資料，我們用前一天的台股收盤價填補 (ffill)
-    df.ffill(inplace=True)
-    df.dropna(inplace=True)
-    
-    # 回傳處理好的 DataFrame 和 修正後的代號
-    return df, target_ticker
+        # ★ key 加入 unique_suffix
+        st.plotly_chart(fig_cal, use_container_width=True, key=f"chart_cal_{unique_suffix}")
 
 # ==========================================
 # ★★★ 請補上這個遺失的關鍵函數！ ★★★
@@ -2970,6 +2940,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
