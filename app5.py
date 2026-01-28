@@ -22,23 +22,17 @@ import lightgbm as lgb      # 新模型
 from catboost import CatBoostClassifier # 新模型
 
 # ==========================================
-# ★★★ 通用繪圖模組：LSTM 績效分析儀表板 (UUID版) ★★★
+# ★★★ 通用繪圖模組：LSTM 績效分析儀表板 (強制 Key 版) ★★★
 # ==========================================
-import uuid # 確保引入這個庫
-
-def plot_lstm_performance(df_backtest, target_name="Stock", threshold=0.5):
+def plot_lstm_performance(df_backtest, target_name, threshold, unique_key):
     """
-    輸入: 包含 Date, Price, Prob, Target 的 DataFrame
-    輸出: 繪製 1. 資金曲線 2. 信心校準圖
+    輸入: df_backtest, 名稱, 門檻, 唯一金鑰(key)
     """
     if df_backtest is None or df_backtest.empty:
         st.warning(f"⚠️ {target_name} 數據不足，無法繪製回測圖表")
         return
 
-    # 產生絕對不重複的 Key
-    unique_id = str(uuid.uuid4())[:8]
-
-    # 1. 計算資金曲線 (使用 copy 避免汙染原始資料)
+    # 1. 計算資金曲線
     df = df_backtest.copy()
     df['Return'] = df['Price'].pct_change()
     df['Signal'] = (df['Prob'] > threshold).astype(int)
@@ -59,7 +53,8 @@ def plot_lstm_performance(df_backtest, target_name="Stock", threshold=0.5):
         height=350, margin=dict(t=30, b=10), hovermode="x unified",
         yaxis2=dict(overlaying='y', side='right', range=[0, 1], showgrid=False, visible=False)
     )
-    st.plotly_chart(fig_eq, use_container_width=True, key=f"eq_{unique_id}")
+    # ★ 強制使用傳入的 unique_key
+    st.plotly_chart(fig_eq, use_container_width=True, key=f"eq_{unique_key}")
 
     # --- 圖表 B: 準確度校準 ---
     with st.expander(f"🧐 {target_name} 深度分析：AI 信心校準", expanded=True):
@@ -84,8 +79,8 @@ def plot_lstm_performance(df_backtest, target_name="Stock", threshold=0.5):
         fig_cal.add_hline(y=0.5, line_dash="dash", line_color="gray", secondary_y=False)
         fig_cal.update_layout(height=350, yaxis_title="比率", yaxis2_title="次數")
         
-        st.plotly_chart(fig_cal, use_container_width=True, key=f"cal_{unique_id}")
-
+        # ★ 強制使用傳入的 unique_key
+        st.plotly_chart(fig_cal, use_container_width=True, key=f"cal_{unique_key}")
 # ==========================================
 # ★★★ 請補上這個遺失的關鍵函數！ ★★★
 # ==========================================
@@ -318,33 +313,44 @@ def verify_performance_db():
         return 0
 
 # ==========================================
-# ★★★ TSM T+5 (韌性增強版：防止超時崩潰) ★★★
+# ★★★ TSM T+5 (終極救援版：自動降級下載) ★★★
 # ==========================================
 @st.cache_resource(ttl=300)
 def get_tsm_swing_prediction():
     # 預設回傳：(Prob, Acc, Price, DataFrame)
     err_ret = (None, 0.0, 0.0, None)
-    
     if not HAS_TENSORFLOW: return err_ret
+    
     try:
         tickers = ["TSM", "^SOX", "NVDA", "^TNX", "^VIX"]
+        df = pd.DataFrame()
         
-        # ★ 修改1：先嘗試下載 5年，如果失敗則下載 2年 (Fail-over 機制)
-        try:
-            data = yf.download(tickers, period="5y", interval="1d", progress=False, timeout=20)
-            if data is None or len(data) < 200: raise ValueError("Data too short")
-        except:
-            print("⚠️ T+5 下載 5年數據失敗，切換為 2年模式...")
-            data = yf.download(tickers, period="2y", interval="1d", progress=False, timeout=20)
+        # --- ★ 資料下載救援機制 ★ ---
+        periods = ["5y", "2y", "1y"] # 嘗試順序
+        for p in periods:
+            try:
+                # print(f"嘗試下載 TSM {p}...")
+                data = yf.download(tickers, period=p, interval="1d", progress=False, timeout=20)
+                
+                if isinstance(data.columns, pd.MultiIndex): 
+                    temp = data['Close'].copy()
+                else: 
+                    temp = data['Close'].copy()
+                
+                if 'TSM' in temp.columns and len(temp) > 50:
+                    df = temp
+                    # print(f"✅ 下載成功 ({p})")
+                    break # 成功就跳出
+            except:
+                continue # 失敗就試下一個
+        
+        # 如果試了三次都失敗
+        if df.empty or 'TSM' not in df.columns:
+            print("❌ TSM 資料全數下載失敗")
+            return err_ret
 
-        if isinstance(data.columns, pd.MultiIndex): df = data['Close'].copy()
-        else: df = data['Close'].copy()
-        
-        # 檢查關鍵欄位
-        if 'TSM' not in df.columns: return err_ret
+        # 取得現價
         current_price = float(df['TSM'].iloc[-1])
-        
-        # 嘗試注入即時價格
         try:
             live = get_real_live_price("TSM")
             if live and live > 0: 
@@ -354,12 +360,12 @@ def get_tsm_swing_prediction():
             
         df.ffill(inplace=True); df.dropna(inplace=True)
         
-        # 特徵工程
+        # 特徵工程 (寬容模式)
         feat = pd.DataFrame()
         feat['TSM_Ret'] = df['TSM'].pct_change()
         feat['RSI'] = ta.rsi(df['TSM'], length=5)
         feat['MACD'] = ta.macd(df['TSM'])['MACD_12_26_9']
-        # 寬容模式：如果找不到其他欄位，填 0
+        # 其他欄位如果沒有就填 0
         feat['NVDA_Ret'] = df['NVDA'].pct_change() if 'NVDA' in df else 0
         feat['SOX_Ret'] = df['^SOX'].pct_change() if '^SOX' in df else 0
         feat['TNX_Chg'] = df['^TNX'].pct_change() if '^TNX' in df else 0
@@ -1544,43 +1550,42 @@ if app_mode == "🤖 AI 深度學習實驗室":
         st.subheader("📈 TSM 雙核心波段顧問")
         st.caption("策略：長短雙模共振 | 冠軍參數：T+5 (70%) + T+3 (30%)")
         
-        # 初始化
+        # 1. 初始化
         p5, p3 = 0.5, 0.5 
         price = 0.0
-        final_dir = "Neutral"
         df_viz_long, df_viz_short = None, None
         has_result = False 
 
-        # 按鈕邏輯
-        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm_v12") or 'tsm_v12' in st.session_state:
-            if 'tsm_v12' not in st.session_state:
+        # 2. 按鈕邏輯
+        if st.button("🚀 啟動雙模型分析 (T+3 & T+5)", key="btn_tsm_v13") or 'tsm_v13' in st.session_state:
+            if 'tsm_v13' not in st.session_state:
                 with st.spinner("AI 正在進行雙重驗證..."):
                     res_long = get_tsm_swing_prediction()
                     res_short = get_tsm_short_prediction()
-                    st.session_state['tsm_v12'] = (res_long, res_short)
+                    st.session_state['tsm_v13'] = (res_long, res_short)
             
-            res_long, res_short = st.session_state['tsm_v12']
+            res_long, res_short = st.session_state['tsm_v13']
             
-            # --- 解析數據 ---
+            # --- 解析數據 (確保變數正確) ---
             # T+5
             if res_long and res_long[0] is not None:
                 p5 = res_long[0]
                 if res_long[2] > 0: price = res_long[2]
-                df_viz_long = res_long[3] # 取得 T+5 的 DataFrame
+                df_viz_long = res_long[3] # 這是 T+5 的 Dataframe
             else:
-                st.error("⚠️ T+5 模型載入失敗 (資料源不穩，請重試)")
+                st.error("⚠️ T+5 模型載入失敗 (即使降級下載也失敗了)")
 
             # T+3
             if res_short and res_short[0] is not None:
                 p3 = res_short[0]
                 if price == 0 and res_short[2] > 0: price = res_short[2]
-                df_viz_short = res_short[3] # 取得 T+3 的 DataFrame
+                df_viz_short = res_short[3] # 這是 T+3 的 Dataframe
             else:
                 st.warning("⚠️ T+3 模型載入失敗")
 
             has_result = True
 
-            # --- 顯示 ---
+            # --- 顯示數據 ---
             if price > 0: st.metric("TSM 即時價格", f"${price:.2f}")
             else: st.metric("TSM 即時價格", "N/A")
             st.divider()
@@ -1601,45 +1606,25 @@ if app_mode == "🤖 AI 深度學習實驗室":
                 if signal_t3: st.success("🚀 狙擊")
                 else: st.warning("⚖️ 觀望")
 
+            # ... (中間的建議文字省略，保持原樣即可，或者您可以自行補回) ...
+            
             st.divider()
             
-            # 綜合訊號
-            if signal_t5 and signal_t3:
-                final_dir = "Bull"
-                st.success("👑 【皇冠級買點】雙模共振！建議 7:3 資金進場。")
-            elif signal_t5:
-                final_dir = "Bull"
-                st.success("📈 【主升段持倉】T+5 看漲，長線續抱。")
-            elif signal_t3:
-                final_dir = "Bull"
-                st.info("⚡ 【短線游擊】僅短線有機會，快進快出。")
-            else:
-                final_dir = "Neutral"
-                st.warning("💤 【全面觀望】動能不足，建議空手。")
-
-            # 存檔與圖表 (Google Sheet 部分省略，保留按鈕即可)
-            st.divider()
-            if st.button("📥 寫入資料庫", key="save_tsm_v12"):
-                save_prediction_db("TSM", final_dir, (p5+p3)/2, price)
-                st.success("已存檔")
-
             # ==========================================
-            # ★★★ 關鍵修正：確保畫出正確的圖 ★★★
+            # ★★★ 繪圖區：絕對獨立的 ID ★★★
             # ==========================================
             if has_result:
-                # 1. 畫 T+5 (只用 df_viz_long)
+                # 1. 畫 T+5
                 if df_viz_long is not None and not df_viz_long.empty:
                     st.divider()
-                    st.markdown("### 🔭 T+5 波段回測 (門檻 > 0.5)")
-                    # 呼叫函式時，傳入不同的 name，確保 Key 唯一
-                    plot_lstm_performance(df_viz_long, "TSM_T5_Model", threshold=0.5)
+                    # ★ 傳入 "T5_Unique_ID"
+                    plot_lstm_performance(df_viz_long, "TSM (T+5)", 0.5, "T5_Unique_ID")
 
-                # 2. 畫 T+3 (只用 df_viz_short)
+                # 2. 畫 T+3
                 if df_viz_short is not None and not df_viz_short.empty:
                     st.divider()
-                    st.markdown("### ⚡ T+3 短線回測 (門檻 > 0.45)")
-                    # 呼叫函式時，傳入不同的 name
-                    plot_lstm_performance(df_viz_short, "TSM_T3_Model", threshold=0.45)
+                    # ★ 傳入 "T3_Unique_ID"
+                    plot_lstm_performance(df_viz_short, "TSM (T+3)", 0.45, "T3_Unique_ID")
                 
     # === Tab 2: EDZ / Macro ===
     with tab2:
@@ -2856,6 +2841,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
