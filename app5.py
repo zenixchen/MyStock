@@ -1422,69 +1422,6 @@ def quick_backtest(df, config, fee=0.0005):
         # st.error(f"❌ 回測崩潰: {e}") 
         return 0, None, None
 
-# ==========================================
-# ★ 新增模組：全市場掃描儀 (Dashboard)
-# ==========================================
-def scan_all_targets(strategies_dict):
-    """
-    批次掃描所有股票，回傳總表 DataFrame
-    """
-    report = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    total_stocks = len(strategies_dict)
-    
-    for i, (key, cfg) in enumerate(strategies_dict.items()):
-        # 更新進度條
-        progress = (i + 1) / total_stocks
-        progress_bar.progress(progress)
-        status_text.text(f"正在掃描: {cfg['name']} ({i+1}/{total_stocks})...")
-        
-        try:
-            # 1. 下載數據 (只抓最近半年即可，加快速度)
-            df = yf.download(cfg['symbol'], period="1y", progress=False)
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            
-            # 確保有計算需要的指標 (均線等)
-            # 這裡簡單補上可能用到的均線，避免報錯
-            if len(df) > 200:
-                df['MA20'] = ta.sma(df['Close'], length=20)
-                df['MA60'] = ta.sma(df['Close'], length=60)
-                df['MA200'] = ta.sma(df['Close'], length=200)
-
-            # 2. 執行回測 (使用該股票專屬的 cfg)
-            last_sig, stats, _ = quick_backtest(df, cfg)
-            
-            # 3. 翻譯訊號
-            sig_text = "⚪ 觀望"
-            if last_sig == 1: sig_text = "🚀 買進/持有"
-            elif last_sig == -1: sig_text = "🛑 賣出/空手"
-            
-            # 4. 取得當前價格與漲跌
-            curr_price = df['Close'].iloc[-1]
-            prev_price = df['Close'].iloc[-2]
-            pct_change = (curr_price - prev_price) / prev_price
-            
-            # 5. 加入報表
-            report.append({
-                "代號": cfg['symbol'],
-                "名稱": cfg['name'].split('(')[0], # 簡化名稱
-                "現價": f"{curr_price:.2f}",
-                "漲跌幅": f"{pct_change:.2%}",
-                "策略": cfg['mode'],
-                "訊號": sig_text,
-                "回測勝率": f"{stats['Win_Rate']:.0f}%" if stats else "N/A",
-                "總報酬": f"{stats['Total_Return']:.0f}%" if stats else "N/A"
-            })
-            
-        except Exception as e:
-            print(f"掃描 {key} 失敗: {e}")
-            
-    progress_bar.empty()
-    status_text.empty()
-    
-    return pd.DataFrame(report)
 
 # ==========================================
 # ★ 新增模組：籌碼健康度診斷 (OBV + CMF 解讀)
@@ -2284,45 +2221,7 @@ elif app_mode == "📊 策略分析工具 (單股)":
         "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
     }
 
-    # 在側邊欄加入掃描按鈕
-st.sidebar.header("🔍 全市場監控")
-if st.sidebar.button("🚀 掃描所有關注股"):
-    st.header("📊 全市場策略戰情室")
-    
-    # 呼叫剛剛寫好的掃描函數
-    df_scan = scan_all_targets(strategies)
-    
-    if not df_scan.empty:
-        # 特別將「買進」訊號高亮顯示
-        def highlight_signal(val):
-            color = ''
-            if '🚀' in str(val):
-                color = 'background-color: #1f77b4; color: white' # 藍底白字
-            elif '🛑' in str(val):
-                color = 'background-color: #5a1e1e; color: white' # 深紅底
-            return color
-
-        # 顯示互動式表格
-        st.dataframe(
-            df_scan.style.applymap(highlight_signal, subset=['訊號']),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "漲跌幅": st.column_config.NumberColumn(
-                    "漲跌幅",
-                    format="%.2f%%",
-                )
-            }
-        )
         
-        # 快速統計
-        buy_count = len(df_scan[df_scan['訊號'].str.contains("🚀")])
-        st.info(f"掃描完成！目前共有 **{buy_count}** 檔股票出現買進/持有訊號。")
-    else:
-        st.error("掃描失敗或無數據")
-        
-    st.divider() # 分隔線
-    
     # 2. 製作分類選單 (先執行)
     all_categories = sorted(list(set(s['category'] for s in strategies.values())))
     selected_cat = st.selectbox("📂 步驟一：選擇板塊分類", all_categories)
@@ -3220,6 +3119,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
