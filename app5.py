@@ -1341,6 +1341,27 @@ def quick_backtest(df, config, fee=0.0005):
             f = ta.sma(close, config['fast_ma']); s = ta.sma(close, config['slow_ma'])
             sigs[(f > s) & (f.shift(1) <= s.shift(1))] = 1
             sigs[(f < s) & (f.shift(1) >= s.shift(1))] = -1
+        # ==========================================
+        # ★ 插入這裡：Supertrend 策略 (App5 專用版)
+        # ==========================================
+        elif mode == "SUPERTREND":
+            # 1. 讀取參數 (預設 10, 3.0)
+            period = config.get('period', 10)
+            multiplier = config.get('multiplier', 3.0)
+            
+            # 2. 計算 Supertrend
+            # pandas_ta 的 supertrend 會回傳三個欄位，第 2 欄 (index 1) 是方向
+            sti = ta.supertrend(df['High'], df['Low'], close, length=period, multiplier=multiplier)
+            
+            if sti is not None:
+                # 取得方向欄位 (1=多頭/綠色, -1=空頭/紅色)
+                trend = sti.iloc[:, 1]
+                
+                # 3. 設定訊號
+                # App5 的邏輯是：只要是多頭趨勢，就標記為 1 (Buy/Hold)
+                # 這樣儀表板就會一直顯示 "建議持倉"，直到轉為空頭 (-1)
+                sigs[trend == 1] = 1
+                sigs[trend == -1] = -1
         elif mode == "FUSION":
             rsi = ta.rsi(close, length=config.get('rsi_len', 14))
             ma = ta.ema(close, length=config.get('ma_trend', 200))
@@ -1581,6 +1602,12 @@ def get_strategy_desc(cfg, df=None):
     elif mode == "RSI_MA": desc = f"RSI + 均線 (RSI < {cfg['entry_rsi']} 買 / 破 MA{cfg['exit_ma']} 賣)"
     elif mode == "KD": desc = f"KD 隨機指標 (K < {cfg['entry_k']} 買 / K > {cfg['exit_k']} 賣)"
     elif mode == "MA_CROSS": desc = f"均線交叉 (MA{cfg['fast_ma']} 穿過 MA{cfg['slow_ma']})"
+    if mode == "SUPERTREND":
+        # 簡單計算目前狀態給 UI 顯示
+        st_data = ta.supertrend(df['High'], df['Low'], df['Close'], length=cfg.get('period', 10), multiplier=cfg.get('multiplier', 3.0))
+        if st_data is not None:
+            curr_dir = st_data.iloc[-1, 1] # 1 或 -1
+            current_val += " | 🟢多頭趨勢" if curr_dir == 1 else " | 🔴空頭趨勢"
     elif mode == "FUSION": desc = f"趨勢 + RSI (站上 EMA{cfg['ma_trend']} 且 RSI < {cfg['entry_rsi']})"
     elif mode == "BOLL_RSI": desc = f"布林通道 + RSI (破下軌且 RSI < {cfg['entry_rsi']})"
     elif mode == "BOLL_BREAK": desc = f"布林通道突破 (衝過上軌買 / 跌破中線賣)"
@@ -3026,6 +3053,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
