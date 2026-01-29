@@ -1755,43 +1755,6 @@ if ai_provider == "Gemini (User Defined)":
     gemini_key = st.sidebar.text_input("Gemini Key", type="password")
     gemini_model = st.sidebar.text_input("Model Name", value="models/gemini-3-pro-preview")
     
-st.sidebar.header("🔍 全市場監控")
-if st.sidebar.button("🚀 掃描所有關注股"):
-    st.header("📊 全市場策略戰情室")
-    
-    # 呼叫剛剛寫好的掃描函數
-    df_scan = scan_all_targets(strategies)
-    
-    if not df_scan.empty:
-        # 特別將「買進」訊號高亮顯示
-        def highlight_signal(val):
-            color = ''
-            if '🚀' in str(val):
-                color = 'background-color: #1f77b4; color: white' # 藍底白字
-            elif '🛑' in str(val):
-                color = 'background-color: #5a1e1e; color: white' # 深紅底
-            return color
-
-        # 顯示互動式表格
-        st.dataframe(
-            df_scan.style.applymap(highlight_signal, subset=['訊號']),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "漲跌幅": st.column_config.NumberColumn(
-                    "漲跌幅",
-                    format="%.2f%%",
-                )
-            }
-        )
-        
-        # 快速統計
-        buy_count = len(df_scan[df_scan['訊號'].str.contains("🚀")])
-        st.info(f"掃描完成！目前共有 **{buy_count}** 檔股票出現買進/持有訊號。")
-    else:
-        st.error("掃描失敗或無數據")
-        
-    st.divider() # 分隔線
 
 st.sidebar.divider()
 st.sidebar.header("💰 凱利公式設定")
@@ -2320,6 +2283,45 @@ elif app_mode == "📊 策略分析工具 (單股)":
         "CL": { "symbol": "CL=F", "name": "Crude Oil (原油期貨)", "category": "⛏️ 原物料", "mode": "KD", "entry_k": 20, "exit_k": 80 },
         "HG": { "symbol": "HG=F", "name": "Copper (銅期貨)", "category": "⛏️ 原物料", "mode": "RSI_MA", "entry_rsi": 30, "exit_ma": 50, "rsi_len": 14 }
     }
+
+    # 在側邊欄加入掃描按鈕
+st.sidebar.header("🔍 全市場監控")
+if st.sidebar.button("🚀 掃描所有關注股"):
+    st.header("📊 全市場策略戰情室")
+    
+    # 呼叫剛剛寫好的掃描函數
+    df_scan = scan_all_targets(strategies)
+    
+    if not df_scan.empty:
+        # 特別將「買進」訊號高亮顯示
+        def highlight_signal(val):
+            color = ''
+            if '🚀' in str(val):
+                color = 'background-color: #1f77b4; color: white' # 藍底白字
+            elif '🛑' in str(val):
+                color = 'background-color: #5a1e1e; color: white' # 深紅底
+            return color
+
+        # 顯示互動式表格
+        st.dataframe(
+            df_scan.style.applymap(highlight_signal, subset=['訊號']),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "漲跌幅": st.column_config.NumberColumn(
+                    "漲跌幅",
+                    format="%.2f%%",
+                )
+            }
+        )
+        
+        # 快速統計
+        buy_count = len(df_scan[df_scan['訊號'].str.contains("🚀")])
+        st.info(f"掃描完成！目前共有 **{buy_count}** 檔股票出現買進/持有訊號。")
+    else:
+        st.error("掃描失敗或無數據")
+        
+    st.divider() # 分隔線
     
     # 2. 製作分類選單 (先執行)
     all_categories = sorted(list(set(s['category'] for s in strategies.values())))
@@ -3218,6 +3220,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
