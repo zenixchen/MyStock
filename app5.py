@@ -1502,7 +1502,66 @@ def plot_chart(df, config, sigs):
         bb = ta.bbands(df['Close'], length=20, std=2)
         fig.add_trace(go.Scatter(x=df.index, y=bb.iloc[:, 2], name="Upper", line=dict(color='rgba(255,255,255,0.3)', width=1)), row=1, col=1)
         fig.add_trace(go.Scatter(x=df.index, y=bb.iloc[:, 0], name="Lower", line=dict(color='rgba(255,255,255,0.3)', width=1), fill='tonexty'), row=1, col=1)
+    if "SUPERTREND" in config['mode']:
+        # 1. 讀取參數 (使用 config 變數)
+        period = config.get('period', 10)
+        multiplier = config.get('multiplier', 3.0)
+        
+        # 2. 計算 Supertrend
+        # 注意：這邊會重新計算一次以確保畫圖數據正確
+        sti = ta.supertrend(df['High'], df['Low'], df['Close'], length=period, multiplier=multiplier)
+        
+        if sti is not None:
+            # pandas_ta 回傳: [數值, 方向(1/-1), ...]
+            st_line = sti.iloc[:, 0] # 趨勢線價格
+            st_dir = sti.iloc[:, 1]  # 方向
+            
+            # 3. 變色龍魔法：拆成綠線(多)與紅線(空)
+            st_green = st_line.copy()
+            st_green[st_dir == -1] = np.nan # 空頭時不顯示綠線
+            
+            st_red = st_line.copy()
+            st_red[st_dir == 1] = np.nan    # 多頭時不顯示紅線
 
+            # 4. 畫上圖表
+            # 🟢 多頭支撐線 (綠色)
+            fig.add_trace(go.Scatter(
+                x=df.index, y=st_green,
+                mode='lines',
+                line=dict(color='#00ff00', width=2),
+                name=f'Supertrend ({period},{multiplier}) - 多'
+            ), row=1, col=1)
+
+            # 🔴 空頭壓力線 (紅色)
+            fig.add_trace(go.Scatter(
+                x=df.index, y=st_red,
+                mode='lines',
+                line=dict(color='#ff0000', width=2),
+                name=f'Supertrend ({period},{multiplier}) - 空'
+            ), row=1, col=1)
+            
+            # 5. 標記買賣點訊號 (箭頭)
+            # 找出轉折點：方向改變的那一天
+            buy_signals = (st_dir == 1) & (st_dir.shift(1) == -1)
+            sell_signals = (st_dir == -1) & (st_dir.shift(1) == 1)
+            
+            # ▲ 買進箭頭
+            fig.add_trace(go.Scatter(
+                x=df.index[buy_signals], 
+                y=df['Low'][buy_signals] * 0.98, # 畫在 K 線下方
+                mode='markers',
+                marker=dict(symbol='triangle-up', size=12, color='yellow'),
+                name='趨勢翻多 (買進)'
+            ), row=1, col=1)
+            
+            # ▼ 賣出箭頭
+            fig.add_trace(go.Scatter(
+                x=df.index[sell_signals], 
+                y=df['High'][sell_signals] * 1.02, # 畫在 K 線上方
+                mode='markers',
+                marker=dict(symbol='triangle-down', size=12, color='fuchsia'),
+                name='趨勢翻空 (賣出)'
+            ), row=1, col=1)
     # --- Row 2: 副圖 (RSI / KD) ---
     if "RSI" in config['mode'] or config['mode'] == "FUSION":
         rsi = ta.rsi(df['Close'], length=config.get('rsi_len', 14))
@@ -3057,6 +3116,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
