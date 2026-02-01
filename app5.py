@@ -1493,11 +1493,14 @@ def analyze_chip_health(df, cmf_len=20):
             msg = "🚀 量價齊揚：籌碼完美配合，趨勢健康"
             status = "healthy"
         else:
-            msg = f"{obv_msg} | {flow_msg}"
+            obv_state = "OBV在均線上" if curr_obv > curr_obv_ma else "OBV破線"
+            msg = f"{obv_state} | 乖離率 {obv_bias:.1f}%
             
-        return msg, status, curr_cmf
-    except:
-        return "籌碼數據不足", "neutral", 0
+        return msg, status, curr_cmf, obv_bias
+    except Exception as e:
+        # 🚨【關鍵修復】這裡原本只回傳 3 個，必須改為 4 個！
+        # 補上最後一個 0.0 (代表 obv_bias)
+        return f"籌碼數據不足 ({e})", "neutral", 0, 0.0
 
 def plot_chart(df, config, sigs):
     # 設定圖表佈局 (Row 3 使用雙軸: 左軸 CMF, 右軸 OBV)
@@ -3145,6 +3148,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
