@@ -1441,6 +1441,14 @@ def analyze_chip_health(df, cmf_len=20):
         curr_obv = obv.iloc[-1]
         curr_obv_ma = obv_ma.iloc[-1]
         curr_cmf = cmf.iloc[-1]
+
+        # ★★★ 新增：計算 OBV 乖離率 (OBV Bias) ★★★
+        # 公式：(目前OBV - 20均線OBV) / 20均線OBV
+        # 注意：加上 abs() 確保分母為正，這樣正負乖離的方向才不會錯
+        if curr_obv_ma == 0:
+            obv_bias = 0.0
+        else:
+            obv_bias = (curr_obv - curr_obv_ma) / abs(curr_obv_ma) * 100
         
         # 價格趨勢 (簡單判斷)
         price_trend = "漲" if close.iloc[-1] > close.iloc[-20] else "跌"
@@ -1455,6 +1463,15 @@ def analyze_chip_health(df, cmf_len=20):
             obv_msg = "🟢 籌碼健康 (OBV在均線上)"
         else:
             obv_msg = "⚠️ 籌碼鬆動 (OBV跌破均線)"
+
+        # 情況 A: OBV 乖離過大 (轉折訊號)
+        # 經驗值：乖離超過 +/- 7% 通常代表短線籌碼過熱或超賣 (可依商品特性調整)
+        if obv_bias > 10:
+            msg = f"🔥 籌碼過熱 (OBV乖離 {obv_bias:.1f}%)：小心獲利回吐賣壓"
+            status = "danger"
+        elif obv_bias < -10:
+            msg = f"💎 籌碼超賣 (OBV乖離 {obv_bias:.1f}%)：有機會出現報復性反彈"
+            status = "gold"
             
         # B. CMF 資金流向
         if curr_cmf > 0.15: flow_msg = "🔥 主力強力買進"
@@ -2252,26 +2269,35 @@ elif app_mode == "📊 策略分析工具 (單股)":
         fund = get_fundamentals(cfg['symbol'])
         
         with st.container(border=True):
-            c1, c2, c3 = st.columns(3)
+            # ★ 改為 4 欄，多一欄顯示 OBV 乖離率
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("即時價格", f"${lp:.2f}", f"{chg:.2f} ({pct_chg:.2f}%)")
             
             if trades_count > 0:
-                c2.metric("策略勝率 (回測)", f"{win_rate*100:.0f}%", delta=f"{trades_count} 次交易")
+                c2.metric("策略勝率", f"{win_rate*100:.0f}%", delta=f"{trades_count} 次交易")
             else:
-                c2.metric("策略勝率 (回測)", "無交易", delta="區間未觸發", delta_color="off")
+                c2.metric("策略勝率", "無交易", delta="未觸發", delta_color="off")
                 
-            c3.metric("凱利建議倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望") 
+            c3.metric("凱利倉位", f"{kelly_shares} 股", delta=kelly_msg.split(' ')[0] if '建議' in kelly_msg else "觀望") 
+            
+            # --- ★★★ 新增：籌碼診斷面板 (接收 4 個回傳值) ★★★ ---
+            chip_msg, chip_status, cmf_val, obv_bias = analyze_chip_health(df, cmf_len=cfg.get('cmf_len', 20))
+            
+            # ★ 第 4 欄：顯示 OBV 乖離率
+            # 顏色邏輯：正乖離(紅/過熱?) 或 負乖離(綠/反彈?)，這裡用中性顯示，數值太高亮紅燈
+            bias_color = "normal"
+            if obv_bias > 10: bias_color = "inverse" # 紅色 (過熱警戒)
+            elif obv_bias < -10: bias_color = "off"  # 灰色/綠色 (超賣關注)
+            
+            c4.metric("OBV 乖離率", f"{obv_bias:.1f}%", delta="籌碼轉折指標", delta_color=bias_color)
             
             st.info(f"💡 凱利觀點: {kelly_msg}")
-            
-            # --- ★★★ 新增：籌碼診斷面板 ★★★ ---
-            chip_msg, chip_status, cmf_val = analyze_chip_health(df, cmf_len=cfg.get('cmf_len', 20))
-            
+
             # 根據狀態顯示不同顏色的提示框
             if chip_status == "danger":
                 st.error(f"💣 籌碼診斷: {chip_msg}")
             elif chip_status == "gold":
-                st.success(f"💰 籌碼診斷: {chip_msg}")
+                st.success(f"💰 籌碼診斷: {chip_msg}") # 金色/綠色機會
             elif chip_status == "healthy":
                 st.success(f"✅ 籌碼診斷: {chip_msg}")
             else:
@@ -3119,6 +3145,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
