@@ -1424,7 +1424,7 @@ def quick_backtest(df, config, fee=0.0005):
 
 
 # ==========================================
-# ★ 新增模組：籌碼健康度診斷 (OBV + CMF 解讀)
+# ★ 新增模組：籌碼健康度診斷 (修復 Crash 問題)
 # ==========================================
 def analyze_chip_health(df, cmf_len=20):
     try:
@@ -1441,62 +1441,42 @@ def analyze_chip_health(df, cmf_len=20):
         curr_obv = obv.iloc[-1]
         curr_obv_ma = obv_ma.iloc[-1]
         curr_cmf = cmf.iloc[-1]
-
-        # ★★★ 新增：計算 OBV 乖離率 (OBV Bias) ★★★
-        # 公式：(目前OBV - 20均線OBV) / 20均線OBV
-        # 注意：加上 abs() 確保分母為正，這樣正負乖離的方向才不會錯
+        
+        # ★ 計算 OBV 乖離率
         if curr_obv_ma == 0:
             obv_bias = 0.0
         else:
             obv_bias = (curr_obv - curr_obv_ma) / abs(curr_obv_ma) * 100
         
-        # 價格趨勢 (簡單判斷)
+        # 價格趨勢
         price_trend = "漲" if close.iloc[-1] > close.iloc[-20] else "跌"
         
         msg = ""
-        status = "neutral" # healthy, divergence, weak
+        status = "neutral" 
         
         # --- 診斷邏輯 ---
-        
-        # A. OBV 趨勢判斷
-        if curr_obv > curr_obv_ma:
-            obv_msg = "🟢 籌碼健康 (OBV在均線上)"
-        else:
-            obv_msg = "⚠️ 籌碼鬆動 (OBV跌破均線)"
-
-        # 情況 A: OBV 乖離過大 (轉折訊號)
-        # 經驗值：乖離超過 +/- 7% 通常代表短線籌碼過熱或超賣 (可依商品特性調整)
         if obv_bias > 10:
-            msg = f"🔥 籌碼過熱 (OBV乖離 {obv_bias:.1f}%)：小心獲利回吐賣壓"
+            msg = f"🔥 籌碼過熱 (OBV乖離 {obv_bias:.1f}%)：小心獲利回吐"
             status = "danger"
         elif obv_bias < -10:
-            msg = f"💎 籌碼超賣 (OBV乖離 {obv_bias:.1f}%)：有機會出現報復性反彈"
+            msg = f"💎 籌碼超賣 (OBV乖離 {obv_bias:.1f}%)：有機會反彈"
             status = "gold"
-            
-        # B. CMF 資金流向
-        if curr_cmf > 0.15: flow_msg = "🔥 主力強力買進"
-        elif curr_cmf > 0: flow_msg = "🔼 資金緩步流入"
-        elif curr_cmf < -0.15: flow_msg = "🛑 主力大幅出貨"
-        else: flow_msg = "🔽 資金流出"
-        
-        # C. 關鍵：價格與籌碼背離 (Price-Volume Divergence)
-        # 情況 1: 價格上漲，但 OBV 卻下跌 (量價背離 - 危險)
-        if price_trend == "漲" and curr_obv < curr_obv_ma:
-            msg = "💀 頂部背離警戒：股價創高但籌碼沒跟上 (主力在跑)"
+        elif price_trend == "漲" and curr_obv < curr_obv_ma:
+            msg = "💀 頂部背離警戒：股價創高但籌碼沒跟上"
             status = "danger"
-        # 情況 2: 價格下跌，但 CMF 卻翻紅 (底部吸籌 - 機會)
         elif price_trend == "跌" and curr_cmf > 0.05:
             msg = "💎 底部吸籌跡象：股價跌但主力資金進場"
             status = "gold"
-        # 情況 3: 價格漲 + OBV 漲 + CMF 紅 (健康多頭)
         elif price_trend == "漲" and curr_obv > curr_obv_ma and curr_cmf > 0:
-            msg = "🚀 量價齊揚：籌碼完美配合，趨勢健康"
+            msg = "🚀 量價齊揚：籌碼完美配合"
             status = "healthy"
         else:
             obv_state = "OBV在均線上" if curr_obv > curr_obv_ma else "OBV破線"
-            msg = f"{obv_state} | 乖離率 {obv_bias:.1f}%
+            msg = f"{obv_state} | 乖離率 {obv_bias:.1f}%"
             
+        # ✅ 成功時回傳 4 個值
         return msg, status, curr_cmf, obv_bias
+
     except Exception as e:
         # 🚨【關鍵修復】這裡原本只回傳 3 個，必須改為 4 個！
         # 補上最後一個 0.0 (代表 obv_bias)
@@ -3148,6 +3128,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
