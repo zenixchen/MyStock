@@ -3077,16 +3077,16 @@ elif app_mode == "🌲 XGBoost 實驗室":
                 model = model_ensemble 
 
                 # ==========================================
-                # 實戰版：明日操作指引
+                # 實戰版：明日操作指引 (升級版：全數據重訓 + 動態門檻)
                 # ==========================================
                 st.divider()
-                st.subheader(f"🔮 AI 對明日開盤的戰術指令")
+                st.subheader(f"🔮 AI 對明日開盤的戰術指令 (升級核心)")
                 
                 try:
-                    # 1. 準備最新數據
+                    # 1. 準備最新數據 (特徵)
                     last_feat = X.iloc[-1:].copy()
                     
-                    # 嘗試取得即時價格修正
+                    # 即時價格修正 (保持原樣)
                     live_price = get_real_live_price(target)
                     if live_price:
                         if "TQQQ" in model_mode:
@@ -3098,27 +3098,64 @@ elif app_mode == "🌲 XGBoost 實驗室":
                              last_feat['Target_Ret_1d'] = (live_price - prev_close) / prev_close
                              st.caption(f"⚡ 即時價格 ${live_price} | 動能數據已即時修正")
                     
-                    # 2. AI 計算勝率
-                    prob = model.predict_proba(last_feat)[0][1]
+                    # ==========================================
+                    # ★ 升級 A: 全數據重訓 (Full Retrain)
+                    # ==========================================
+                    # 不再使用 80% 的舊模型，而是用 100% 數據訓練一個「最強大腦」來預測明天
+                    with st.spinner("🧠 正在注入 100% 最新數據重訓模型..."):
+                        # 使用與上面相同的參數，但權重重新計算
+                        full_weight = (len(y) - y.sum()) / y.sum() * locals().get('weight_multiplier', 1.0)
+                        
+                        # 為了速度，這裡只用單一強效模型 (XGBoost) 進行最終決策
+                        # (如果要三巨頭重訓會太久，單一 XGB 加上最新數據通常已足夠強大)
+                        model_final = xgb.XGBClassifier(**params, scale_pos_weight=full_weight, random_state=42)
+                        model_final.fit(X, y) # 注意：這裡 Fit 的是 X (全部), y (全部)
+                        
+                        # 預測
+                        prob = model_final.predict_proba(last_feat)[0][1]
+
+                    # ==========================================
+                    # ★ 升級 B: 動態門檻 (Dynamic Threshold)
+                    # ==========================================
+                    base_thresh = locals().get('buy_threshold', 0.5)
                     
-                    # 3. 取得您的門檻
-                    thresh = locals().get('threshold', 0.5)
+                    # 1. VIX 濾網：市場越恐慌，門檻越高
+                    current_vix = 20 # 預設值
+                    if '^VIX' in df.columns:
+                        current_vix = df['^VIX'].iloc[-1]
+                    elif 'VIX_Level' in df.columns: # EDZ 模式
+                        current_vix = df['VIX_Level'].iloc[-1]
+                        
+                    vix_penalty = 0.0
+                    if current_vix > 25: vix_penalty = 0.05  # VIX > 25, 門檻 +5%
+                    if current_vix > 35: vix_penalty = 0.10  # VIX > 35, 門檻 +10%
+                    
+                    # 2. 趨勢濾網：如果現在是空頭排列，門檻再提高
+                    trend_penalty = 0.0
+                    # 簡單判斷：若價格在季線下 (如果有季線特徵)
+                    # 這裡用通用的 Bias 判斷，若無則略過
+                    if 'Bias_60' in last_feat.columns and last_feat['Bias_60'].values[0] < -0.05:
+                        trend_penalty = 0.05
+                    
+                    final_thresh = base_thresh + vix_penalty + trend_penalty
+                    
+                    # 顯示動態調整過程
+                    st.caption(f"🎛️ 動態門檻計算: 基礎({base_thresh}) + VIX懲罰({vix_penalty}) + 逆勢懲罰({trend_penalty}) = **{final_thresh:.2f}**")
 
                     # 4. 顯示儀表板
                     c1, c2, c3 = st.columns(3)
-                    c1.metric("AI 上漲信心", f"{prob*100:.1f}%", help=f"超過 {thresh*100:.0f}% 才會動作")
+                    c1.metric("AI 上漲信心 (最新腦)", f"{prob*100:.1f}%")
                     
-                    if prob > thresh:
+                    if prob > final_thresh:
                         c2.metric("趨勢判斷", "📈 多頭", delta="偏多")
                         c3.success(f"🔥 指令：持有 / 買進")
-                        st.markdown(f"**操作建議：**\n- **空手者**：明早開盤買進。\n- **持有者**：續抱，不停利。")
+                        st.markdown(f"**操作建議：**\n- **信心充足**：已超過動態門檻 {final_thresh:.2f}。\n- **模型狀態**：已學習至最新交易日。")
                     else:
                         c2.metric("趨勢判斷", "📉 空頭/盤整", delta="-偏空", delta_color="inverse")
                         c3.error(f"🛑 指令：賣出 / 空手")
-                        st.markdown(f"**操作建議：**\n- **持有者**：明早開盤**市價賣出**。\n- **空手者**：保持現金。")
+                        st.markdown(f"**操作建議：**\n- **信心不足**：未達動態門檻 {final_thresh:.2f}。\n- **風險提示**：VIX 或趨勢結構可能不利，建議保守。")
                 
                 except Exception as e:
-                    # 這是【內層】的例外處理 (針對預測錯誤)
                     st.error(f"預測模組發生錯誤: {e}")
                     if 'last_feat' in locals():
                         st.write("Debug Info:", last_feat)
@@ -3128,6 +3165,7 @@ elif app_mode == "🌲 XGBoost 實驗室":
             # 您原本少的就是這一段！
                 st.error(f"訓練流程發生意外錯誤: {e}")
                 st.write("建議檢查：1. 網路連線是否正常 2. 股票代號是否輸入正確")
+
 
 
 
